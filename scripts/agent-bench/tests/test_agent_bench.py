@@ -306,6 +306,50 @@ class SyntheticScenarioTests(unittest.TestCase):
             for event in ("SubagentStart", "SubagentStop"):
                 self.assertEqual([entry["matcher"] for entry in hooks[event]], [""], event)
 
+    def test_claude_plan_pins_swift_hook_plan_events_matchers_and_timeouts(self):
+        # Fixture transcribed from AgentLaunchBootstrap.claudePlan
+        # (Zentty/AppState/Agent/AgentLaunchBootstrap.swift, the `settingsJSON`
+        # literal around line 828, plus claudeSessionStartHookEntries /
+        # claudeHookEntries / claudePreToolUseHookEntries). When the two
+        # disagree, the Swift plan wins: update this fixture and _plan_claude.
+        command = '"/tmp/zentty-bench" ipc agent-event --adapter=claude'
+
+        def entries(matchers, timeout):
+            return [{"matcher": matcher, "hooks": [{"type": "command", "command": command, "timeout": timeout}]} for matcher in matchers]
+
+        swift_plan = {
+            "SessionStart": entries(["startup", "resume", "clear", "compact"], 10),
+            "Stop": entries([""], 10),
+            "SessionEnd": entries([""], 1),
+            "Notification": entries([""], 10),
+            "PermissionRequest": entries([""], 10),
+            "UserPromptSubmit": entries([""], 10),
+            "PreToolUse": entries(["AskUserQuestion", "Bash|Write|Edit|MultiEdit|NotebookEdit"], 5),
+            "PostToolUse": entries([""], 5),
+            "PostToolUseFailure": entries([""], 5),
+            "PreCompact": entries([""], 10),
+            "PostCompact": entries([""], 10),
+            "TaskCreated": entries([""], 5),
+            "TaskCompleted": entries([""], 5),
+            "SubagentStart": entries([""], 5),
+            "SubagentStop": entries([""], 5),
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            plan = agent_bench.LaunchPlanner(
+                profile=agent_bench.load_profiles(ROOT / "profiles")["claude"],
+                scenario="smoke",
+                run_dir=pathlib.Path(tmp),
+                resources_dir=None,
+            ).plan(
+                {
+                    "arguments": ["hello"],
+                    "environment": {"ZENTTY_REAL_BINARY": "/usr/local/bin/claude", "ZENTTY_CLI_BIN": "/tmp/zentty-bench"},
+                }
+            )
+            arguments = plan["arguments"]
+            settings = json.loads(arguments[arguments.index("--settings") + 1])
+        self.assertEqual(settings, {"hooks": swift_plan})
+
     def test_codex_plan_registers_and_trusts_subagent_hooks(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
@@ -490,6 +534,39 @@ class SyntheticScenarioTests(unittest.TestCase):
             agent_bench.event_order_violation_detail("claude", "subagents_async", expectation, records),
             "expected Stop before SubagentStop but Stop was never observed",
         )
+
+    @staticmethod
+    def _load_profile_with_event_order(event_order):
+        with tempfile.TemporaryDirectory() as tmp:
+            profile_path = pathlib.Path(tmp) / "fake.json"
+            profile_path.write_text(
+                json.dumps(
+                    {
+                        "name": "fake",
+                        "command": "fake",
+                        "expectations": {"ordered": {"required_events": [], "event_order": event_order}},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            return agent_bench.load_profiles(pathlib.Path(tmp))["fake"]
+
+    def test_load_profiles_accepts_well_formed_event_order_pairs(self):
+        profile = self._load_profile_with_event_order([["Stop", "SubagentStop"]])
+        self.assertEqual(profile.expectations["ordered"].event_order, [["Stop", "SubagentStop"]])
+
+    def test_load_profiles_rejects_flat_event_order_list_naming_the_scenario(self):
+        with self.assertRaises(ValueError) as raised:
+            self._load_profile_with_event_order(["Stop", "SubagentStop"])
+        self.assertIn("fake.json scenario 'ordered'", str(raised.exception))
+        self.assertIn("'Stop'", str(raised.exception))
+
+    def test_load_profiles_rejects_event_order_entry_with_non_string_or_wrong_arity(self):
+        for bad_entry in (["Stop", 5], ["Stop"], ["Stop", ""], ["Stop", "SubagentStop", "Stop"]):
+            with self.subTest(entry=bad_entry), self.assertRaises(ValueError) as raised:
+                self._load_profile_with_event_order([bad_entry])
+            self.assertIn("scenario 'ordered'", str(raised.exception))
+            self.assertIn(repr(bad_entry), str(raised.exception))
 
     def test_nested_subagent_validation_requires_two_distinct_matched_pairs(self):
         self.assertEqual(

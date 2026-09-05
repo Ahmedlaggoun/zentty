@@ -1803,20 +1803,24 @@ class LaunchPlanner:
     def _plan_claude(self, executable: str, arguments: list[str], environment: dict[str, Any], cli_path: str) -> dict[str, Any]:
         hook_command = f'"{shell_escape_double_quoted(cli_path)}" ipc agent-event --adapter=claude'
         settings = {"hooks": {}}
-        for event in (
-            "Stop",
-            "SessionEnd",
-            "Notification",
-            "PermissionRequest",
-            "UserPromptSubmit",
-            "PreCompact",
-            "PostCompact",
-            "TaskCreated",
-            "TaskCompleted",
-            "SubagentStart",
-            "SubagentStop",
+        # Mirror AgentLaunchBootstrap.claudePlan event-for-event, timeouts
+        # included: SessionEnd is short so a hung IPC cannot hold the exit,
+        # and the task/subagent hooks fire often enough that a slow one must
+        # not stall the agent. The Swift plan is the source of truth.
+        for event, timeout in (
+            ("Stop", 10),
+            ("SessionEnd", 1),
+            ("Notification", 10),
+            ("PermissionRequest", 10),
+            ("UserPromptSubmit", 10),
+            ("PreCompact", 10),
+            ("PostCompact", 10),
+            ("TaskCreated", 5),
+            ("TaskCompleted", 5),
+            ("SubagentStart", 5),
+            ("SubagentStop", 5),
         ):
-            settings["hooks"][event] = [{"matcher": "", "hooks": [{"type": "command", "command": hook_command, "timeout": 10}]}]
+            settings["hooks"][event] = [{"matcher": "", "hooks": [{"type": "command", "command": hook_command, "timeout": timeout}]}]
         settings["hooks"]["SessionStart"] = [
             {"matcher": matcher, "hooks": [{"type": "command", "command": hook_command, "timeout": 10}]}
             for matcher in ("startup", "resume", "clear", "compact")
@@ -2441,6 +2445,29 @@ def agent_from_adapter(adapter: str | None, environment: dict[str, Any], standar
     return adapter
 
 
+def parse_event_order(profile_name: str, scenario: str, raw: Any) -> list[list[str]]:
+    """Validate a profile's `event_order` at load time so a malformed pair
+    fails the whole run up front instead of surfacing as a confusing
+    per-scenario failure after the agent has already been driven."""
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise ValueError(f"{profile_name} scenario {scenario!r}: event_order must be a list of [before, after] pairs, got {raw!r}")
+    pairs: list[list[str]] = []
+    for entry in raw:
+        if (
+            not isinstance(entry, list)
+            or len(entry) != 2
+            or not all(isinstance(event, str) and event.strip() for event in entry)
+        ):
+            raise ValueError(
+                f"{profile_name} scenario {scenario!r}: each event_order entry must be a [before, after] pair "
+                f"of non-empty strings, got {entry!r}"
+            )
+        pairs.append([entry[0], entry[1]])
+    return pairs
+
+
 def load_profiles(path: pathlib.Path) -> dict[str, AgentProfile]:
     profiles: dict[str, AgentProfile] = {}
     for profile_path in sorted(path.glob("*.json")):
@@ -2475,7 +2502,7 @@ def load_profiles(path: pathlib.Path) -> dict[str, AgentProfile]:
                 post_stop_notification_required=bool(value.get("post_stop_notification_required", False)),
                 subagent_payload_required=bool(value.get("subagent_payload_required", False)),
                 subagent_model_required=bool(value.get("subagent_model_required", True)),
-                event_order=[[str(event) for event in pair] for pair in value.get("event_order", [])],
+                event_order=parse_event_order(profile_path.name, name, value.get("event_order")),
                 subagent_nested_required=bool(value.get("subagent_nested_required", False)),
                 resume_roundtrip=bool(value.get("resume_roundtrip", False)),
             )

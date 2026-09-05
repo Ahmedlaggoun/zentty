@@ -43,10 +43,20 @@ hook, and terminal observations.
 
 `summary.json` keeps the original pass/fail fields and adds:
 
-- `result_kind`: `hook-pass`, `process-timeout`, `agent-refusal`,
-  `auth-skip`, `missing-hook`, `bootstrap-pass`, `missing-bootstrap`,
-  `missing-session-identity`, `missing-subagent-payload`, `hook-order`,
-  `missing-nested-subagent`, `scenario-skip`, or `binary-skip`.
+- `result_kind`, one of:
+  - passes: `hook-pass`, `bootstrap-pass`, `terminal-pass`, `resume-pass`.
+  - hook failures: `missing-hook`, `forbidden-hook`, `missing-bootstrap`,
+    `missing-session-identity`, `missing-task-hook`,
+    `missing-task-progress`, `missing-subagent-payload`, `hook-order`,
+    `missing-nested-subagent`.
+  - terminal failures: `missing-terminal-phase`, `forbidden-terminal-phase`,
+    `missing-terminal-needs-input`, `stale-terminal-needs-input`,
+    `missing-scripted-input`.
+  - resume failures: `resume-no-session`, `resume-no-marker`,
+    `resume-not-found`.
+  - process outcomes: `process-timeout`, `agent-refusal`.
+  - skips: `auth-skip`, `binary-skip`, `missing-wrapper`, `scenario-skip`
+    (each is a skip in normal mode and a failure under `--strict`).
 - `timeline`: relative-millisecond events for that scenario.
 - `terminal_observations`: advisory OSC title, OSC 9, and progress signals.
 - `session_identity_observations`: hook-provided session IDs and tracked PIDs
