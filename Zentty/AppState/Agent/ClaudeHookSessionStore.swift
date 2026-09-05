@@ -18,6 +18,16 @@ struct ClaudeHookSessionRecord: Codable, Equatable {
     /// AskUserQuestion prompt is currently open. Lets PostToolUse for a
     /// sibling tool in the same batch leave the open prompt alone.
     var lastStructuredInteractionToolUseID: String? = nil
+    /// `tool_name` of that same open prompt. Claude Code's PermissionRequest
+    /// payload carries no `tool_use_id`, so when the id could not be inherited
+    /// from the preceding PreToolUse this is the only way to tell a sibling
+    /// tool's PostToolUse apart from the prompted tool's own completion.
+    var lastStructuredInteractionToolName: String? = nil
+    /// Most recent PreToolUse for this session (Bash/Write/Edit matcher set).
+    /// A PermissionRequest for the same tool inherits its `tool_use_id`.
+    var lastPreToolUseID: String? = nil
+    var lastPreToolUseToolName: String? = nil
+    var lastPreToolUseAgentID: String? = nil
     var lastNotificationText: String?
     var tasksByID: [String: Bool] = [:]
     var updatedAt: TimeInterval
@@ -183,7 +193,8 @@ final class ClaudeHookSessionStore {
         text: String,
         kind: PaneAgentInteractionKind,
         confidence: AgentSignalConfidence,
-        toolUseID: String? = nil
+        toolUseID: String? = nil,
+        toolName: String? = nil
     ) throws {
         let normalizedSessionID = normalized(sessionID)
         guard !normalizedSessionID.isEmpty else {
@@ -222,8 +233,29 @@ final class ClaudeHookSessionStore {
             record.structuredInteractionKind = kind
             record.structuredInteractionConfidence = confidence
             record.lastStructuredInteractionToolUseID = normalizedOptional(toolUseID)
+            record.lastStructuredInteractionToolName = normalizedOptional(toolName)
             record.lastNotificationText = nil
             record.updatedAt = now
+            state.sessions[normalizedSessionID] = record
+        }
+    }
+
+    /// Remembers the tool call a PreToolUse announced so a following
+    /// PermissionRequest (which has no `tool_use_id`) can be tied to it.
+    func rememberPreToolUse(sessionID: String, toolUseID: String?, toolName: String?, agentID: String?) throws {
+        let normalizedSessionID = normalized(sessionID)
+        guard !normalizedSessionID.isEmpty else {
+            return
+        }
+
+        try withLockedState { state in
+            guard var record = state.sessions[normalizedSessionID] else {
+                return
+            }
+            record.lastPreToolUseID = normalizedOptional(toolUseID)
+            record.lastPreToolUseToolName = normalizedOptional(toolName)
+            record.lastPreToolUseAgentID = normalizedOptional(agentID)
+            record.updatedAt = Date().timeIntervalSince1970
             state.sessions[normalizedSessionID] = record
         }
     }
@@ -258,6 +290,7 @@ final class ClaudeHookSessionStore {
             record.structuredInteractionKind = nil
             record.structuredInteractionConfidence = nil
             record.lastStructuredInteractionToolUseID = nil
+            record.lastStructuredInteractionToolName = nil
             record.lastNotificationText = nil
             record.updatedAt = Date().timeIntervalSince1970
             state.sessions[normalizedSessionID] = record

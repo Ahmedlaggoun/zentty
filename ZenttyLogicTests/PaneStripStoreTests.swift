@@ -3627,7 +3627,7 @@ final class PaneStripStoreTests: XCTestCase {
             activeWorklaneID: WorklaneID("target")
         )
 
-        XCTAssertEqual(store.worklaneCloseConfirmationReason(WorklaneID("target")), .sessionHistory)
+        XCTAssertEqual(store.worklaneCloseConfirmationContext(WorklaneID("target"))?.reason, .sessionHistory)
     }
 
     func test_worklane_close_confirmation_reason_prioritizes_running_processes() {
@@ -3658,7 +3658,7 @@ final class PaneStripStoreTests: XCTestCase {
             activeWorklaneID: WorklaneID("target")
         )
 
-        XCTAssertEqual(store.worklaneCloseConfirmationReason(WorklaneID("target")), .runningProcess)
+        XCTAssertEqual(store.worklaneCloseConfirmationContext(WorklaneID("target"))?.reason, .runningProcess)
     }
 
     func test_worklane_close_confirmation_reason_ignores_closed_pane_auxiliary_state() {
@@ -3681,7 +3681,7 @@ final class PaneStripStoreTests: XCTestCase {
             activeWorklaneID: WorklaneID("target")
         )
 
-        XCTAssertNil(store.worklaneCloseConfirmationReason(WorklaneID("target")))
+        XCTAssertNil(store.worklaneCloseConfirmationContext(WorklaneID("target"))?.reason)
     }
 
     func test_close_focused_pane_reexpands_remaining_columns_to_fill_readable_width() {

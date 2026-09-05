@@ -406,6 +406,10 @@ final class WorklaneStore {
     private let newWorklanePlacementProvider: @MainActor () -> NewWorklanePlacement
     private let agentTeamsEnabledProvider: @MainActor () -> Bool
     private let serverDetectionProvider: @MainActor () -> AppConfig.ServerDetection
+    /// Reaches the Claude hook bridge's on-disk session store so in-app
+    /// resumes (spinner title after a prompt) can drop the pending prompt the
+    /// bridge remembered. `nil` (tests, previews) leaves the store alone.
+    let claudeHookSessionStoreProvider: @MainActor () -> ClaudeHookSessionStore?
     /// In-memory mirror of `TmuxCompatStore.anchors` for this app session.
     /// Refreshed via `refreshTeamAnchors()` after any handler that mutates
     /// the on-disk store (split-window, kill-pane, kill-window, leader-close
@@ -494,7 +498,8 @@ final class WorklaneStore {
         terminalDiagnostics: TerminalDiagnostics = .shared,
         newWorklanePlacementProvider: @escaping @MainActor () -> NewWorklanePlacement = { .afterCurrent },
         agentTeamsEnabledProvider: @escaping @MainActor () -> Bool = { false },
-        serverDetectionProvider: @escaping @MainActor () -> AppConfig.ServerDetection = { .default }
+        serverDetectionProvider: @escaping @MainActor () -> AppConfig.ServerDetection = { .default },
+        claudeHookSessionStoreProvider: @escaping @MainActor () -> ClaudeHookSessionStore? = { nil }
     ) {
         self.windowID = windowID
         self.gitContextResolver = gitContextResolver
@@ -510,6 +515,7 @@ final class WorklaneStore {
         self.newWorklanePlacementProvider = newWorklanePlacementProvider
         self.agentTeamsEnabledProvider = agentTeamsEnabledProvider
         self.serverDetectionProvider = serverDetectionProvider
+        self.claudeHookSessionStoreProvider = claudeHookSessionStoreProvider
         self.runtimeIdentity = runtimeIdentity
         self.serverRegistry = serverRegistry
         let initialWorklanes = worklanes.isEmpty
@@ -639,38 +645,6 @@ final class WorklaneStore {
     enum PaneCloseReason: Equatable, Sendable {
         case runningProcess
         case sessionHistory
-    }
-
-    func paneCloseConfirmationReason(_ paneID: PaneID) -> PaneCloseReason? {
-        for worklane in worklanes {
-            guard let aux = worklane.auxiliaryStateByPaneID[paneID] else { continue }
-            return Self.quitConfirmationReason(for: aux)
-        }
-        return nil
-    }
-
-    func worklaneCloseConfirmationReason(_ worklaneID: WorklaneID) -> PaneCloseReason? {
-        guard let worklane = worklanes.first(where: { $0.id == worklaneID }) else {
-            return nil
-        }
-
-        var hasSessionHistory = false
-        for pane in worklane.paneStripState.panes {
-            guard let auxiliaryState = worklane.auxiliaryStateByPaneID[pane.id],
-                  let reason = Self.quitConfirmationReason(for: auxiliaryState)
-            else {
-                continue
-            }
-
-            switch reason {
-            case .runningProcess:
-                return .runningProcess
-            case .sessionHistory:
-                hasSessionHistory = true
-            }
-        }
-
-        return hasSessionHistory ? .sessionHistory : nil
     }
 
     var anyPaneRequiresQuitConfirmation: Bool {

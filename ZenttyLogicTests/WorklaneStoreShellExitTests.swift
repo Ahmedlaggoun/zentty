@@ -204,7 +204,7 @@ final class WorklaneStoreShellExitTests: XCTestCase {
             activeWorklaneID: WorklaneID("main")
         )
 
-        XCTAssertEqual(store.paneCloseConfirmationReason(paneID), .runningProcess)
+        XCTAssertEqual(store.paneCloseConfirmationContext(paneID)?.reason, .runningProcess)
         XCTAssertTrue(store.anyPaneRequiresQuitConfirmation)
     }
 
