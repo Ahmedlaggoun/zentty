@@ -4,6 +4,9 @@ import Foundation
 struct WindowWorkspaceState: Equatable, Sendable {
     var worklanes: [WorklaneState]
     var activeWorklaneID: WorklaneID?
+    /// Sidebar visibility and width the window was restored with, when the
+    /// recipe recorded them. `nil` means "seed from the config file".
+    var sidebar: WorkspaceRecipe.Sidebar? = nil
 }
 
 struct WorkspaceRecipe: Codable, Equatable, Sendable {
@@ -11,9 +14,10 @@ struct WorkspaceRecipe: Codable, Equatable, Sendable {
     /// verbatim. Unversioned (nil) recipes predate optional titles and carry
     /// auto-generated "MAIN"/"WS N" junk that gets sanitized once at import.
     /// Schema version 3 adds optional per-pane `customTitle` fields.
+    /// Schema version 4 adds an optional per-window `sidebar` entry.
     /// Synthesized Decodable ignores the property default for optionals, so
     /// legacy JSON without the key decodes as nil.
-    static let currentSchemaVersion = 3
+    static let currentSchemaVersion = 4
 
     var schemaVersion: Int?
     var windows: [Window]
@@ -34,6 +38,38 @@ struct WorkspaceRecipe: Codable, Equatable, Sendable {
         var frame: WindowFrame? = nil
         var worklanes: [Worklane]
         var activeWorklaneID: String?
+        var sidebar: Sidebar? = nil
+    }
+
+    /// Per-window sidebar state. Sidebar visibility and width are kept per
+    /// window while the app runs; the config file only holds the seed for new
+    /// windows, so without this every restored window would come back with
+    /// the single last-changed value.
+    struct Sidebar: Codable, Equatable, Sendable {
+        /// `SidebarVisibilityMode.rawValue` of the persisted mode. Never
+        /// `hoverPeek`, which is a transient state.
+        var visibility: String
+        var width: Double
+
+        init(visibility: String, width: Double) {
+            self.visibility = visibility
+            self.width = width
+        }
+
+        init(mode: SidebarVisibilityMode, width: CGFloat) {
+            self.init(visibility: mode.rawValue, width: Double(width))
+        }
+
+        /// The stored mode, with unknown or transient values read as the
+        /// default so a hand-edited or future recipe still restores.
+        var visibilityMode: SidebarVisibilityMode {
+            let mode = SidebarVisibilityMode(rawValue: visibility) ?? .pinnedOpen
+            return mode == .hoverPeek ? .hidden : mode
+        }
+
+        var appConfigSidebar: AppConfig.Sidebar {
+            AppConfig.Sidebar(width: CGFloat(width), visibility: visibilityMode)
+        }
     }
 
     struct WindowFrame: Codable, Equatable, Sendable {
@@ -114,13 +150,15 @@ enum WorkspaceRecipeExporter {
         windowID: WindowID,
         frame: CGRect? = nil,
         worklanes: [WorklaneState],
-        activeWorklaneID: WorklaneID?
+        activeWorklaneID: WorklaneID?,
+        sidebar: WorkspaceRecipe.Sidebar? = nil
     ) -> WorkspaceRecipe.Window {
         WorkspaceRecipe.Window(
             id: windowID.rawValue,
             frame: frame.map(WorkspaceRecipe.WindowFrame.init(rect:)),
             worklanes: worklanes.map(makeWorklane),
-            activeWorklaneID: activeWorklaneID?.rawValue
+            activeWorklaneID: activeWorklaneID?.rawValue,
+            sidebar: sidebar
         )
     }
 
@@ -394,7 +432,8 @@ enum WorkspaceRecipeImporter {
 
         return WindowWorkspaceState(
             worklanes: worklanes,
-            activeWorklaneID: activeWorklaneID
+            activeWorklaneID: activeWorklaneID,
+            sidebar: window.sidebar
         )
     }
 

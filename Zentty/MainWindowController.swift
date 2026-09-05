@@ -855,7 +855,10 @@ final class MainWindowController: NSObject, NSWindowDelegate {
         if !window.isVisible || window.isMiniaturized {
             return
         }
-        if !window.isKeyWindow {
+        // Only reorder among Zentty's own windows. When another app is active
+        // (1Password holds focus), orderFront would push this window over the
+        // app the user was actually working in.
+        if !window.isKeyWindow, NSApp.isActive {
             window.orderFront(nil)
         }
         rootViewController.revealPaneForOnePasswordPrompt(
@@ -1953,7 +1956,8 @@ final class MainWindowController: NSObject, NSWindowDelegate {
             windowID: windowID,
             frame: window.frame,
             worklanes: workspaceState.worklanes,
-            activeWorklaneID: workspaceState.activeWorklaneID
+            activeWorklaneID: workspaceState.activeWorklaneID,
+            sidebar: rootViewController.sidebarRecipeState
         )
     }
 
