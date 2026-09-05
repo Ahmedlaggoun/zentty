@@ -499,6 +499,7 @@
 		C9ED7FA8D89698D7E7644E36 /* LibghosttySelectionAutoscrollController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4069DF835DCBC34EAFA18963 /* LibghosttySelectionAutoscrollController.swift */; };
 		C9F0082D206C318AE7D98831 /* WorklaneStoreServerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 630B5B3D8685C9D8A186AC9B /* WorklaneStoreServerTests.swift */; };
 		C9F8CE96C0B0E64D7F39EF5F /* DroidEventAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9C60A209D61BAD91EDFF14CF /* DroidEventAdapter.swift */; };
+		CB0C2CB05FF50159D35A04D9 /* CloseConfirmationSelection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6BE40F31B76E5EA4A9A830CB /* CloseConfirmationSelection.swift */; };
 		CB79F077F87E4A504CBEA9B9 /* RootViewControllerUpdateIntegrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC28F1EA0D7841668F8DA676 /* RootViewControllerUpdateIntegrationTests.swift */; };
 		CBA82B1C9557F98AD04A8672 /* SidebarPaneRowViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = C9407DEA6B0DE6363B46DE0A /* SidebarPaneRowViews.swift */; };
 		CBE2C88CD30F0D4ED109D6CD /* CodexToolStatusResolver+Interrupt.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7AACA2D053526B314F4EE396 /* CodexToolStatusResolver+Interrupt.swift */; };
@@ -922,6 +923,7 @@
 		6960333F9BE4F448FCA1D1A5 /* AgentConsentCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentConsentCoordinator.swift; sourceTree = "<group>"; };
 		69E99517E9EAA4D99552859C /* WorkspaceTemplate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceTemplate.swift; sourceTree = "<group>"; };
 		6BC138BE273ED92291124633 /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
+		6BE40F31B76E5EA4A9A830CB /* CloseConfirmationSelection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloseConfirmationSelection.swift; sourceTree = "<group>"; };
 		6C5489AD4C2AF3E168C216B4 /* WorklaneDestinationCatalog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorklaneDestinationCatalog.swift; sourceTree = "<group>"; };
 		6CE07AB1014F599610545628 /* CodexToolStatusResolver+ShellReturn.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "CodexToolStatusResolver+ShellReturn.swift"; sourceTree = "<group>"; };
 		6D46D74C2BFDAC52C678BDB1 /* TerminalMetadata.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalMetadata.swift; sourceTree = "<group>"; };
@@ -1400,6 +1402,7 @@
 			isa = PBXGroup;
 			children = (
 				AAE5397C365594A855625BE1 /* CloseConfirmationContext.swift */,
+				6BE40F31B76E5EA4A9A830CB /* CloseConfirmationSelection.swift */,
 				E706A2076EAD5DD8C5AD0882 /* NotificationSoundManager.swift */,
 				9E06B6AF9A2D4A3F2872F62E /* NotificationStore.swift */,
 				E101FFDD49FF6625AC16DDED /* PaneAuxiliaryState.swift */,
@@ -2834,6 +2837,7 @@
 				FBDA06CC21019E395A19A6ED /* CleanCopyURLHelpers.swift in Sources */,
 				85AA36B075A627B684DA8C88 /* CloseConfirmationContext.swift in Sources */,
 				65F7A5CB3F1EF2571AADB53F /* CloseConfirmationCopy.swift in Sources */,
+				CB0C2CB05FF50159D35A04D9 /* CloseConfirmationSelection.swift in Sources */,
 				7C47C97F74DD168347F1CB2F /* ClosedPaneEntry.swift in Sources */,
 				7416113E7130419074A5842C /* ClosedPaneRestoreHelpers.swift in Sources */,
 				2E7726CCE8D1D2DC6D44DB22 /* ClosedPaneStack.swift in Sources */,

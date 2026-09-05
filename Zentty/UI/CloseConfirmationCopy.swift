@@ -53,7 +53,7 @@ struct CloseConfirmationCopy: Equatable {
     // MARK: - Helpers
 
     private static func runningLine(_ context: WorklaneCloseConfirmationContext) -> String {
-        let names = context.runningActivities.joined(separator: ", ")
+        let names = groupedActivityList(context.runningActivities)
 
         if context.paneCount == 1 {
             if let name = context.runningActivities.first {
@@ -75,6 +75,25 @@ struct CloseConfirmationCopy: Equatable {
         }
         let count = context.historyPaneCount
         return "Session history in \(count) \(count == 1 ? "pane" : "panes") will be lost."
+    }
+
+    /// "Claude Code, Claude Code, pnpm dev" reads like a bug; collapse repeats
+    /// into "Claude Code (2), pnpm dev", keeping first-seen order.
+    static func groupedActivityList(_ activities: [String]) -> String {
+        var order: [String] = []
+        var counts: [String: Int] = [:]
+        for activity in activities {
+            if counts[activity] == nil {
+                order.append(activity)
+            }
+            counts[activity, default: 0] += 1
+        }
+        return order
+            .map { name in
+                let count = counts[name] ?? 1
+                return count > 1 ? "\(name) (\(count))" : name
+            }
+            .joined(separator: ", ")
     }
 
     private static func joined(_ reasonLine: String, _ detailLines: [String]) -> String {

@@ -1133,6 +1133,39 @@ final class RootViewCompositionTests: AppKitTestCase {
         )
     }
 
+    func test_restored_window_uses_its_recipe_sidebar_state_while_new_windows_seed_from_config() throws {
+        let configStore = AppConfigStore(
+            fileURL: AppConfigStore.temporaryFileURL(prefix: "ZenttyLogicTests.RootView.RecipeSidebarRestore")
+        )
+        try configStore.update {
+            $0.sidebar.visibility = .pinnedOpen
+            $0.sidebar.width = 340
+        }
+
+        let restored = makeController(
+            configStore: configStore,
+            initialWorkspaceState: WindowWorkspaceState(
+                worklanes: [],
+                activeWorklaneID: nil,
+                sidebar: WorkspaceRecipe.Sidebar(mode: .hidden, width: 260)
+            )
+        )
+        let fresh = makeController(configStore: configStore)
+        for controller in [restored, fresh] {
+            controller.loadViewIfNeeded()
+            controller.view.frame = NSRect(x: 0, y: 0, width: 1400, height: 840)
+            controller.view.layoutSubtreeIfNeeded()
+        }
+
+        XCTAssertEqual(restored.sidebarVisibilityMode, .hidden)
+        XCTAssertEqual(restored.currentSidebarWidth, 260, accuracy: 0.001)
+        XCTAssertEqual(restored.sidebarRecipeState, WorkspaceRecipe.Sidebar(mode: .hidden, width: 260))
+
+        XCTAssertEqual(fresh.sidebarVisibilityMode, .pinnedOpen, "no recipe state: seed from config")
+        XCTAssertEqual(fresh.currentSidebarWidth, 340, accuracy: 0.001)
+        XCTAssertEqual(fresh.sidebarRecipeState, WorkspaceRecipe.Sidebar(mode: .pinnedOpen, width: 340))
+    }
+
     func test_root_controller_restores_persisted_sidebar_width() {
         let defaults = SidebarWidthPreference.userDefaults()
         defaults.set(312, forKey: SidebarWidthPreference.persistenceKey)
