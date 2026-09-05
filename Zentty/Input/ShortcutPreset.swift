@@ -331,15 +331,18 @@ extension ShortcutPreset {
 
         // Ghostty binds ⌘1–⌘8 to goto_tab and ⌘9 to last_tab; worklanes are Zentty's tabs.
         // ⌘9 maps to worklane 9 (not "last") so every digit means the same thing.
-        .init(commandID: .selectWorklane1, key: .character("1"), modifiers: [.command]),
-        .init(commandID: .selectWorklane2, key: .character("2"), modifiers: [.command]),
-        .init(commandID: .selectWorklane3, key: .character("3"), modifiers: [.command]),
-        .init(commandID: .selectWorklane4, key: .character("4"), modifiers: [.command]),
-        .init(commandID: .selectWorklane5, key: .character("5"), modifiers: [.command]),
-        .init(commandID: .selectWorklane6, key: .character("6"), modifiers: [.command]),
-        .init(commandID: .selectWorklane7, key: .character("7"), modifiers: [.command]),
-        .init(commandID: .selectWorklane8, key: .character("8"), modifiers: [.command]),
-        .init(commandID: .selectWorklane9, key: .character("9"), modifiers: [.command]),
+        // Physical key codes, like every other number-row preset entry: Ghostty binds
+        // `super+physical:one`, and logical "1" never matches on layouts whose unshifted
+        // number row is punctuation (AZERTY gives `&`, `é`, `"`, …).
+        .init(commandID: .selectWorklane1, keyCode: UInt16(kVK_ANSI_1), keyKind: .character, modifiers: [.command]),
+        .init(commandID: .selectWorklane2, keyCode: UInt16(kVK_ANSI_2), keyKind: .character, modifiers: [.command]),
+        .init(commandID: .selectWorklane3, keyCode: UInt16(kVK_ANSI_3), keyKind: .character, modifiers: [.command]),
+        .init(commandID: .selectWorklane4, keyCode: UInt16(kVK_ANSI_4), keyKind: .character, modifiers: [.command]),
+        .init(commandID: .selectWorklane5, keyCode: UInt16(kVK_ANSI_5), keyKind: .character, modifiers: [.command]),
+        .init(commandID: .selectWorklane6, keyCode: UInt16(kVK_ANSI_6), keyKind: .character, modifiers: [.command]),
+        .init(commandID: .selectWorklane7, keyCode: UInt16(kVK_ANSI_7), keyKind: .character, modifiers: [.command]),
+        .init(commandID: .selectWorklane8, keyCode: UInt16(kVK_ANSI_8), keyKind: .character, modifiers: [.command]),
+        .init(commandID: .selectWorklane9, keyCode: UInt16(kVK_ANSI_9), keyKind: .character, modifiers: [.command]),
 
         // Panes (Ghostty surfaces and splits)
         .init(commandID: .closeFocusedPane, key: .character("w"), modifiers: [.command]),

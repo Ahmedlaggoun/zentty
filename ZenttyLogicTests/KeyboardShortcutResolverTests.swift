@@ -860,6 +860,49 @@ final class KeyboardShortcutResolverTests: XCTestCase {
         XCTAssertEqual(manager.shortcut(for: .focusNextPane), .init(key: .character("]"), modifiers: [.command]))
     }
 
+    func test_ghostty_compatible_preset_binds_worklane_digits_to_physical_number_row_keys() throws {
+        let preset = try XCTUnwrap(ShortcutPreset(rawValue: "ghosttyCompatible"))
+        let worklaneCommandIDs: [AppCommandID] = [
+            .selectWorklane1, .selectWorklane2, .selectWorklane3, .selectWorklane4, .selectWorklane5,
+            .selectWorklane6, .selectWorklane7, .selectWorklane8, .selectWorklane9,
+        ]
+        let expectedKeyCodes: [UInt16] = [
+            kVK_ANSI_1, kVK_ANSI_2, kVK_ANSI_3, kVK_ANSI_4, kVK_ANSI_5,
+            kVK_ANSI_6, kVK_ANSI_7, kVK_ANSI_8, kVK_ANSI_9,
+        ].map(UInt16.init)
+
+        for (commandID, expectedKeyCode) in zip(worklaneCommandIDs, expectedKeyCodes) {
+            let entry = try XCTUnwrap(preset.entries.first { $0.commandID == commandID })
+            guard case let .physical(keyCode, .character) = entry.key else {
+                XCTFail("\(commandID) must be a physical number-row key, got \(entry.key)")
+                continue
+            }
+            XCTAssertEqual(keyCode, expectedKeyCode, "Unexpected key code for \(commandID)")
+        }
+
+        // AZERTY-style layout: the unshifted number row is punctuation, digits need Shift.
+        // Ghostty's `super+physical:one` keeps working there; the preset must resolve the
+        // digit through the layout instead of dying on a logical "1".
+        let azertyUnshiftedRow = ["&", "é", "\"", "'", "(", "§", "è", "!", "ç"]
+        var azertyLikeOutputs: [StubKeyboardPreviewSourceProvider.Output] = []
+        for (index, keyCode) in expectedKeyCodes.enumerated() {
+            azertyLikeOutputs.append(.init(keyCode: keyCode, modifiers: [], value: azertyUnshiftedRow[index]))
+            azertyLikeOutputs.append(.init(keyCode: keyCode, modifiers: [.shift], value: "\(index + 1)"))
+        }
+        let azertyBindings = ShortcutPresetResolver(
+            sourceProvider: StubKeyboardPreviewSourceProvider(geometry: .iso, outputs: azertyLikeOutputs)
+        ).resolve(preset)
+        let azertyManager = ShortcutManager(shortcuts: .init(bindings: azertyBindings))
+
+        for (index, commandID) in worklaneCommandIDs.enumerated() {
+            XCTAssertEqual(
+                azertyManager.shortcut(for: commandID),
+                .init(key: .character("\(index + 1)"), modifiers: [.command, .shift]),
+                "Worklane \(index + 1) should resolve through the shifted digit on an AZERTY-style layout"
+            )
+        }
+    }
+
     func test_preview_resolver_maps_option_modified_character_to_physical_key() {
         let resolver = KeyboardLayoutPreviewResolver(
             sourceProvider: StubKeyboardPreviewSourceProvider(
