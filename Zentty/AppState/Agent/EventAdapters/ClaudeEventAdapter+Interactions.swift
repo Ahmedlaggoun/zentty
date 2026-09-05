@@ -11,12 +11,20 @@ extension AgentEventBridge {
     static func claudeShouldKeepPendingInteraction(
         existing: ClaudeHookSessionRecord?,
         completedToolUseID: String?,
-        completedToolName: String? = nil
+        completedToolName: String? = nil,
+        completedAgentID: String? = nil
     ) -> Bool {
         guard let existing,
               existing.structuredInteractionKind?.requiresHumanAttention == true
         else {
             return false
+        }
+        // A tool finishing inside another agent context (a subagent while the
+        // parent's prompt is open, or vice versa) says nothing about the
+        // prompt.
+        if AgentInteractionClassifier.trimmed(existing.lastStructuredInteractionAgentID)
+            != AgentInteractionClassifier.trimmed(completedAgentID) {
+            return true
         }
         if let pendingToolUseID = existing.lastStructuredInteractionToolUseID,
            let completedToolUseID = AgentInteractionClassifier.trimmed(completedToolUseID) {
@@ -29,21 +37,60 @@ extension AgentEventBridge {
         return false
     }
 
-    /// `tool_use_id` for a PermissionRequest, taken from the PreToolUse that
-    /// announced the same tool call (same tool, same agent context).
+    /// `tool_use_id` for a PermissionRequest, taken from the oldest unclaimed
+    /// PreToolUse that announced the same tool in the same agent context.
+    /// Oldest because Claude Code fires PreToolUse for a whole parallel batch
+    /// before the first prompt: the call that needs approval was announced
+    /// before the allowlisted siblings that followed it.
     static func claudeInheritedPreToolUseID(
         input: ClaudeAdapterInput,
         existing: ClaudeHookSessionRecord?
     ) -> String? {
         guard let existing,
-              let preToolUseID = existing.lastPreToolUseID,
-              let toolName = AgentInteractionClassifier.trimmed(input.toolName),
-              existing.lastPreToolUseToolName == toolName,
-              existing.lastPreToolUseAgentID == AgentInteractionClassifier.trimmed(input.agentID)
+              let toolName = AgentInteractionClassifier.trimmed(input.toolName)
         else {
             return nil
         }
-        return preToolUseID
+        return existing.preToolUseSlots(agentID: input.agentID)
+            .first(where: { $0.toolName == toolName })?
+            .toolUseID
+    }
+
+    /// Whether a PreToolUse fired from another agent context while a prompt
+    /// is open. A subagent's Edit must not wipe the parent's permission
+    /// dialog (nor the parent's Bash a subagent's AskUserQuestion).
+    static func claudePreToolUseBelongsToOtherAgent(
+        input: ClaudeAdapterInput,
+        existing: ClaudeHookSessionRecord?
+    ) -> Bool {
+        guard let existing,
+              existing.structuredInteractionKind?.requiresHumanAttention == true
+        else {
+            return false
+        }
+        return AgentInteractionClassifier.trimmed(existing.lastStructuredInteractionAgentID)
+            != AgentInteractionClassifier.trimmed(input.agentID)
+    }
+
+    /// `tool_use_id` already stored for the open prompt when a PermissionRequest
+    /// re-describes the same tool call: PreToolUse(AskUserQuestion) carries the
+    /// id, the PermissionRequest that follows it does not, and no PreToolUse
+    /// slot exists for it (AskUserQuestion is not in the Bash/Write/Edit
+    /// matcher set). Losing the id here would drop the sibling check back to
+    /// tool-name matching.
+    static func claudeRetainedStructuredToolUseID(
+        input: ClaudeAdapterInput,
+        existing: ClaudeHookSessionRecord?
+    ) -> String? {
+        guard let existing,
+              let toolName = AgentInteractionClassifier.trimmed(input.toolName),
+              existing.lastStructuredInteractionToolName == toolName,
+              AgentInteractionClassifier.trimmed(existing.lastStructuredInteractionAgentID)
+                == AgentInteractionClassifier.trimmed(input.agentID)
+        else {
+            return nil
+        }
+        return existing.lastStructuredInteractionToolUseID
     }
 
     static func claudeDescribePermissionRequest(

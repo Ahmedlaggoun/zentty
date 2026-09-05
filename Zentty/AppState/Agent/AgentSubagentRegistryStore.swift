@@ -27,19 +27,38 @@ final class AgentSubagentRegistryStore {
         var rawValue: String {
             "\(tool)|\(worklaneID.rawValue)|\(paneID.rawValue)"
         }
+
+        /// Tools whose parent turn does not outlive its children, so a child
+        /// transcript that stops being written is the only finish signal
+        /// short of its stop hook. Codex is not listed: its parent turn ends
+        /// after every sub-thread and `clear` retires the set, while a
+        /// sub-thread parked between turns keeps a quiet rollout file.
+        static let toolsWithObservableTranscriptLiveness: Set<String> = ["claude", "grok"]
+
+        /// Whether a quiet transcript retires this pane's entries.
+        var transcriptIsLivenessSignal: Bool {
+            Self.toolsWithObservableTranscriptLiveness.contains(tool)
+        }
     }
 
     /// Entries older than this are dropped on read: a `SubagentStop` that never
     /// arrived should not pin a badge to the sidebar forever. Only reached by
-    /// entries whose transcript cannot be observed.
+    /// entries whose transcript cannot be observed (or whose tool opts out of
+    /// transcript liveness, see `Key.transcriptIsLivenessSignal`).
     static let staleEntryWindow: TimeInterval = 6 * 60 * 60
 
     /// An entry whose transcript exists but has not been written for this long
     /// is treated as finished. A child parked in a long tool call can trip
-    /// this; its next hook re-registers it.
+    /// this; its next hook re-registers it. Only applied to tools whose
+    /// transcript is a liveness signal (`Key.transcriptIsLivenessSignal`).
     static let transcriptQuietWindow: TimeInterval = 15 * 60
 
-    private let stateURL: URL
+    /// How many liveness-pruned ids a pane remembers, so a late stop hook
+    /// from a retired child is recognised instead of retiring a sibling.
+    static let prunedIDMemory = 32
+
+    /// Where the registry lives; exposed so tests can check the resolution.
+    let stateURL: URL
     private let lockURL: URL
     private let fileManager: FileManager
     private let encoder = JSONEncoder()
@@ -69,10 +88,29 @@ final class AgentSubagentRegistryStore {
         processInfo: ProcessInfo = .processInfo,
         fileManager: FileManager = .default
     ) {
-        let env = processInfo.environment
-        if let overridePath = env["ZENTTY_SUBAGENT_STATE_PATH"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+        self.init(environment: processInfo.environment, fileManager: fileManager)
+    }
+
+    convenience init(
+        environment: [String: String],
+        fileManager: FileManager = .default
+    ) {
+        if let overridePath = environment["ZENTTY_SUBAGENT_STATE_PATH"]?.trimmingCharacters(in: .whitespacesAndNewlines),
            !overridePath.isEmpty {
             self.init(stateURL: URL(fileURLWithPath: NSString(string: overridePath).expandingTildeInPath), fileManager: fileManager)
+            return
+        }
+
+        // Under XCTest (same detection as main.swift) the adapters' default
+        // store must never touch the real registry: tests that call an adapter
+        // without injecting a store would otherwise write fixture pane keys
+        // into ~/Library/Application Support. One file per test process keeps
+        // parallel runners apart.
+        if environment["XCTestConfigurationFilePath"] != nil {
+            let directory = fileManager.temporaryDirectory
+                .appendingPathComponent("zentty-tests-\(ProcessInfo.processInfo.processIdentifier)", isDirectory: true)
+            try? fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+            self.init(stateURL: directory.appendingPathComponent("agent-subagent-sessions.json", isDirectory: false), fileManager: fileManager)
             return
         }
 
@@ -118,6 +156,7 @@ final class AgentSubagentRegistryStore {
             var entry = state.panes[key.rawValue] ?? PaneEntry()
             prune(&entry, key: key)
             let existing = entry.subagentsByID[subagent.id]
+            entry.forgetPruned(subagent.id)
             entry.subagentsByID[subagent.id] = SubagentRecord(
                 entry: Self.merged(existing?.entry, with: subagent),
                 startedAt: existing?.startedAt ?? now().timeIntervalSince1970
@@ -131,16 +170,27 @@ final class AgentSubagentRegistryStore {
         }
     }
 
+    /// Retire a subagent. An explicit id that matches nothing is a no-op (the
+    /// entry was already retired, or belongs to a child we never saw start).
+    /// Without an id the longest-running subagent goes; `retireOldestWhenUnknown`
+    /// extends that fallback to an id the adapter only guessed (a child's
+    /// session id standing in for a missing subagent id), so a stop hook
+    /// always retires something when the guess misses. A guess that names a
+    /// child liveness pruning already retired is a no-op: that stop is late,
+    /// not misattributed, and must not take a live sibling with it.
     @discardableResult
-    func stop(key: Key, subagentID: String?) throws -> PaneAgentSubagentSummary {
+    func stop(key: Key, subagentID: String?, retireOldestWhenUnknown: Bool = false) throws -> PaneAgentSubagentSummary {
         try withLockedState { state in
             var entry = state.panes[key.rawValue] ?? PaneEntry()
             prune(&entry, key: key)
             var removedID: String?
-            if let subagentID = normalizedOptional(subagentID) {
-                removedID = entry.subagentsByID.removeValue(forKey: subagentID) == nil ? nil : subagentID
-            } else if let oldest = entry.subagentsByID.min(by: { $0.value.startedAt < $1.value.startedAt }) {
-                // No id on the stop hook: retire the longest-running subagent.
+            let subagentID = normalizedOptional(subagentID)
+            if let subagentID, entry.subagentsByID.removeValue(forKey: subagentID) != nil {
+                removedID = subagentID
+            } else if subagentID == nil || (retireOldestWhenUnknown && !entry.wasPruned(subagentID)),
+                      let oldest = entry.subagentsByID.min(by: { $0.value.startedAt < $1.value.startedAt }) {
+                // No (trustworthy) id on the stop hook: retire the
+                // longest-running subagent.
                 entry.subagentsByID.removeValue(forKey: oldest.key)
                 removedID = oldest.key
             }
@@ -208,6 +258,7 @@ final class AgentSubagentRegistryStore {
             var entry = state.panes[key.rawValue] ?? PaneEntry()
             let dropped = entry.subagentsByID.count
             entry.subagentsByID.removeAll()
+            entry.prunedIDs = nil
             entry.updatedAt = now().timeIntervalSince1970
             state.panes[key.rawValue] = entry
             subagentRegistryLogger.info(
@@ -231,7 +282,8 @@ final class AgentSubagentRegistryStore {
     // MARK: - Liveness
 
     /// Retire entries that are provably finished (transcript exists and went
-    /// quiet) or hopelessly old. Returns whether anything changed.
+    /// quiet, for tools where that means anything) or hopelessly old. Returns
+    /// whether anything changed.
     @discardableResult
     private func prune(_ entry: inout PaneEntry, key: Key) -> Bool {
         let current = now().timeIntervalSince1970
@@ -239,7 +291,8 @@ final class AgentSubagentRegistryStore {
         let quietCutoff = current - Self.transcriptQuietWindow
         var retired: [(id: String, reason: String)] = []
         for (id, record) in entry.subagentsByID {
-            if let path = record.entry.transcriptPath, let modifiedAt = transcriptModificationDate(path) {
+            if key.transcriptIsLivenessSignal,
+               let path = record.entry.transcriptPath, let modifiedAt = transcriptModificationDate(path) {
                 // Observable transcript: it being written is the liveness signal.
                 if modifiedAt.timeIntervalSince1970 < quietCutoff, record.startedAt < quietCutoff {
                     retired.append((id, "quiet-transcript"))
@@ -251,6 +304,7 @@ final class AgentSubagentRegistryStore {
         guard !retired.isEmpty else { return false }
         for item in retired {
             entry.subagentsByID.removeValue(forKey: item.id)
+            entry.rememberPruned(item.id)
             let remaining = entry.subagentsByID.count
             subagentRegistryLogger.info(
                 "subagent retire key=\(key.rawValue, privacy: .public) id=\(item.id, privacy: .public) reason=\(item.reason, privacy: .public) count=\(remaining, privacy: .public)"
@@ -270,9 +324,31 @@ final class AgentSubagentRegistryStore {
         var rootSessionID: String?
         var subagentsByID: [String: SubagentRecord] = [:]
         var updatedAt: TimeInterval = 0
+        /// Ids liveness pruning retired, most recent last. Optional so state
+        /// files written before it existed still decode.
+        var prunedIDs: [String]?
 
         var summary: PaneAgentSubagentSummary {
             PaneAgentSubagentSummary(entries: subagentsByID.values.map(\.entry))
+        }
+
+        func wasPruned(_ id: String?) -> Bool {
+            guard let id else { return false }
+            return prunedIDs?.contains(id) ?? false
+        }
+
+        mutating func rememberPruned(_ id: String) {
+            var ids = prunedIDs ?? []
+            ids.removeAll { $0 == id }
+            ids.append(id)
+            if ids.count > AgentSubagentRegistryStore.prunedIDMemory {
+                ids.removeFirst(ids.count - AgentSubagentRegistryStore.prunedIDMemory)
+            }
+            prunedIDs = ids
+        }
+
+        mutating func forgetPruned(_ id: String) {
+            prunedIDs?.removeAll { $0 == id }
         }
     }
 
@@ -287,7 +363,9 @@ final class AgentSubagentRegistryStore {
             agentType: update.agentType ?? existing?.agentType,
             model: update.model ?? existing?.model,
             nickname: update.nickname ?? existing?.nickname,
-            transcriptPath: update.transcriptPath ?? existing?.transcriptPath
+            // The path recorded at start is the one the hook spelled out; a
+            // later hook may only carry a derived guess, so the first wins.
+            transcriptPath: existing?.transcriptPath ?? update.transcriptPath
         )
     }
 

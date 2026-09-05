@@ -73,8 +73,15 @@ extension AgentEventBridge {
 
         case "subagentstop", "subagent_stop", "subagentend", "subagent_end":
             // The stop hook runs in the child's context, so its session id is
-            // the subagent id when no explicit id field is present.
-            let subagents = try subagentStore.stop(key: subagentKey, subagentID: grokSubagentID(from: jsonObject) ?? sessionID)
+            // the subagent id when no explicit id field is present. That is a
+            // guess, so when it matches nothing the oldest child goes instead;
+            // an explicit id that misses stays a no-op.
+            let explicitSubagentID = grokSubagentID(from: jsonObject)
+            let subagents = try subagentStore.stop(
+                key: subagentKey,
+                subagentID: explicitSubagentID ?? sessionID,
+                retireOldestWhenUnknown: explicitSubagentID == nil
+            )
             return [lifecyclePayload(target: target, toolName: toolName, state: .running, sessionID: sessionID, cwd: cwd, subagents: subagents)]
 
         case "sessionend", "session_end", "end":

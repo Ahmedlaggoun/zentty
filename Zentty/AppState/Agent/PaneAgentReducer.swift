@@ -21,6 +21,10 @@ struct PaneAgentSessionState: Equatable, Sendable {
     var hasObservedRunning: Bool
     var taskProgress: PaneAgentTaskProgress? = nil
     var subagents: PaneAgentSubagentSummary? = nil
+    /// When `subagents` last arrived on a payload. Only hooks carry the set,
+    /// so this (unlike `updatedAt`, which shell and PID signals also bump) is
+    /// the right clock for the in-app liveness cap.
+    var subagentsRefreshedAt: Date? = nil
     var completionCandidateDeadline: Date?
     var idleVisibleUntil: Date?
     var unresolvedStopVisibleUntil: Date?
@@ -127,7 +131,7 @@ struct PaneAgentReducerState: Equatable, Sendable {
 
             // A parent waiting on background subagents is idle but not done:
             // keep it (and its badge) visible until the children retire.
-            let hasLiveSubagents = session.subagents.map { !$0.isEmpty } ?? false
+            let hasLiveSubagents = Self.hasLiveSubagents(session, now: now)
             let shouldExpireIdle = session.state == .idle
                 && session.trackedPID == nil
                 && !hasLiveSubagents
@@ -354,14 +358,25 @@ struct PaneAgentReducerState: Equatable, Sendable {
         return true
     }
 
+    /// Whether the session's last snapshot still counts as live subagents.
+    /// Registry liveness pruning only runs when a hook arrives (the adapters
+    /// run in-app via `AgentIPC.handle`, not on a timer), so a pane whose hooks
+    /// stopped firing would otherwise pin its idle parent forever; the reducer
+    /// needs its own clock cap, and the snapshot expires after the registry's
+    /// own quiet window without a fresh hook refreshing it.
+    private static func hasLiveSubagents(_ session: PaneAgentSessionState, now: Date) -> Bool {
+        guard let subagents = session.subagents, !subagents.isEmpty else { return false }
+        let refreshedAt = session.subagentsRefreshedAt ?? session.updatedAt
+        return now.timeIntervalSince(refreshedAt) < AgentSubagentRegistryStore.transcriptQuietWindow
+    }
+
     func reducedStatus(now: Date = Date()) -> PaneAgentStatus? {
         let sessions = sessionsByID.values.filter { session in
             if session.state == .idle,
                let idleVisibleUntil = session.idleVisibleUntil {
                 // Idle with background subagents still running stays visible;
                 // the idle window only applies once they have retired.
-                let hasLiveSubagents = session.subagents.map { !$0.isEmpty } ?? false
-                return hasLiveSubagents || now <= idleVisibleUntil
+                return Self.hasLiveSubagents(session, now: now) || now <= idleVisibleUntil
             }
 
             if session.state == .unresolvedStop,
@@ -449,6 +464,7 @@ struct PaneAgentReducerState: Equatable, Sendable {
             hasObservedRunning: false,
             taskProgress: payload.taskProgress,
             subagents: payload.subagents,
+            subagentsRefreshedAt: payload.subagents == nil ? nil : now,
             completionCandidateDeadline: nil,
             idleVisibleUntil: nil,
             unresolvedStopVisibleUntil: nil,
@@ -485,7 +501,10 @@ struct PaneAgentReducerState: Equatable, Sendable {
         session.idleVisibleUntil = nil
         session.unresolvedStopVisibleUntil = nil
         session.taskProgress = payload.taskProgress ?? session.taskProgress
-        session.subagents = payload.subagents ?? session.subagents
+        if let subagents = payload.subagents {
+            session.subagents = subagents
+            session.subagentsRefreshedAt = now
+        }
 
         if payload.lifecycleEvent == .stopCandidate {
             session.state = .running
@@ -591,7 +610,10 @@ struct PaneAgentReducerState: Equatable, Sendable {
             session.text = session.text ?? inferredSession.text
             session.transientTextVisibleUntil = session.transientTextVisibleUntil ?? inferredSession.transientTextVisibleUntil
             session.taskProgress = session.taskProgress ?? inferredSession.taskProgress
-            session.subagents = session.subagents ?? inferredSession.subagents
+            if session.subagents == nil {
+                session.subagents = inferredSession.subagents
+                session.subagentsRefreshedAt = inferredSession.subagentsRefreshedAt
+            }
             session.agentLaunchSnapshot = session.agentLaunchSnapshot ?? inferredSession.agentLaunchSnapshot
             if inferredSession.updatedAt > session.updatedAt {
                 session.updatedAt = inferredSession.updatedAt
@@ -619,7 +641,10 @@ struct PaneAgentReducerState: Equatable, Sendable {
         session.transientTextVisibleUntil = session.transientTextVisibleUntil ?? fallbackSession.transientTextVisibleUntil
         session.trackedPID = session.trackedPID ?? fallbackSession.trackedPID
         session.taskProgress = session.taskProgress ?? fallbackSession.taskProgress
-        session.subagents = session.subagents ?? fallbackSession.subagents
+        if session.subagents == nil {
+            session.subagents = fallbackSession.subagents
+            session.subagentsRefreshedAt = fallbackSession.subagentsRefreshedAt
+        }
         session.agentLaunchSnapshot = session.agentLaunchSnapshot ?? fallbackSession.agentLaunchSnapshot
         if session.shellActivityState == .unknown {
             session.shellActivityState = fallbackSession.shellActivityState
@@ -656,6 +681,7 @@ struct PaneAgentReducerState: Equatable, Sendable {
                 hasObservedRunning: false,
                 taskProgress: payload.taskProgress,
                 subagents: payload.subagents,
+                subagentsRefreshedAt: payload.subagents == nil ? nil : now,
                 completionCandidateDeadline: nil,
                 idleVisibleUntil: nil,
                 unresolvedStopVisibleUntil: nil,

@@ -1869,7 +1869,7 @@ final class AgentEventBridgeTests: XCTestCase {
     func test_claude_adapter_session_start_attaches_pid() throws {
         let json = #"{"hook_event_name": "SessionStart", "session_id": "cs1"}"#
         let env = claudeEnvironment(pid: "55")
-        let payloads = try AgentEventBridge.claudeAdapter(data: json.data(using: .utf8)!, environment: env)
+        let payloads = try claudeAdapterPayloads(data: json.data(using: .utf8)!, environment: env)
 
         XCTAssertEqual(payloads.count, 1)
         XCTAssertEqual(payloads[0].signalKind, .pid)
@@ -1879,7 +1879,7 @@ final class AgentEventBridgeTests: XCTestCase {
 
     func test_claude_adapter_stop_transitions_to_idle() throws {
         let json = #"{"hook_event_name": "Stop", "session_id": "cs1"}"#
-        let payloads = try AgentEventBridge.claudeAdapter(data: json.data(using: .utf8)!, environment: claudeEnvironment())
+        let payloads = try claudeAdapterPayloads(data: json.data(using: .utf8)!, environment: claudeEnvironment())
 
         XCTAssertEqual(payloads.count, 1)
         XCTAssertEqual(payloads[0].state, .idle)
@@ -1888,7 +1888,7 @@ final class AgentEventBridgeTests: XCTestCase {
 
     func test_claude_adapter_subagent_stop_is_regular_update() throws {
         let json = #"{"hook_event_name": "SubagentStop", "session_id": "cs1"}"#
-        let payloads = try AgentEventBridge.claudeAdapter(data: json.data(using: .utf8)!, environment: claudeEnvironment())
+        let payloads = try claudeAdapterPayloads(data: json.data(using: .utf8)!, environment: claudeEnvironment())
 
         // A subagent finishing is not the parent's turn ending: the parent
         // still has to consume the result, so the pane stays running.
@@ -1898,7 +1898,7 @@ final class AgentEventBridgeTests: XCTestCase {
 
     func test_claude_adapter_user_prompt_submit_sets_running() throws {
         let json = #"{"hook_event_name": "UserPromptSubmit", "session_id": "cs1"}"#
-        let payloads = try AgentEventBridge.claudeAdapter(data: json.data(using: .utf8)!, environment: claudeEnvironment())
+        let payloads = try claudeAdapterPayloads(data: json.data(using: .utf8)!, environment: claudeEnvironment())
 
         XCTAssertEqual(payloads[0].state, .running)
         XCTAssertEqual(payloads[0].interactionKind, .none)
@@ -1906,7 +1906,7 @@ final class AgentEventBridgeTests: XCTestCase {
 
     func test_claude_adapter_pre_compact_sets_running_compacting_text() throws {
         let json = #"{"hook_event_name": "PreCompact", "session_id": "cs1", "cwd": "/tmp/project", "trigger": "manual"}"#
-        let payloads = try AgentEventBridge.claudeAdapter(data: Data(json.utf8), environment: claudeEnvironment())
+        let payloads = try claudeAdapterPayloads(data: Data(json.utf8), environment: claudeEnvironment())
 
         XCTAssertEqual(payloads.count, 1)
         XCTAssertEqual(payloads[0].state, .running)
@@ -1918,7 +1918,7 @@ final class AgentEventBridgeTests: XCTestCase {
 
     func test_claude_adapter_post_compact_clears_compacting_text() throws {
         let json = #"{"hook_event_name": "PostCompact", "session_id": "cs1", "cwd": "/tmp/project", "trigger": "auto"}"#
-        let payloads = try AgentEventBridge.claudeAdapter(data: Data(json.utf8), environment: claudeEnvironment())
+        let payloads = try claudeAdapterPayloads(data: Data(json.utf8), environment: claudeEnvironment())
 
         XCTAssertEqual(payloads.count, 1)
         XCTAssertEqual(payloads[0].state, .running)
@@ -1939,7 +1939,7 @@ final class AgentEventBridgeTests: XCTestCase {
           }
         }
         """
-        let payloads = try AgentEventBridge.claudeAdapter(data: json.data(using: .utf8)!, environment: claudeEnvironment())
+        let payloads = try claudeAdapterPayloads(data: json.data(using: .utf8)!, environment: claudeEnvironment())
 
         XCTAssertEqual(payloads[0].state, .needsInput)
         XCTAssertEqual(payloads[0].interactionKind, .decision)
@@ -1948,7 +1948,7 @@ final class AgentEventBridgeTests: XCTestCase {
 
     func test_claude_adapter_pre_tool_use_regular_tool_sets_running() throws {
         let json = #"{"hook_event_name": "PreToolUse", "session_id": "cs1", "tool_name": "Edit"}"#
-        let payloads = try AgentEventBridge.claudeAdapter(data: json.data(using: .utf8)!, environment: claudeEnvironment())
+        let payloads = try claudeAdapterPayloads(data: json.data(using: .utf8)!, environment: claudeEnvironment())
 
         XCTAssertEqual(payloads[0].state, .running)
         XCTAssertEqual(payloads[0].interactionKind, .none)
@@ -1956,7 +1956,7 @@ final class AgentEventBridgeTests: XCTestCase {
 
     func test_claude_adapter_permission_request_approval() throws {
         let json = #"{"hook_event_name": "PermissionRequest", "session_id": "cs1", "tool_name": "Bash", "message": "Run npm install?"}"#
-        let payloads = try AgentEventBridge.claudeAdapter(data: json.data(using: .utf8)!, environment: claudeEnvironment())
+        let payloads = try claudeAdapterPayloads(data: json.data(using: .utf8)!, environment: claudeEnvironment())
 
         XCTAssertEqual(payloads[0].state, .needsInput)
         XCTAssertEqual(payloads[0].interactionKind, .approval)
@@ -1965,7 +1965,7 @@ final class AgentEventBridgeTests: XCTestCase {
 
     func test_claude_adapter_post_tool_use_sets_running() throws {
         let json = #"{"hook_event_name": "PostToolUse", "session_id": "cs1", "tool_name": "Read", "tool_use_id": "tu-1", "cwd": "/tmp/project"}"#
-        let payloads = try AgentEventBridge.claudeAdapter(data: json.data(using: .utf8)!, environment: claudeEnvironment())
+        let payloads = try claudeAdapterPayloads(data: json.data(using: .utf8)!, environment: claudeEnvironment())
 
         XCTAssertEqual(payloads.count, 1)
         XCTAssertEqual(payloads.first?.state, .running)
@@ -1976,7 +1976,7 @@ final class AgentEventBridgeTests: XCTestCase {
 
     func test_claude_adapter_post_tool_use_failure_sets_running() throws {
         let json = #"{"hook_event_name": "PostToolUseFailure", "session_id": "cs1", "tool_name": "Bash", "tool_use_id": "tu-1", "error": "exit 1"}"#
-        let payloads = try AgentEventBridge.claudeAdapter(data: json.data(using: .utf8)!, environment: claudeEnvironment())
+        let payloads = try claudeAdapterPayloads(data: json.data(using: .utf8)!, environment: claudeEnvironment())
 
         XCTAssertEqual(payloads.count, 1)
         XCTAssertEqual(payloads.first?.state, .running)
@@ -1985,7 +1985,7 @@ final class AgentEventBridgeTests: XCTestCase {
 
     func test_claude_adapter_unknown_event_returns_empty() throws {
         let json = #"{"hook_event_name": "SomeNewEvent"}"#
-        let payloads = try AgentEventBridge.claudeAdapter(data: json.data(using: .utf8)!, environment: claudeEnvironment())
+        let payloads = try claudeAdapterPayloads(data: json.data(using: .utf8)!, environment: claudeEnvironment())
         XCTAssertTrue(payloads.isEmpty)
     }
 
@@ -2352,6 +2352,27 @@ final class AgentEventBridgeTests: XCTestCase {
         var env = defaultEnvironment
         if let pid { env["ZENTTY_CLAUDE_PID"] = pid }
         return env
+    }
+
+    /// Runs the Claude adapter against temp-dir stores. The default
+    /// `claudeAdapter` path writes to ~/Library/Application Support and left
+    /// test session / subagent entries behind in the real state files.
+    private func claudeAdapterPayloads(data: Data, environment: [String: String]) throws -> [AgentStatusPayload] {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("zentty-claude-bridge-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        return try AgentEventBridge.claudeAdapter(
+            data: data,
+            environment: environment,
+            sessionStore: ClaudeHookSessionStore(
+                stateURL: directory.appendingPathComponent("claude-hook-sessions.json", isDirectory: false)
+            ),
+            subagentStore: AgentSubagentRegistryStore(
+                stateURL: directory.appendingPathComponent("agent-subagent-sessions.json", isDirectory: false),
+                transcriptModificationDate: { _ in nil }
+            )
+        )
     }
 
     private func droidEnvironment(pid: String? = nil) -> [String: String] {

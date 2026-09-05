@@ -178,6 +178,183 @@ final class AgentSubagentTrackingTests: XCTestCase {
         )
     }
 
+    func test_registry_quiet_transcript_retires_claude_but_not_codex() throws {
+        // Codex's parent turn outlives its sub-threads and `clear` retires the
+        // set; a sub-thread parked between turns keeps a quiet rollout file,
+        // so only the stale window applies there.
+        var now = Date(timeIntervalSince1970: 10_000)
+        let quietSince = now
+        let store = try makeRegistryStore(now: { now }, transcriptModificationDate: { _ in quietSince })
+        let codexKey = AgentSubagentRegistryStore.Key(tool: "codex", worklaneID: paneKey.worklaneID, paneID: paneKey.paneID)
+        XCTAssertTrue(paneKey.transcriptIsLivenessSignal)
+        XCTAssertFalse(codexKey.transcriptIsLivenessSignal)
+
+        try store.start(key: paneKey, entry: PaneAgentSubagentEntry(id: "claude-child", transcriptPath: "/t/claude.jsonl"))
+        try store.start(key: codexKey, entry: PaneAgentSubagentEntry(id: "codex-child", transcriptPath: "/t/rollout.jsonl"))
+
+        now = now.addingTimeInterval(AgentSubagentRegistryStore.transcriptQuietWindow + 1)
+        XCTAssertEqual(try store.summary(key: paneKey), .empty, "a quiet Claude transcript retires the entry")
+        XCTAssertEqual(try store.summary(key: codexKey)?.entries.map(\.id), ["codex-child"], "a quiet Codex rollout is not a finish signal")
+
+        now = now.addingTimeInterval(AgentSubagentRegistryStore.staleEntryWindow)
+        XCTAssertEqual(try store.summary(key: codexKey), .empty, "Codex entries still age out on the stale window")
+    }
+
+    func test_registry_fresh_re_registration_survives_stale_transcript_until_quiet_window() throws {
+        // A child re-registered by its own hook is alive even when its
+        // transcript has not been touched for a while (a long tool call); the
+        // quiet window restarts from the re-registration, not the file mtime.
+        var now = Date(timeIntervalSince1970: 10_000)
+        let modifiedAt = now.addingTimeInterval(-(AgentSubagentRegistryStore.transcriptQuietWindow + 100))
+        let store = try makeRegistryStore(now: { now }, transcriptModificationDate: { _ in modifiedAt })
+
+        try store.start(key: paneKey, entry: PaneAgentSubagentEntry(id: "abc", transcriptPath: "/t/abc.jsonl"))
+        XCTAssertEqual(try store.summary(key: paneKey)?.entries.map(\.id), ["abc"], "startedAt is newer than the quiet cutoff")
+
+        now = now.addingTimeInterval(AgentSubagentRegistryStore.transcriptQuietWindow - 1)
+        XCTAssertEqual(try store.summary(key: paneKey)?.entries.map(\.id), ["abc"])
+
+        now = now.addingTimeInterval(2)
+        let pruned = try XCTUnwrap(try store.prunedSummary(key: paneKey))
+        XCTAssertEqual(pruned.summary, .empty, "once the registration itself is older than the window the quiet transcript wins")
+        XCTAssertTrue(pruned.retired)
+    }
+
+    func test_registry_keeps_explicit_transcript_path_over_later_update() throws {
+        let store = try makeRegistryStore()
+        try store.start(key: paneKey, entry: PaneAgentSubagentEntry(id: "a", transcriptPath: "/explicit/agent-a.jsonl"))
+        try store.start(key: paneKey, entry: PaneAgentSubagentEntry(id: "a", agentType: "Explore", transcriptPath: "/derived/subagents/agent-a.jsonl"))
+        let merged = try XCTUnwrap(try store.summary(key: paneKey)?.entries.first)
+        XCTAssertEqual(merged.transcriptPath, "/explicit/agent-a.jsonl", "the first recorded path wins over a later derived one")
+        XCTAssertEqual(merged.agentType, "Explore", "other facts still merge in")
+
+        try store.start(key: paneKey, entry: PaneAgentSubagentEntry(id: "b"))
+        try store.start(key: paneKey, entry: PaneAgentSubagentEntry(id: "b", transcriptPath: "/late/agent-b.jsonl"))
+        XCTAssertEqual(
+            try store.summary(key: paneKey)?.entries.first(where: { $0.id == "b" })?.transcriptPath,
+            "/late/agent-b.jsonl",
+            "a path arriving after a pathless start is still adopted"
+        )
+    }
+
+    func test_registry_stop_with_guessed_id_falls_back_to_oldest() throws {
+        var now = Date(timeIntervalSince1970: 1_000)
+        let store = try makeRegistryStore(now: { now })
+        try store.start(key: paneKey, entry: PaneAgentSubagentEntry(id: "first"))
+        now = now.addingTimeInterval(1)
+        try store.start(key: paneKey, entry: PaneAgentSubagentEntry(id: "second"))
+
+        let explicitMiss = try store.stop(key: paneKey, subagentID: "unknown")
+        XCTAssertEqual(explicitMiss.count, 2, "an explicit id that misses is a no-op")
+
+        let guessedMiss = try store.stop(key: paneKey, subagentID: "unknown", retireOldestWhenUnknown: true)
+        XCTAssertEqual(guessedMiss.entries.map(\.id), ["second"], "a guessed id that misses retires the oldest")
+
+        let guessedHit = try store.stop(key: paneKey, subagentID: "second", retireOldestWhenUnknown: true)
+        XCTAssertEqual(guessedHit, .empty, "a guessed id that matches retires exactly that entry")
+    }
+
+    func test_registry_guessed_stop_for_pruned_id_does_not_retire_a_sibling() throws {
+        var now = Date(timeIntervalSince1970: 10_000)
+        var modifiedAt: [String: Date] = [:]
+        let store = try makeRegistryStore(now: { now }, transcriptModificationDate: { modifiedAt[$0] })
+        try store.start(key: paneKey, entry: PaneAgentSubagentEntry(id: "gone", transcriptPath: "/t/gone.jsonl"))
+        modifiedAt["/t/gone.jsonl"] = now
+        now = now.addingTimeInterval(1)
+        try store.start(key: paneKey, entry: PaneAgentSubagentEntry(id: "busy", transcriptPath: "/t/busy.jsonl"))
+
+        now = now.addingTimeInterval(AgentSubagentRegistryStore.transcriptQuietWindow + 1)
+        modifiedAt["/t/busy.jsonl"] = now
+        XCTAssertEqual(try store.summary(key: paneKey)?.entries.map(\.id), ["busy"], "quiet transcript retired `gone`")
+
+        let lateStop = try store.stop(key: paneKey, subagentID: "gone", retireOldestWhenUnknown: true)
+        XCTAssertEqual(lateStop.entries.map(\.id), ["busy"], "a late stop for a pruned child must not take a sibling")
+
+        let unknownStop = try store.stop(key: paneKey, subagentID: "never-seen", retireOldestWhenUnknown: true)
+        XCTAssertEqual(unknownStop, .empty, "an id that was never pruned still falls back to the oldest")
+
+        // A pruned child re-registering forgets its tombstone.
+        try store.start(key: paneKey, entry: PaneAgentSubagentEntry(id: "gone", transcriptPath: "/t/gone.jsonl"))
+        try store.start(key: paneKey, entry: PaneAgentSubagentEntry(id: "other"))
+        XCTAssertEqual(try store.stop(key: paneKey, subagentID: "gone", retireOldestWhenUnknown: true).entries.map(\.id), ["other"])
+    }
+
+    func test_registry_pruned_id_memory_is_bounded_and_cleared() throws {
+        var now = Date(timeIntervalSince1970: 10_000)
+        let quietSince = now
+        let store = try makeRegistryStore(now: { now }, transcriptModificationDate: { _ in quietSince })
+        let overflow = AgentSubagentRegistryStore.prunedIDMemory + 1
+        for index in 0..<overflow {
+            try store.start(key: paneKey, entry: PaneAgentSubagentEntry(id: "old-\(index)", transcriptPath: "/t/\(index).jsonl"))
+        }
+        now = now.addingTimeInterval(AgentSubagentRegistryStore.transcriptQuietWindow + 1)
+        XCTAssertEqual(try store.summary(key: paneKey), .empty)
+        try store.start(key: paneKey, entry: PaneAgentSubagentEntry(id: "live"))
+
+        // Exactly one of the pruned ids fell out of memory; the rest are tombstones.
+        var retiredLive = 0
+        for index in 0..<overflow {
+            if try store.stop(key: paneKey, subagentID: "old-\(index)", retireOldestWhenUnknown: true).isEmpty {
+                retiredLive += 1
+                try store.start(key: paneKey, entry: PaneAgentSubagentEntry(id: "live"))
+            }
+        }
+        XCTAssertEqual(retiredLive, 1)
+
+        try store.start(key: paneKey, entry: PaneAgentSubagentEntry(id: "fresh", transcriptPath: "/t/fresh.jsonl"))
+        now = now.addingTimeInterval(AgentSubagentRegistryStore.transcriptQuietWindow + 1)
+        _ = try store.summary(key: paneKey)
+        _ = try store.clear(key: paneKey)
+        try store.start(key: paneKey, entry: PaneAgentSubagentEntry(id: "live"))
+        XCTAssertEqual(try store.stop(key: paneKey, subagentID: "fresh", retireOldestWhenUnknown: true), .empty, "clear drops the tombstones too")
+    }
+
+    func test_attach_subagents_leaves_long_standing_empty_registry_untouched() throws {
+        var now = Date(timeIntervalSince1970: 10_000)
+        var modifiedAt: [String: Date] = [:]
+        let store = try makeRegistryStore(now: { now }, transcriptModificationDate: { modifiedAt[$0] })
+        let target: (windowID: WindowID?, worklaneID: WorklaneID, paneID: PaneID) = (nil, paneKey.worklaneID, paneKey.paneID)
+        let running = [AgentEventBridge.lifecyclePayload(target: target, toolName: "Claude Code", state: .running)]
+
+        try store.start(key: paneKey, entry: PaneAgentSubagentEntry(id: "a"))
+        try store.stop(key: paneKey, subagentID: "a")
+        let untouched = try AgentEventBridge.attachSubagents(to: running, key: paneKey, subagentStore: store) { _ in nil }
+        XCTAssertNil(untouched.first?.subagents, "an empty set that is not news stays off the payload")
+
+        try store.start(key: paneKey, entry: PaneAgentSubagentEntry(id: "b", transcriptPath: "/t/b.jsonl"))
+        modifiedAt["/t/b.jsonl"] = now
+        now = now.addingTimeInterval(AgentSubagentRegistryStore.transcriptQuietWindow + 1)
+        let retired = try AgentEventBridge.attachSubagents(to: running, key: paneKey, subagentStore: store) { _ in nil }
+        XCTAssertEqual(retired.first?.subagents, .empty, "a set that just emptied travels explicitly")
+
+        let again = try AgentEventBridge.attachSubagents(to: running, key: paneKey, subagentStore: store) { _ in nil }
+        XCTAssertNil(again.first?.subagents, "the next read is a long-standing empty again")
+    }
+
+    func test_default_store_resolves_away_from_application_support_under_xctest() throws {
+        let fileManager = FileManager.default
+        let temporary = fileManager.temporaryDirectory.standardizedFileURL.path
+        let appSupport = try XCTUnwrap(fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first)
+            .appendingPathComponent("Zentty", isDirectory: true).standardizedFileURL.path
+
+        let underTests = AgentSubagentRegistryStore(environment: ["XCTestConfigurationFilePath": "/x/config.xctestconfiguration"])
+        XCTAssertTrue(underTests.stateURL.standardizedFileURL.path.hasPrefix(temporary), "\(underTests.stateURL.path)")
+        XCTAssertTrue(underTests.stateURL.path.contains("zentty-tests-\(ProcessInfo.processInfo.processIdentifier)"))
+        XCTAssertTrue(fileManager.fileExists(atPath: underTests.stateURL.deletingLastPathComponent().path), "per-process directory is created")
+
+        let inApp = AgentSubagentRegistryStore(environment: [:])
+        XCTAssertEqual(inApp.stateURL.standardizedFileURL.path, appSupport + "/agent-subagent-sessions.json")
+
+        let overridden = AgentSubagentRegistryStore(environment: [
+            "XCTestConfigurationFilePath": "/x/config.xctestconfiguration",
+            "ZENTTY_SUBAGENT_STATE_PATH": "/custom/registry.json",
+        ])
+        XCTAssertEqual(overridden.stateURL.path, "/custom/registry.json", "the explicit override still wins")
+
+        // The real test process must be routed too, not just a stubbed one.
+        XCTAssertTrue(AgentSubagentRegistryStore().stateURL.standardizedFileURL.path.hasPrefix(temporary))
+    }
+
     // MARK: - Model resolver
 
     func test_claude_model_resolver_prefers_meta_sidecar_then_transcript() throws {
@@ -524,6 +701,27 @@ final class AgentSubagentTrackingTests: XCTestCase {
         XCTAssertEqual(payloads.first?.subagents?.entries.first?.modelLabel, "astra")
     }
 
+    func test_codex_quiet_rollout_keeps_subagent_until_stop() throws {
+        var now = Date(timeIntervalSince1970: 10_000)
+        let quietSince = now
+        let subagentStore = try makeRegistryStore(now: { now }, transcriptModificationDate: { _ in quietSince })
+        _ = try codexPayloads(#"{"hook_event_name":"SessionStart","session_id":"root"}"#, subagentStore: subagentStore)
+        _ = try codexPayloads(
+            #"{"hook_event_name":"SubagentStart","session_id":"child","agent_id":"thread-1","agent_transcript_path":"/t/rollout-thread-1.jsonl"}"#,
+            subagentStore: subagentStore
+        )
+
+        now = now.addingTimeInterval(AgentSubagentRegistryStore.transcriptQuietWindow + 1)
+        let toolHook = try codexPayloads(#"{"hook_event_name":"PostToolUse","session_id":"root"}"#, subagentStore: subagentStore)
+        XCTAssertEqual(toolHook.first?.subagents?.entries.map(\.id), ["thread-1"], "a quiet rollout does not retire a Codex sub-thread")
+
+        let stopped = try codexPayloads(
+            #"{"hook_event_name":"SubagentStop","session_id":"child","agent_id":"thread-1"}"#,
+            subagentStore: subagentStore
+        )
+        XCTAssertEqual(stopped.first?.subagents, .empty)
+    }
+
     // MARK: - Grok adapter
 
     func test_grok_subagent_hooks_track_count() throws {
@@ -581,6 +779,56 @@ final class AgentSubagentTrackingTests: XCTestCase {
         XCTAssertNil(AgentEventBridge.grokSubagentTranscriptPath(parentTranscriptPath: "/updates.jsonl", subagentID: "x"))
     }
 
+    func test_grok_subagent_stop_by_session_id_falls_back_to_oldest_child() throws {
+        var now = Date(timeIntervalSince1970: 1_000)
+        let subagentStore = try makeRegistryStore(now: { now })
+        func grok(_ json: String) throws -> [AgentStatusPayload] {
+            try AgentEventBridge.grokAdapter(data: Data(json.utf8), environment: environment, subagentStore: subagentStore)
+        }
+        _ = try grok(#"{"hook_event_name":"SubagentStart","sessionId":"parent","subagentId":"child-1"}"#)
+        now = now.addingTimeInterval(1)
+        _ = try grok(#"{"hook_event_name":"SubagentStart","sessionId":"parent","subagentId":"child-2"}"#)
+
+        // The stop hook runs in the child's context: its session id is the child.
+        let byChildSession = try grok(#"{"hook_event_name":"SubagentStop","sessionId":"child-2"}"#)
+        XCTAssertEqual(byChildSession.first?.subagents?.entries.map(\.id), ["child-1"])
+
+        now = now.addingTimeInterval(1)
+        _ = try grok(#"{"hook_event_name":"SubagentStart","sessionId":"parent","subagentId":"child-3"}"#)
+
+        // A session id that matches nothing was only a guess: retire the oldest.
+        let byUnknownSession = try grok(#"{"hook_event_name":"SubagentStop","sessionId":"parent"}"#)
+        XCTAssertEqual(byUnknownSession.first?.subagents?.entries.map(\.id), ["child-3"])
+
+        // An explicit subagent id that misses stays a no-op.
+        let byUnknownExplicit = try grok(#"{"hook_event_name":"SubagentStop","sessionId":"parent","subagentId":"never-started"}"#)
+        XCTAssertEqual(byUnknownExplicit.first?.subagents?.entries.map(\.id), ["child-3"])
+    }
+
+    func test_grok_late_stop_from_pruned_child_leaves_siblings_alone() throws {
+        var now = Date(timeIntervalSince1970: 1_000)
+        var modifiedAt: [String: Date] = [:]
+        let subagentStore = try makeRegistryStore(now: { now }, transcriptModificationDate: { modifiedAt[$0] })
+        func grok(_ json: String) throws -> [AgentStatusPayload] {
+            try AgentEventBridge.grokAdapter(data: Data(json.utf8), environment: environment, subagentStore: subagentStore)
+        }
+        let parentTranscript = "/Users/me/.grok/sessions/cwd/parent/updates.jsonl"
+        _ = try grok(#"{"hook_event_name":"SubagentStart","sessionId":"parent","subagentId":"A","transcriptPath":"\#(parentTranscript)"}"#)
+        modifiedAt["/Users/me/.grok/sessions/cwd/A/updates.jsonl"] = now
+        now = now.addingTimeInterval(1)
+        _ = try grok(#"{"hook_event_name":"SubagentStart","sessionId":"parent","subagentId":"B","transcriptPath":"\#(parentTranscript)"}"#)
+
+        now = now.addingTimeInterval(AgentSubagentRegistryStore.transcriptQuietWindow + 1)
+        modifiedAt["/Users/me/.grok/sessions/cwd/B/updates.jsonl"] = now
+        let pruned = try grok(#"{"hook_event_name":"Stop","sessionId":"parent"}"#)
+        XCTAssertEqual(pruned.first?.subagents?.entries.map(\.id), ["B"], "A's quiet transcript retired it")
+
+        // A's stop hook arrives late, carrying only its session id.
+        let lateStop = try grok(#"{"hook_event_name":"SubagentStop","sessionId":"A"}"#)
+        XCTAssertEqual(lateStop.first?.subagents?.entries.map(\.id), ["B"], "a late stop for a pruned child must not retire B")
+        XCTAssertEqual(lateStop.first?.subagents?.count, 1)
+    }
+
     func test_grok_hooks_installer_registers_subagent_events_without_matcher() {
         XCTAssertTrue(GrokHooksInstaller.defaultManagedEvents.contains("SubagentStart"))
         XCTAssertTrue(GrokHooksInstaller.defaultManagedEvents.contains("SubagentStop"))
@@ -621,6 +869,93 @@ final class AgentSubagentTrackingTests: XCTestCase {
         XCTAssertNil(reducerState.reducedStatus(now: afterSecondWindow), "normal idle expiry resumes once the subagents retire")
     }
 
+    func test_reducer_subagent_snapshot_expires_without_fresh_hooks() {
+        // Registry pruning only runs when a hook arrives, not on a timer. If
+        // none fire (the children died, the pane was left alone), the reducer's
+        // snapshot must not pin the idle parent forever: it ages out on the
+        // registry's own quiet window.
+        let startedAt = Date(timeIntervalSince1970: 100)
+        var reducerState = PaneAgentReducerState()
+        let summary = PaneAgentSubagentSummary(entries: [PaneAgentSubagentEntry(id: "a", model: "claude-opus-5")])
+        reducerState.apply(claudePayload(state: .running, subagents: summary), now: startedAt)
+        let idleAt = startedAt.addingTimeInterval(1)
+        reducerState.apply(claudePayload(state: .idle, subagents: summary), now: idleAt)
+
+        let insideWindow = idleAt.addingTimeInterval(AgentSubagentRegistryStore.transcriptQuietWindow - 1)
+        reducerState.sweep(now: insideWindow, isProcessAlive: { _ in true })
+        XCTAssertEqual(reducerState.reducedStatus(now: insideWindow)?.subagents, summary, "still live inside the quiet window")
+
+        let pastWindow = idleAt.addingTimeInterval(AgentSubagentRegistryStore.transcriptQuietWindow + 1)
+        // Shell activity bumps `updatedAt` but is not a hook: it must not
+        // re-arm the badge.
+        reducerState.apply(shellPayload(.promptIdle), now: pastWindow)
+        XCTAssertNil(reducerState.reducedStatus(now: pastWindow), "an unrefreshed snapshot no longer counts as live")
+        reducerState.sweep(now: pastWindow, isProcessAlive: { _ in true })
+        XCTAssertTrue(reducerState.sessionsByID.isEmpty, "sweep retires the idle parent once the snapshot expired")
+    }
+
+    func test_reducer_subagent_snapshot_clock_is_the_last_hook_not_the_last_signal() {
+        let startedAt = Date(timeIntervalSince1970: 100)
+        var reducerState = PaneAgentReducerState()
+        let summary = PaneAgentSubagentSummary(entries: [PaneAgentSubagentEntry(id: "a", model: "claude-opus-5")])
+        reducerState.apply(claudePayload(state: .running, subagents: summary), now: startedAt)
+        let idleAt = startedAt.addingTimeInterval(1)
+        reducerState.apply(claudePayload(state: .idle, subagents: summary), now: idleAt)
+
+        // Shell signals keep arriving right up to the window's edge...
+        let lastShell = idleAt.addingTimeInterval(AgentSubagentRegistryStore.transcriptQuietWindow - 1)
+        reducerState.apply(shellPayload(.promptIdle), now: lastShell)
+        XCTAssertEqual(reducerState.reducedStatus(now: lastShell)?.subagents, summary)
+
+        // ...and still do not stretch the badge past it.
+        let pastWindow = idleAt.addingTimeInterval(AgentSubagentRegistryStore.transcriptQuietWindow + 1)
+        XCTAssertNil(reducerState.reducedStatus(now: pastWindow), "only a payload carrying subagents refreshes the cap")
+
+        // A hook carrying the set does.
+        reducerState.apply(claudePayload(state: .idle, subagents: summary), now: pastWindow)
+        XCTAssertEqual(reducerState.reducedStatus(now: pastWindow.addingTimeInterval(1))?.subagents, summary)
+    }
+
+    func test_reducer_subagent_snapshot_expires_with_tracked_pid_alive() {
+        let startedAt = Date(timeIntervalSince1970: 100)
+        var reducerState = PaneAgentReducerState()
+        let summary = PaneAgentSubagentSummary(entries: [PaneAgentSubagentEntry(id: "a", model: "claude-opus-5")])
+        reducerState.apply(claudePayload(state: .running, subagents: summary), now: startedAt)
+        reducerState.apply(
+            AgentStatusPayload(
+                worklaneID: WorklaneID("worklane-main"),
+                paneID: PaneID("pane-shell"),
+                signalKind: .pid,
+                state: nil,
+                pid: 4242,
+                pidEvent: .attach,
+                origin: .explicitAPI,
+                toolName: "Claude Code",
+                text: nil,
+                sessionID: "session-1",
+                artifactKind: nil,
+                artifactLabel: nil,
+                artifactURL: nil
+            ),
+            now: startedAt.addingTimeInterval(0.5)
+        )
+        let idleAt = startedAt.addingTimeInterval(1)
+        reducerState.apply(claudePayload(state: .idle, subagents: summary), now: idleAt)
+
+        let afterIdleWindow = idleAt.addingTimeInterval(PaneAgentReducerState.idleVisibilityWindow + 1)
+        reducerState.sweep(now: afterIdleWindow, isProcessAlive: { _ in true })
+        let visible = reducerState.reducedStatus(now: afterIdleWindow)
+        XCTAssertEqual(visible?.state, .idle)
+        XCTAssertEqual(visible?.trackedPID, 4242)
+        XCTAssertEqual(visible?.subagents, summary)
+
+        let pastWindow = idleAt.addingTimeInterval(AgentSubagentRegistryStore.transcriptQuietWindow + 1)
+        reducerState.apply(shellPayload(.promptIdle), now: pastWindow)
+        reducerState.sweep(now: pastWindow, isProcessAlive: { _ in true })
+        XCTAssertNil(reducerState.reducedStatus(now: pastWindow), "the badge cannot keep an idle pane visible past the quiet window")
+        XCTAssertEqual(reducerState.sessionsByID.count, 1, "the live process keeps the session itself around")
+    }
+
     // MARK: - Helpers
 
     private func claudePayload(state: PaneAgentState, subagents: PaneAgentSubagentSummary?) -> AgentStatusPayload {
@@ -634,6 +969,23 @@ final class AgentSubagentTrackingTests: XCTestCase {
             confidence: .explicit,
             sessionID: "session-1",
             subagents: subagents,
+            artifactKind: nil,
+            artifactLabel: nil,
+            artifactURL: nil
+        )
+    }
+
+    private func shellPayload(_ shellActivityState: PaneShellActivityState) -> AgentStatusPayload {
+        AgentStatusPayload(
+            worklaneID: WorklaneID("worklane-main"),
+            paneID: PaneID("pane-shell"),
+            signalKind: .shellState,
+            state: nil,
+            shellActivityState: shellActivityState,
+            origin: .shell,
+            toolName: "Claude Code",
+            text: nil,
+            sessionID: "session-1",
             artifactKind: nil,
             artifactLabel: nil,
             artifactURL: nil
