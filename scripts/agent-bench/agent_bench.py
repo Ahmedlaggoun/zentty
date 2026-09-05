@@ -121,6 +121,16 @@ class ScenarioExpectation:
     # Whether that payload check also demands a resolvable model. Grok exposes
     # no per-subagent transcript, so its profile only proves count and type.
     subagent_model_required: bool = True
+    # Ordered event pairs, e.g. [["Stop", "SubagentStop"]]: some occurrence of
+    # the first event must be observed before the last occurrence of the
+    # second. Pins the async Agent contract (Claude 2.1.261+): the parent's
+    # Stop fires while its subagent is still alive, so Stop must not clear
+    # the sidebar badge.
+    event_order: list[list[str]] = dataclasses.field(default_factory=list)
+    # The scenario must capture at least two SubagentStart/SubagentStop pairs
+    # with distinct agent ids, every stop matching a start — a subagent that
+    # itself spawned a subagent.
+    subagent_nested_required: bool = False
     # A true end-to-end resume round-trip (modern kimi-code only): phase 1
     # creates a real session through the wrapper bootstrap against a bench-owned
     # home, phase 2 simulates a restart and resumes it by id, asserting the
@@ -598,17 +608,12 @@ def classify_completed_result(
         result.detail = "required TodoWrite task progress was not captured"
         result.result_kind = "missing-task-progress"
         return result
-    if expectation.subagent_payload_required:
-        subagent_detail = missing_subagent_payload_detail(
-            subagent_observations_for_records(agent, scenario, records),
-            model_required=expectation.subagent_model_required,
-        )
-        if subagent_detail:
-            result.passed = False
-            result.status = "fail"
-            result.detail = subagent_detail
-            result.result_kind = "missing-subagent-payload"
-            return result
+    subagent_failure = subagent_contract_failure(agent, scenario, expectation, records)
+    if subagent_failure:
+        result.passed = False
+        result.status = "fail"
+        result.result_kind, result.detail = subagent_failure
+        return result
     if scenario_requires_terminal_needs_input(scenario) and not terminal_needs_input_observed(terminal_observations):
         result.passed = False
         result.status = "fail"
@@ -691,17 +696,10 @@ def classify_timeout_result(
             partial.status = "fail"
             partial.detail = "required TodoWrite task progress was not captured"
             partial.result_kind = "missing-task-progress"
-        elif expectation.subagent_payload_required and missing_subagent_payload_detail(
-            subagent_observations_for_records(agent, scenario, records),
-            model_required=expectation.subagent_model_required,
-        ):
+        elif subagent_failure := subagent_contract_failure(agent, scenario, expectation, records):
             partial.passed = False
             partial.status = "fail"
-            partial.detail = missing_subagent_payload_detail(
-                subagent_observations_for_records(agent, scenario, records),
-                model_required=expectation.subagent_model_required,
-            ) or ""
-            partial.result_kind = "missing-subagent-payload"
+            partial.result_kind, partial.detail = subagent_failure
         elif scenario_requires_terminal_needs_input(scenario) and not terminal_needs_input_observed(terminal_observations):
             partial.passed = False
             partial.status = "fail"
@@ -1196,6 +1194,80 @@ def missing_subagent_payload_detail(observations: list[dict[str, Any]], model_re
         if any(item.get("transcript_exists") for item in observations):
             return "subagent transcript exists but no model could be resolved from it"
         return "subagent hooks captured but no transcript sidecar was available to resolve the model"
+    return None
+
+
+def missing_nested_subagent_detail(observations: list[dict[str, Any]]) -> str | None:
+    """None when the captured subagent hooks prove a nested spawn: at least
+    two starts with distinct agent ids, at least two stops, and every stop id
+    matching a start id. Otherwise a one-line explanation."""
+    starts = [item for item in observations if item.get("event") == "start"]
+    stops = [item for item in observations if item.get("event") == "stop"]
+    if len(starts) < 2:
+        return f"nested subagents require at least 2 SubagentStart hooks but {len(starts)} were captured"
+    if len(stops) < 2:
+        return f"nested subagents require at least 2 SubagentStop hooks but {len(stops)} were captured"
+    start_ids = [item.get("agent_id") for item in starts]
+    if any(not agent_id for agent_id in start_ids):
+        return "SubagentStart payload did not carry an agent_id"
+    if len(set(start_ids)) < 2:
+        return f"SubagentStart hooks did not carry distinct agent ids: {', '.join(str(item) for item in start_ids)}"
+    unmatched = [str(item.get("agent_id")) for item in stops if item.get("agent_id") not in start_ids]
+    if unmatched:
+        return f"SubagentStop agent_id did not match any SubagentStart: {', '.join(unmatched)}"
+    # Compare with multiplicity: a duplicated outer stop must not stand in
+    # for the inner agent's missing completion.
+    stop_counts = Counter(str(item.get("agent_id")) for item in stops)
+    missing = sorted(agent_id for agent_id, count in Counter(str(a) for a in start_ids).items() if stop_counts[agent_id] < count)
+    if missing:
+        return f"SubagentStart without a matching SubagentStop: {', '.join(missing)}"
+    return None
+
+
+def event_order_violation_detail(agent: str, scenario: str, expectation: ScenarioExpectation, records: list[TraceRecord]) -> str | None:
+    """None when every `event_order` pair holds; otherwise which pair broke
+    and the observed hook sequence, so the report explains the failure."""
+    observed = [
+        record.event_name
+        for record in records
+        if record.kind == "hook" and record.agent == agent and record.scenario == scenario and record.event_name
+    ]
+    for pair in expectation.event_order:
+        if len(pair) != 2:
+            return f"event_order entry must be a [before, after] pair: {pair}"
+        before, after = pair
+        if before not in observed:
+            return f"expected {before} before {after} but {before} was never observed"
+        if after not in observed:
+            return f"expected {before} before {after} but {after} was never observed"
+        first_before = observed.index(before)
+        last_after = len(observed) - 1 - observed[::-1].index(after)
+        if first_before > last_after:
+            return f"expected {before} before {after} but observed order was: {', '.join(observed)}"
+    return None
+
+
+def subagent_contract_failure(
+    agent: str,
+    scenario: str,
+    expectation: ScenarioExpectation,
+    records: list[TraceRecord],
+) -> tuple[str, str] | None:
+    """(result_kind, detail) for the first subagent-contract expectation that
+    the trace fails — payload facts, hook ordering, nested spawn — or None."""
+    observations = subagent_observations_for_records(agent, scenario, records)
+    if expectation.subagent_payload_required:
+        detail = missing_subagent_payload_detail(observations, model_required=expectation.subagent_model_required)
+        if detail:
+            return "missing-subagent-payload", detail
+    if expectation.event_order:
+        detail = event_order_violation_detail(agent, scenario, expectation, records)
+        if detail:
+            return "hook-order", detail
+    if expectation.subagent_nested_required:
+        detail = missing_nested_subagent_detail(observations)
+        if detail:
+            return "missing-nested-subagent", detail
     return None
 
 
@@ -1731,20 +1803,24 @@ class LaunchPlanner:
     def _plan_claude(self, executable: str, arguments: list[str], environment: dict[str, Any], cli_path: str) -> dict[str, Any]:
         hook_command = f'"{shell_escape_double_quoted(cli_path)}" ipc agent-event --adapter=claude'
         settings = {"hooks": {}}
-        for event in (
-            "Stop",
-            "SessionEnd",
-            "Notification",
-            "PermissionRequest",
-            "UserPromptSubmit",
-            "PreCompact",
-            "PostCompact",
-            "TaskCreated",
-            "TaskCompleted",
-            "SubagentStart",
-            "SubagentStop",
+        # Mirror AgentLaunchBootstrap.claudePlan event-for-event, timeouts
+        # included: SessionEnd is short so a hung IPC cannot hold the exit,
+        # and the task/subagent hooks fire often enough that a slow one must
+        # not stall the agent. The Swift plan is the source of truth.
+        for event, timeout in (
+            ("Stop", 10),
+            ("SessionEnd", 1),
+            ("Notification", 10),
+            ("PermissionRequest", 10),
+            ("UserPromptSubmit", 10),
+            ("PreCompact", 10),
+            ("PostCompact", 10),
+            ("TaskCreated", 5),
+            ("TaskCompleted", 5),
+            ("SubagentStart", 5),
+            ("SubagentStop", 5),
         ):
-            settings["hooks"][event] = [{"matcher": "", "hooks": [{"type": "command", "command": hook_command, "timeout": 10}]}]
+            settings["hooks"][event] = [{"matcher": "", "hooks": [{"type": "command", "command": hook_command, "timeout": timeout}]}]
         settings["hooks"]["SessionStart"] = [
             {"matcher": matcher, "hooks": [{"type": "command", "command": hook_command, "timeout": 10}]}
             for matcher in ("startup", "resume", "clear", "compact")
@@ -2369,6 +2445,29 @@ def agent_from_adapter(adapter: str | None, environment: dict[str, Any], standar
     return adapter
 
 
+def parse_event_order(profile_name: str, scenario: str, raw: Any) -> list[list[str]]:
+    """Validate a profile's `event_order` at load time so a malformed pair
+    fails the whole run up front instead of surfacing as a confusing
+    per-scenario failure after the agent has already been driven."""
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise ValueError(f"{profile_name} scenario {scenario!r}: event_order must be a list of [before, after] pairs, got {raw!r}")
+    pairs: list[list[str]] = []
+    for entry in raw:
+        if (
+            not isinstance(entry, list)
+            or len(entry) != 2
+            or not all(isinstance(event, str) and event.strip() for event in entry)
+        ):
+            raise ValueError(
+                f"{profile_name} scenario {scenario!r}: each event_order entry must be a [before, after] pair "
+                f"of non-empty strings, got {entry!r}"
+            )
+        pairs.append([entry[0], entry[1]])
+    return pairs
+
+
 def load_profiles(path: pathlib.Path) -> dict[str, AgentProfile]:
     profiles: dict[str, AgentProfile] = {}
     for profile_path in sorted(path.glob("*.json")):
@@ -2403,6 +2502,8 @@ def load_profiles(path: pathlib.Path) -> dict[str, AgentProfile]:
                 post_stop_notification_required=bool(value.get("post_stop_notification_required", False)),
                 subagent_payload_required=bool(value.get("subagent_payload_required", False)),
                 subagent_model_required=bool(value.get("subagent_model_required", True)),
+                event_order=parse_event_order(profile_path.name, name, value.get("event_order")),
+                subagent_nested_required=bool(value.get("subagent_nested_required", False)),
                 resume_roundtrip=bool(value.get("resume_roundtrip", False)),
             )
         profile = AgentProfile(

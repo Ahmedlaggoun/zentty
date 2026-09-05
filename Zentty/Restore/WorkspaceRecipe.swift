@@ -1,9 +1,15 @@
 import CoreGraphics
 import Foundation
+import os
+
+private let workspaceRecipeLogger = Logger(subsystem: "be.zenjoy.zentty", category: "WorkspaceRecipe")
 
 struct WindowWorkspaceState: Equatable, Sendable {
     var worklanes: [WorklaneState]
     var activeWorklaneID: WorklaneID?
+    /// Sidebar visibility and width the window was restored with, when the
+    /// recipe recorded them. `nil` means "seed from the config file".
+    var sidebar: WorkspaceRecipe.Sidebar? = nil
 }
 
 struct WorkspaceRecipe: Codable, Equatable, Sendable {
@@ -11,9 +17,10 @@ struct WorkspaceRecipe: Codable, Equatable, Sendable {
     /// verbatim. Unversioned (nil) recipes predate optional titles and carry
     /// auto-generated "MAIN"/"WS N" junk that gets sanitized once at import.
     /// Schema version 3 adds optional per-pane `customTitle` fields.
+    /// Schema version 4 adds an optional per-window `sidebar` entry.
     /// Synthesized Decodable ignores the property default for optionals, so
     /// legacy JSON without the key decodes as nil.
-    static let currentSchemaVersion = 3
+    static let currentSchemaVersion = 4
 
     var schemaVersion: Int?
     var windows: [Window]
@@ -34,6 +41,70 @@ struct WorkspaceRecipe: Codable, Equatable, Sendable {
         var frame: WindowFrame? = nil
         var worklanes: [Worklane]
         var activeWorklaneID: String?
+        var sidebar: Sidebar? = nil
+    }
+
+    /// Per-window sidebar state. Sidebar visibility and width are kept per
+    /// window while the app runs; the config file only holds the seed for new
+    /// windows, so without this every restored window would come back with
+    /// the single last-changed value.
+    struct Sidebar: Codable, Equatable, Sendable {
+        /// `SidebarVisibilityMode.rawValue` of the persisted mode. Never
+        /// `hoverPeek`, which is a transient state.
+        var visibility: String
+        var width: Double
+
+        init(visibility: String, width: Double) {
+            self.visibility = visibility
+            self.width = width
+        }
+
+        init(mode: SidebarVisibilityMode, width: CGFloat) {
+            self.init(visibility: mode.rawValue, width: Double(width))
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case visibility
+            case width
+        }
+
+        /// Decodes leniently: a partial or hand-edited `sidebar` entry
+        /// (`{}`, a missing width, a value of the wrong type) falls back per
+        /// field instead of failing the whole recipe. The sidebar is
+        /// cosmetic next to the worklanes and panes the recipe exists to
+        /// restore, so a bad entry should never cost the user their layout.
+        init(from decoder: Decoder) throws {
+            let fallback = Sidebar(mode: .pinnedOpen, width: SidebarWidthPreference.defaultWidth)
+            guard let container = try? decoder.container(keyedBy: CodingKeys.self) else {
+                workspaceRecipeLogger.warning("Recipe sidebar entry is not an object; using default visibility and width")
+                self = fallback
+                return
+            }
+            if let decoded = try? container.decodeIfPresent(String.self, forKey: .visibility) {
+                visibility = decoded
+            } else {
+                workspaceRecipeLogger.warning("Recipe sidebar visibility missing or malformed; using \(fallback.visibility, privacy: .public)")
+                visibility = fallback.visibility
+            }
+            let decodedWidth = try? container.decodeIfPresent(Double.self, forKey: .width)
+            if let decodedWidth, decodedWidth.isFinite, decodedWidth > 0 {
+                width = decodedWidth
+            } else {
+                workspaceRecipeLogger.warning("Recipe sidebar width missing or malformed; using \(fallback.width, privacy: .public)")
+                width = fallback.width
+            }
+        }
+
+        /// The stored mode, with unknown or transient values read as the
+        /// default so a hand-edited or future recipe still restores.
+        var visibilityMode: SidebarVisibilityMode {
+            let mode = SidebarVisibilityMode(rawValue: visibility) ?? .pinnedOpen
+            return mode == .hoverPeek ? .hidden : mode
+        }
+
+        var appConfigSidebar: AppConfig.Sidebar {
+            AppConfig.Sidebar(width: CGFloat(width), visibility: visibilityMode)
+        }
     }
 
     struct WindowFrame: Codable, Equatable, Sendable {
@@ -114,13 +185,15 @@ enum WorkspaceRecipeExporter {
         windowID: WindowID,
         frame: CGRect? = nil,
         worklanes: [WorklaneState],
-        activeWorklaneID: WorklaneID?
+        activeWorklaneID: WorklaneID?,
+        sidebar: WorkspaceRecipe.Sidebar? = nil
     ) -> WorkspaceRecipe.Window {
         WorkspaceRecipe.Window(
             id: windowID.rawValue,
             frame: frame.map(WorkspaceRecipe.WindowFrame.init(rect:)),
             worklanes: worklanes.map(makeWorklane),
-            activeWorklaneID: activeWorklaneID?.rawValue
+            activeWorklaneID: activeWorklaneID?.rawValue,
+            sidebar: sidebar
         )
     }
 
@@ -394,7 +467,8 @@ enum WorkspaceRecipeImporter {
 
         return WindowWorkspaceState(
             worklanes: worklanes,
-            activeWorklaneID: activeWorklaneID
+            activeWorklaneID: activeWorklaneID,
+            sidebar: window.sidebar
         )
     }
 
@@ -680,9 +754,14 @@ enum WorkspaceRecipeImporter {
 ///   as `nil` for Optional properties (Swift's synthesized Decodable
 ///   ignores the property default in that case), so no migration action is
 ///   needed for this hop.
-/// - newer than v3 (forward-compat): treated exactly like v3 — verbatim
-///   titles, no sanitization. This matches today's behavior, where the
-///   only branch anywhere is `schemaVersion == nil` vs. not.
+/// - v4: adds optional per-window `sidebar` (visibility + width). Missing
+///   keys decode as `nil`, and a partial or malformed entry degrades per
+///   field inside `Sidebar.init(from:)`, so no migration action is needed
+///   for this hop either.
+/// - newer than current (forward-compat): treated exactly like the current
+///   version — verbatim titles, no sanitization. This matches today's
+///   behavior, where the only branch anywhere is `schemaVersion == nil`
+///   vs. not.
 enum WorkspaceRecipeMigration {
     static func migrate(_ recipe: WorkspaceRecipe) -> WorkspaceRecipe {
         var recipe = recipe

@@ -152,8 +152,10 @@ final class PaneCommandExecutor {
                 let focusedPaneID,
                 let context = worklaneStore.paneCloseConfirmationContext(focusedPaneID)
             {
+                // Close the pane the prompt was raised for: focus can move on
+                // to another pane while the sheet is up.
                 hooks.presentClosePaneConfirmation(context) { [weak self] in
-                    self?.closeFocusedPane()
+                    self?.closePane(id: focusedPaneID)
                 }
             } else {
                 closeFocusedPane()

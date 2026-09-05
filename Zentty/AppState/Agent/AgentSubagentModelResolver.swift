@@ -56,8 +56,13 @@ enum AgentSubagentModelResolver {
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             return nil
         }
-        return nonEmpty(object["model"] as? String)
+        guard let model = nonEmpty(object["model"] as? String) else { return nil }
+        // Forks record `inherit`: not a model, so leave it unresolved and let
+        // the transcript (which names the real model) fill it in later.
+        return placeholderModelValues.contains(model.lowercased()) ? nil : model
     }
+
+    private static let placeholderModelValues: Set<String> = ["inherit", "default", "auto"]
 
     static func claudeTranscriptModel(transcriptPath: String) -> String? {
         guard let text = readHeadText(path: transcriptPath) else { return nil }

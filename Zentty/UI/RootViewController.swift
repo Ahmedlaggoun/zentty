@@ -151,7 +151,8 @@ final class RootViewController: NSViewController {
         canvas: appCanvasView,
         hooks: PaneCommandExecutor.UIHooks(
             presentClosePaneConfirmation: { [weak self] context, onConfirm in
-                self?.showClosePaneConfirmation(context: context, onConfirm: onConfirm)
+                // ⌘W targets the focused pane, which is already on screen.
+                self?.showClosePaneConfirmation(context: context, highlighting: {}, onConfirm: onConfirm)
             },
             showToast: { [weak self] message in self?.showToast(message: message) },
             requestWindowClose: { [weak self] in self?.requestContainingWindowClose() }
@@ -327,7 +328,8 @@ final class RootViewController: NSViewController {
             },
             serverDetectionProvider: { [weak configStore] in
                 configStore?.current.serverDetection ?? .default
-            }
+            },
+            claudeHookSessionStoreProvider: { ClaudeHookSessionStore() }
         )
         self.peekController = WorklanePeekController(
             worklaneAccess: worklaneStore
@@ -341,6 +343,14 @@ final class RootViewController: NSViewController {
             reviewStateResolver: reviewStateResolver
         )
         super.init(nibName: nil, bundle: nil)
+        if let restoredSidebar = initialWorkspaceState?.sidebar {
+            // A restored window comes back with its own sidebar state; only
+            // windows without recipe state seed from the config file.
+            sidebarMotionCoordinator.applyPersistedSidebarSettings(
+                restoredSidebar.appConfigSidebar,
+                availableWidth: nil
+            )
+        }
         windowChromeView.setShimmerCoordinator(sidebarView.sharedShimmerCoordinator)
         toasts = WindowToastPresenter(
             hostViewProvider: { [weak self] in self?.appCanvasView },
@@ -803,8 +813,10 @@ final class RootViewController: NSViewController {
             if self.configStore.current.confirmations.confirmBeforeClosingPane,
                 let context = self.worklaneStore.paneCloseConfirmationContext(paneID)
             {
-                self.worklaneStore.focusPane(id: paneID)
-                self.showClosePaneConfirmation(context: context) {
+                self.showClosePaneConfirmation(
+                    context: context,
+                    highlighting: { self.worklaneStore.focusPane(id: paneID) }
+                ) {
                     self.paneCommands.closePane(id: paneID)
                 }
             } else {
@@ -1019,7 +1031,7 @@ final class RootViewController: NSViewController {
 
     private func setupSidebarCallbacks() {
         sidebarView.onWorklaneSelected = { [weak self] id in
-            self?.worklaneStore.selectWorklane(id: id)
+            self?.selectWorklaneFromNavigation(id: id)
         }
         sidebarView.onPaneSelected = { [weak self] worklaneID, paneID in
             self?.worklaneStore.selectWorklaneAndFocusPane(
@@ -1032,8 +1044,10 @@ final class RootViewController: NSViewController {
             if self.configStore.current.confirmations.confirmBeforeClosingPane,
                let context = self.worklaneStore.worklaneCloseConfirmationContext(worklaneID)
             {
-                self.worklaneStore.selectWorklane(id: worklaneID)
-                self.showCloseWorklaneConfirmation(context: context) {
+                self.showCloseWorklaneConfirmation(
+                    context: context,
+                    highlighting: { self.worklaneStore.selectWorklane(id: worklaneID) }
+                ) {
                     self.closeWorklane(id: worklaneID)
                 }
             } else {
@@ -1052,9 +1066,13 @@ final class RootViewController: NSViewController {
             if self.configStore.current.confirmations.confirmBeforeClosingPane,
                 let context = self.worklaneStore.paneCloseConfirmationContext(paneID)
             {
-                self.worklaneStore.selectWorklaneAndFocusPane(
-                    worklaneID: worklaneID, paneID: paneID)
-                self.showClosePaneConfirmation(context: context) {
+                self.showClosePaneConfirmation(
+                    context: context,
+                    highlighting: {
+                        self.worklaneStore.selectWorklaneAndFocusPane(
+                            worklaneID: worklaneID, paneID: paneID)
+                    }
+                ) {
                     // Re-select: the active worklane can change while the
                     // sheet is up, and closePane(id:) only sees the active one.
                     self.worklaneStore.selectWorklaneAndFocusPane(
@@ -1528,26 +1546,41 @@ final class RootViewController: NSViewController {
 
     private var isShowingCloseConfirmation = false
 
+    /// - Parameter highlighting: moves the selection onto the pane or worklane the
+    ///   sheet is about to name, so the prompt matches what is on screen. Runs only
+    ///   once the sheet is really going to appear; Cancel puts the selection back.
     private func showClosePaneConfirmation(
         context: PaneCloseConfirmationContext,
+        highlighting: () -> Void,
         onConfirm: @escaping () -> Void
     ) {
-        showCloseConfirmation(copy: .pane(context), onConfirm: onConfirm)
+        showCloseConfirmation(copy: .pane(context), highlighting: highlighting, onConfirm: onConfirm)
     }
 
     private func showCloseWorklaneConfirmation(
         context: WorklaneCloseConfirmationContext,
+        highlighting: () -> Void,
         onConfirm: @escaping () -> Void
     ) {
-        showCloseConfirmation(copy: .worklane(context), onConfirm: onConfirm)
+        showCloseConfirmation(copy: .worklane(context), highlighting: highlighting, onConfirm: onConfirm)
     }
 
     private func showCloseConfirmation(
         copy: CloseConfirmationCopy,
+        highlighting: () -> Void,
         onConfirm: @escaping () -> Void
     ) {
         guard !isShowingCloseConfirmation else { return }
         isShowingCloseConfirmation = true
+
+        let previousSelection = CloseConfirmationSelectionSnapshot.capture(
+            worklanes: worklaneStore.worklanes,
+            activeWorklaneID: worklaneStore.activeWorklaneID
+        )
+        highlighting()
+        let onCancel = { [weak self] in
+            self?.restoreSelectionAfterCancelledClose(previousSelection)
+        }
 
         let alert = NSAlert()
         alert.messageText = copy.messageText
@@ -1562,6 +1595,8 @@ final class RootViewController: NSViewController {
             isShowingCloseConfirmation = false
             if alert.runModal() == .alertFirstButtonReturn {
                 onConfirm()
+            } else {
+                onCancel()
             }
             return
         }
@@ -1570,7 +1605,25 @@ final class RootViewController: NSViewController {
             self?.isShowingCloseConfirmation = false
             if response == .alertFirstButtonReturn {
                 onConfirm()
+            } else {
+                onCancel()
             }
+        }
+    }
+
+    private func restoreSelectionAfterCancelledClose(_ snapshot: CloseConfirmationSelectionSnapshot?) {
+        guard let snapshot else { return }
+        let action = snapshot.restoreAction(
+            worklanes: worklaneStore.worklanes,
+            activeWorklaneID: worklaneStore.activeWorklaneID
+        )
+        switch action {
+        case .none:
+            break
+        case .selectWorklane(let worklaneID):
+            worklaneStore.selectWorklane(id: worklaneID)
+        case .selectWorklaneAndFocusPane(let worklaneID, let paneID):
+            worklaneStore.selectWorklaneAndFocusPane(worklaneID: worklaneID, paneID: paneID)
         }
     }
 
@@ -2404,6 +2457,15 @@ final class RootViewController: NSViewController {
         sidebarMotionCoordinator.mode
     }
 
+    /// What the workspace recipe stores for this window so a relaunch brings the
+    /// sidebar back the way this window had it, not the last-changed seed.
+    var sidebarRecipeState: WorkspaceRecipe.Sidebar {
+        WorkspaceRecipe.Sidebar(
+            mode: sidebarMotionCoordinator.persistedMode,
+            width: sidebarMotionCoordinator.currentSidebarWidth
+        )
+    }
+
     var isSidebarFloating: Bool {
         sidebarMotionCoordinator.isFloating
     }
@@ -3046,7 +3108,25 @@ extension RootViewController: AppActionRouterEnvironment {
     }
 
     func routeSelectWorklane(position: Int) {
-        worklaneStore.selectWorklane(atPosition: position)
+        guard worklaneStore.worklanes.indices.contains(position - 1) else { return }
+        selectWorklaneFromNavigation(id: worklaneStore.worklanes[position - 1].id)
+    }
+
+    /// Absolute worklane selection shared by the sidebar click and the numbered
+    /// shortcuts. Ctrl-Tab goes through `WorklanePeekController.handleTab` because
+    /// it is relative and tap-vs-hold sensitive; an absolute jump cannot. While a
+    /// peek is open a sidebar click moves the peek selection instead of the store,
+    /// the same way a click inside the peek overlay does, so Ctrl release commits
+    /// it. (⌘1–9 do not reach this branch in practice: Ctrl is held for the
+    /// whole peek, so the key monitor sees those presses first.)
+    private func selectWorklaneFromNavigation(id worklaneID: WorklaneID) {
+        if case .peeking = peekController.phase,
+           let worklane = worklaneStore.worklanes.first(where: { $0.id == worklaneID }),
+           let paneID = worklane.paneStripState.focusedPaneID ?? worklane.paneStripState.panes.first?.id {
+            peekController.handleClick(at: .init(worklaneID: worklaneID, paneID: paneID))
+            return
+        }
+        worklaneStore.selectWorklane(id: worklaneID)
     }
 
     func routeMoveWorklaneUp() {

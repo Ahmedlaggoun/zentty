@@ -250,6 +250,37 @@ final class MainWindowControllerTests: XCTestCase {
         XCTAssertLessThan(windowFrame.height, visibleFrame?.height ?? 0)
     }
 
+    func test_reveal_pane_for_one_password_prompt_orders_window_above_frontmost_zentty_window() throws {
+        // Window A is in front; the 1Password prompt belongs to a pane in window B.
+        let front = makeController()
+        let back = MainWindowController(
+            windowID: WindowID("window-behind"),
+            runtimeRegistry: PaneRuntimeRegistry(adapterFactory: { _ in MockTerminalAdapter() })
+        ).prepareForHostedTesting()
+        addTeardownBlock { back.closeWindowBypassingConfirmation() }
+
+        back.showWindow(nil)
+        front.showWindow(nil)
+        front.window.makeKeyAndOrderFront(nil)
+        waitForLayout()
+
+        let ordered = NSApp.orderedWindows
+        let frontIndexBefore = try XCTUnwrap(ordered.firstIndex { $0 === front.window })
+        let backIndexBefore = try XCTUnwrap(ordered.firstIndex { $0 === back.window })
+        XCTAssertLessThan(frontIndexBefore, backIndexBefore, "Precondition: window A must be in front of window B")
+
+        let worklaneID = try XCTUnwrap(back.worklaneStore.activeWorklaneID)
+        let paneID = try XCTUnwrap(back.worklaneStore.activeWorklane?.paneStripState.focusedPaneID)
+        back.revealPaneForOnePasswordPrompt(worklaneID: worklaneID, paneID: paneID, processName: "ssh")
+        waitForLayout()
+
+        let reordered = NSApp.orderedWindows
+        let frontIndexAfter = try XCTUnwrap(reordered.firstIndex { $0 === front.window })
+        let backIndexAfter = try XCTUnwrap(reordered.firstIndex { $0 === back.window })
+        XCTAssertLessThan(backIndexAfter, frontIndexAfter, "The revealed window should be ordered above the other Zentty window")
+        XCTAssertFalse(back.window.isKeyWindow, "Revealing must not steal key status")
+    }
+
     func test_main_window_keeps_resizable_style() {
         let controller = makeController()
 

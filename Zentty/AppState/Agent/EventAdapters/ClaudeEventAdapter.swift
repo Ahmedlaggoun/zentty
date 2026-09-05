@@ -5,15 +5,16 @@ import Foundation
 extension AgentEventBridge {
     static func claudeAdapter(
         data: Data,
-        environment: [String: String]
+        environment: [String: String],
+        sessionStore: ClaudeHookSessionStore = ClaudeHookSessionStore(),
+        subagentStore: AgentSubagentRegistryStore = AgentSubagentRegistryStore()
     ) throws -> [AgentStatusPayload] {
         let input = try claudeParseInput(data)
-        let sessionStore = ClaudeHookSessionStore()
         return try claudeMakePayloads(
             from: input,
             environment: environment,
             sessionStore: sessionStore,
-            subagentStore: AgentSubagentRegistryStore()
+            subagentStore: subagentStore
         )
     }
 }
@@ -37,6 +38,11 @@ struct ClaudeAdapterInput {
     let agentID: String?
     let agentType: String?
     let agentTranscriptPath: String?
+    /// `PostToolUseFailure` sets this when the user interrupted the tool
+    /// (Escape / Ctrl-C). No Stop hook follows such an interrupt.
+    let isInterrupt: Bool
+    /// `SessionStart` only: `startup`, `resume`, `clear` or `compact`.
+    let source: String?
 
     init(
         hookEventName: String,
@@ -52,7 +58,9 @@ struct ClaudeAdapterInput {
         taskSubject: String?,
         agentID: String? = nil,
         agentType: String? = nil,
-        agentTranscriptPath: String? = nil
+        agentTranscriptPath: String? = nil,
+        isInterrupt: Bool = false,
+        source: String? = nil
     ) {
         self.hookEventName = hookEventName
         self.sessionID = sessionID
@@ -68,6 +76,8 @@ struct ClaudeAdapterInput {
         self.agentID = agentID
         self.agentType = agentType
         self.agentTranscriptPath = agentTranscriptPath
+        self.isInterrupt = isInterrupt
+        self.source = source
     }
 }
 
@@ -94,8 +104,25 @@ extension AgentEventBridge {
             taskSubject: JSONKeyAccess.firstString(in: json, keys: ["task", "task_subject", "taskSubject", "title"]),
             agentID: JSONKeyAccess.firstString(in: json, keys: ["agent_id", "agentId"]),
             agentType: JSONKeyAccess.firstString(in: json, keys: ["agent_type", "agentType", "agent_name", "agentName"]),
-            agentTranscriptPath: JSONKeyAccess.firstString(in: json, keys: ["agent_transcript_path", "agentTranscriptPath"])
+            agentTranscriptPath: JSONKeyAccess.firstString(in: json, keys: ["agent_transcript_path", "agentTranscriptPath"]),
+            isInterrupt: claudeParseBool(in: json, keys: ["is_interrupt", "isInterrupt"]),
+            source: JSONKeyAccess.firstString(in: json, keys: ["source"])
         )
+    }
+
+    private static func claudeParseBool(in json: [String: Any], keys: [String]) -> Bool {
+        for key in keys {
+            if let value = json[key] as? Bool {
+                return value
+            }
+            if let number = json[key] as? NSNumber {
+                return number.boolValue
+            }
+            if let string = json[key] as? String {
+                return ["true", "1", "yes"].contains(string.lowercased())
+            }
+        }
+        return false
     }
 
     static func claudeMakePayloads(
@@ -125,6 +152,14 @@ extension AgentEventBridge {
         case "SessionStart":
             let target = try currentTarget(from: environment)
             let pid = parseAgentPID(from: environment, key: "ZENTTY_CLAUDE_PID")
+            let startsFresh = claudeSessionStartResetsSubagents(source: input.source)
+            if startsFresh {
+                // A killed session never sent SubagentStop for its children;
+                // a fresh (or resumed / cleared) session in the same pane must
+                // not inherit those phantom entries. `compact` keeps the same
+                // session and its live subagents.
+                try subagentStore.remove(key: claudeSubagentKey(target))
+            }
             if let sessionID = input.sessionID {
                 try sessionStore.upsert(
                     sessionID: sessionID,
@@ -133,7 +168,11 @@ extension AgentEventBridge {
                     paneID: target.paneID,
                     cwd: input.cwd,
                     transcriptPath: input.transcriptPath,
-                    pid: pid
+                    pid: pid,
+                    // SessionStart(compact) follows PreCompact mid-turn; a
+                    // PreToolUse announced before the compaction still prompts
+                    // after it and needs its queued id.
+                    resetsPreToolUseSlots: startsFresh
                 )
             }
             guard let pid else { return [] }
@@ -142,7 +181,7 @@ extension AgentEventBridge {
         case "Notification":
             if input.notificationType == "idle_prompt" {
                 let target = try claudeResolvedTarget(for: input, environment: environment, sessionStore: sessionStore)
-                let subagents = try subagentStore.clear(key: claudeSubagentKey(target))
+                let subagents = try subagentStore.summary(key: claudeSubagentKey(target))
                 return [claudeLifecyclePayload(target: target, state: .idle, confidence: .explicit, sessionID: input.sessionID, subagents: subagents)]
             }
             let target = try claudeResolvedTarget(for: input, environment: environment, sessionStore: sessionStore)
@@ -192,6 +231,12 @@ extension AgentEventBridge {
                 candidateText: interaction.text,
                 candidateKind: interaction.interactionKind
             )
+            let inheritedToolUseID = input.toolUseID == nil
+                ? claudeInheritedPreToolUseID(input: input, existing: existing)
+                : nil
+            let toolUseID = input.toolUseID
+                ?? inheritedToolUseID
+                ?? claudeRetainedStructuredToolUseID(input: input, existing: existing)
             if let sessionID = input.sessionID {
                 try sessionStore.rememberStructuredInteraction(
                     sessionID: sessionID,
@@ -203,7 +248,13 @@ extension AgentEventBridge {
                     text: message,
                     kind: interaction.interactionKind,
                     confidence: .explicit,
-                    toolUseID: input.toolUseID
+                    toolUseID: toolUseID,
+                    toolName: input.toolName,
+                    agentID: input.agentID,
+                    // An announcement serves one prompt; a later
+                    // PermissionRequest whose PreToolUse got dropped must not
+                    // reuse it.
+                    consumedPreToolUseID: inheritedToolUseID
                 )
             }
             return [claudeLifecyclePayload(target: target, state: .needsInput, text: message, interactionKind: interaction.interactionKind, confidence: .explicit, sessionID: input.sessionID)]
@@ -230,14 +281,40 @@ extension AgentEventBridge {
                     text: message,
                     kind: prompt.interactionKind,
                     confidence: .explicit,
-                    toolUseID: input.toolUseID
+                    toolUseID: input.toolUseID,
+                    toolName: input.toolName,
+                    agentID: input.agentID
                 )
                 return [claudeLifecyclePayload(target: target, state: .needsInput, text: message, interactionKind: prompt.interactionKind, confidence: .explicit, sessionID: input.sessionID)]
             }
-            if let sessionID = input.sessionID {
-                try sessionStore.clearInteractionContext(sessionID: sessionID)
-            }
             let preToolExisting = try claudeLookupRecord(for: input, sessionStore: sessionStore)
+            if let sessionID = input.sessionID {
+                if claudePreToolUseBelongsToOtherAgent(input: input, existing: preToolExisting) {
+                    // Another agent context keeps working while this one's
+                    // dialog is open (a subagent editing while the parent
+                    // waits for approval). Remember the call, leave the
+                    // prompt alone and say nothing: the pane stays on
+                    // needsInput.
+                    try sessionStore.rememberPreToolUse(
+                        sessionID: sessionID,
+                        toolUseID: input.toolUseID,
+                        toolName: input.toolName,
+                        agentID: input.agentID
+                    )
+                    return []
+                }
+                // Keep the other agent contexts' slots: a subagent's PreToolUse
+                // must not forget the parent's announced call.
+                try sessionStore.clearInteractionContext(sessionID: sessionID, keepsPreToolUseSlots: true)
+                // PermissionRequest carries no tool_use_id; remember this call so
+                // the prompt that may follow can be tied to it.
+                try sessionStore.rememberPreToolUse(
+                    sessionID: sessionID,
+                    toolUseID: input.toolUseID,
+                    toolName: input.toolName,
+                    agentID: input.agentID
+                )
+            }
             return [claudeLifecyclePayload(
                 target: target, state: .running, cwd: input.cwd ?? preToolExisting?.cwd,
                 interactionKind: .none, confidence: .explicit, sessionID: input.sessionID,
@@ -252,13 +329,45 @@ extension AgentEventBridge {
             // claude/approval_then_work: 11 s of silence after approval).
             let target = try claudeResolvedTarget(for: input, environment: environment, sessionStore: sessionStore)
             let existing = try claudeLookupRecord(for: input, sessionStore: sessionStore)
-            if claudeShouldKeepPendingInteraction(existing: existing, completedToolUseID: input.toolUseID) {
+            if input.hookEventName == "PostToolUseFailure", input.isInterrupt {
+                // The user pressed Escape / Ctrl-C during the tool. Claude is
+                // back at its prompt and no Stop hook will follow; the terminal
+                // title ("✳") already drove the pane to idle, so forcing
+                // `.running` here would stick until the next prompt.
+                if let sessionID = input.sessionID {
+                    try sessionStore.clearInteractionContext(sessionID: sessionID, keepsPreToolUseSlots: true)
+                }
+                guard existing?.structuredInteractionKind != nil else {
+                    return []
+                }
+                // Escape on an open permission / question dialog: the title
+                // already showed "✳" while the dialog was up, so nothing else
+                // moves the pane off needsInput. Say idle explicitly.
+                let subagents = try subagentStore.summary(key: claudeSubagentKey(target))
+                return [claudeLifecyclePayload(
+                    target: target, state: .idle,
+                    interactionKind: PaneAgentInteractionKind.none, confidence: .explicit,
+                    sessionID: input.sessionID, subagents: subagents
+                )]
+            }
+            if let sessionID = input.sessionID {
+                // Finished calls leave the queue whether or not they prompted.
+                try sessionStore.forgetPreToolUse(sessionID: sessionID, toolUseID: input.toolUseID, agentID: input.agentID)
+            }
+            if claudeShouldKeepPendingInteraction(
+                existing: existing,
+                completedToolUseID: input.toolUseID,
+                completedToolName: input.toolName,
+                completedAgentID: input.agentID
+            ) {
                 // A sibling tool from the same parallel batch finished while
                 // another tool's permission / question dialog is still open.
                 return []
             }
             if let sessionID = input.sessionID {
-                try sessionStore.clearInteractionContext(sessionID: sessionID)
+                // The batch's other announcements stay queued: the next
+                // PermissionRequest in the same turn still needs its id.
+                try sessionStore.clearInteractionContext(sessionID: sessionID, keepsPreToolUseSlots: true)
             }
             return [claudeLifecyclePayload(
                 target: target, state: .running, cwd: input.cwd ?? existing?.cwd,
@@ -281,7 +390,7 @@ extension AgentEventBridge {
         case "SubagentStart":
             let target = try claudeResolvedTarget(for: input, environment: environment, sessionStore: sessionStore)
             if let sessionID = input.sessionID {
-                try sessionStore.clearInteractionContext(sessionID: sessionID)
+                try sessionStore.clearInteractionContext(sessionID: sessionID, keepsPreToolUseSlots: true)
             }
             let existing = try claudeLookupRecord(for: input, sessionStore: sessionStore)
             let entry = claudeSubagentEntry(
@@ -299,7 +408,7 @@ extension AgentEventBridge {
         case "PreCompact":
             let target = try claudeResolvedTarget(for: input, environment: environment, sessionStore: sessionStore)
             if let sessionID = input.sessionID {
-                try sessionStore.clearInteractionContext(sessionID: sessionID)
+                try sessionStore.clearInteractionContext(sessionID: sessionID, keepsPreToolUseSlots: true)
             }
             let existing = try claudeLookupRecord(for: input, sessionStore: sessionStore)
             return [claudeLifecyclePayload(
@@ -338,15 +447,17 @@ extension AgentEventBridge {
             if let sessionID = input.sessionID {
                 try sessionStore.clearInteractionContext(sessionID: sessionID)
             }
-            // The main agent finished its turn, so no subagent can still be
-            // running under it: broadcast the explicit empty set.
-            let subagents = try subagentStore.clear(key: claudeSubagentKey(target))
+            // Agent tool calls run asynchronously: the parent ends its turn
+            // while its subagents keep working and is re-woken when they
+            // finish. Carry the live (liveness-pruned) set rather than
+            // blanking it; SubagentStop retires entries one by one.
+            let subagents = try subagentStore.summary(key: claudeSubagentKey(target))
             return [claudeLifecyclePayload(target: target, state: .idle, confidence: .explicit, sessionID: input.sessionID, subagents: subagents)]
 
         case "SubagentStop":
             let target = try claudeResolvedTarget(for: input, environment: environment, sessionStore: sessionStore)
             if let sessionID = input.sessionID {
-                try sessionStore.clearInteractionContext(sessionID: sessionID)
+                try sessionStore.clearInteractionContext(sessionID: sessionID, keepsPreToolUseSlots: true)
             }
             // The parent keeps working (it still has to read the subagent's
             // result), so this is a running update, not an idle transition.
@@ -388,6 +499,16 @@ extension AgentEventBridge {
     }
 
     // MARK: - Claude Subagents
+
+    /// `startup`, `resume` and `clear` all begin from an empty subagent set;
+    /// `compact` continues the running session. An absent `source` (older
+    /// Claude Code) is treated as a fresh start.
+    static func claudeSessionStartResetsSubagents(source: String?) -> Bool {
+        guard let source = AgentInteractionClassifier.trimmed(source)?.lowercased() else {
+            return true
+        }
+        return ["startup", "resume", "clear"].contains(source)
+    }
 
     static func claudeSubagentKey(
         _ target: (windowID: WindowID?, worklaneID: WorklaneID, paneID: PaneID)
@@ -442,6 +563,11 @@ extension AgentEventBridge {
             return payloads
         }
         let key = AgentSubagentRegistryStore.Key(tool: "claude", worklaneID: first.worklaneID, paneID: first.paneID)
+        // A hook fired from inside a subagent proves it is alive: re-register
+        // it in case liveness pruning retired it during a long tool call.
+        if AgentInteractionClassifier.trimmed(input.agentID) != nil {
+            try subagentStore.start(key: key, entry: claudeSubagentEntry(for: input, sessionTranscriptPath: input.transcriptPath))
+        }
         return try attachSubagents(to: payloads, key: key, subagentStore: subagentStore) { entry in
             let transcriptPath = entry.transcriptPath
                 ?? (input.agentID == entry.id ? AgentInteractionClassifier.trimmed(input.agentTranscriptPath) : nil)
@@ -472,88 +598,6 @@ extension AgentEventBridge {
     ) throws -> ClaudeHookSessionRecord? {
         guard let sessionID = input.sessionID else { return nil }
         return try sessionStore.lookup(sessionID: sessionID)
-    }
-
-    static func claudeShouldKeepPendingInteraction(
-        existing: ClaudeHookSessionRecord?,
-        completedToolUseID: String?
-    ) -> Bool {
-        guard let existing,
-              existing.structuredInteractionKind?.requiresHumanAttention == true,
-              let pendingToolUseID = existing.lastStructuredInteractionToolUseID,
-              let completedToolUseID = AgentInteractionClassifier.trimmed(completedToolUseID)
-        else {
-            return false
-        }
-        return pendingToolUseID != completedToolUseID
-    }
-
-    static func claudeDescribePermissionRequest(
-        input: ClaudeAdapterInput,
-        existing: ClaudeHookSessionRecord?
-    ) -> (text: String, interactionKind: PaneAgentInteractionKind) {
-        if input.toolName == "AskUserQuestion" {
-            if let prompt = claudeDescribeAskUserQuestion(toolInput: input.toolInput) {
-                return prompt
-            }
-            if let existingText = existing?.structuredInteractionText,
-               existing?.structuredInteractionKind == .decision {
-                return (existingText, .decision)
-            }
-            return ("Claude is waiting for your decision", .decision)
-        }
-        return (
-            AgentInteractionClassifier.trimmed(input.message) ?? "Claude needs your approval",
-            .approval
-        )
-    }
-
-    static func claudeDescribeAskUserQuestion(toolInput: [String: Any]) -> (text: String, interactionKind: PaneAgentInteractionKind)? {
-        guard let questions = toolInput["questions"] as? [[String: Any]],
-              let first = questions.first else {
-            return nil
-        }
-        var lines: [String] = []
-        if let question = first["question"] as? String, !question.isEmpty {
-            lines.append(question)
-        } else if let header = first["header"] as? String, !header.isEmpty {
-            lines.append(header)
-        }
-        let options = first["options"] as? [[String: Any]]
-        if let options {
-            let labels = options.compactMap { $0["label"] as? String }
-            if !labels.isEmpty {
-                lines.append(labels.map { "[\($0)]" }.joined(separator: " "))
-            }
-        }
-        guard !lines.isEmpty else { return nil }
-        return (text: lines.joined(separator: "\n"), interactionKind: .decision)
-    }
-
-    static func claudePreferredStructuredInteractionText(
-        existingText: String?,
-        existingKind: PaneAgentInteractionKind?,
-        candidateText: String,
-        candidateKind: PaneAgentInteractionKind
-    ) -> String {
-        guard existingKind == candidateKind else { return candidateText }
-        return AgentInteractionClassifier.preferredWaitingMessage(existing: existingText, candidate: candidateText) ?? candidateText
-    }
-
-    static func claudeShouldReplaceStructuredInteractionText(
-        with notificationText: String,
-        structuredKind: PaneAgentInteractionKind
-    ) -> Bool {
-        if AgentInteractionClassifier.isGenericNeedsInputMessage(notificationText)
-            || AgentInteractionClassifier.isGenericApprovalMessage(notificationText) {
-            return false
-        }
-        switch structuredKind {
-        case .approval, .auth, .genericInput:
-            return AgentInteractionClassifier.requiresHumanInput(message: notificationText)
-        case .question, .decision, .none:
-            return false
-        }
     }
 
     static func claudeLifecyclePayload(

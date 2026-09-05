@@ -403,6 +403,7 @@
 		A524DA357EFACE58D38A111D /* WindowChromeRowLayoutPlanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7017B142217423B1126B8E2A /* WindowChromeRowLayoutPlanner.swift */; };
 		A543B6ABD356776262A865EB /* LibghosttySurfaceKeyEventTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7905A1748912E4A0FDCC9A9B /* LibghosttySurfaceKeyEventTests.swift */; };
 		A572532B0FE7572CF7278176 /* TmuxCompatCLITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C15A14BDE2EEBB8C5AA0F3DD /* TmuxCompatCLITests.swift */; };
+		A61BC15810CD2E6564730F28 /* ClaudeEventAdapter+Interactions.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A697D7595C78915298E78E0 /* ClaudeEventAdapter+Interactions.swift */; };
 		A6A1F413A649AAE4E833DE30 /* GlobalSearchCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A5AA4E83079005D5C787066 /* GlobalSearchCoordinator.swift */; };
 		A703587C5927A81A32B78B27 /* MenuBarPaneSnapshot.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A043993267A274777D7B47F /* MenuBarPaneSnapshot.swift */; };
 		A76B7C5D05C1546930BA094A /* GhosttySeededColorHealer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4FDD4F837A7EA056A5A555B9 /* GhosttySeededColorHealer.swift */; };
@@ -499,6 +500,7 @@
 		C9ED7FA8D89698D7E7644E36 /* LibghosttySelectionAutoscrollController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4069DF835DCBC34EAFA18963 /* LibghosttySelectionAutoscrollController.swift */; };
 		C9F0082D206C318AE7D98831 /* WorklaneStoreServerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 630B5B3D8685C9D8A186AC9B /* WorklaneStoreServerTests.swift */; };
 		C9F8CE96C0B0E64D7F39EF5F /* DroidEventAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9C60A209D61BAD91EDFF14CF /* DroidEventAdapter.swift */; };
+		CB0C2CB05FF50159D35A04D9 /* CloseConfirmationSelection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6BE40F31B76E5EA4A9A830CB /* CloseConfirmationSelection.swift */; };
 		CB79F077F87E4A504CBEA9B9 /* RootViewControllerUpdateIntegrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC28F1EA0D7841668F8DA676 /* RootViewControllerUpdateIntegrationTests.swift */; };
 		CBA82B1C9557F98AD04A8672 /* SidebarPaneRowViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = C9407DEA6B0DE6363B46DE0A /* SidebarPaneRowViews.swift */; };
 		CBE2C88CD30F0D4ED109D6CD /* CodexToolStatusResolver+Interrupt.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7AACA2D053526B314F4EE396 /* CodexToolStatusResolver+Interrupt.swift */; };
@@ -922,6 +924,7 @@
 		6960333F9BE4F448FCA1D1A5 /* AgentConsentCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentConsentCoordinator.swift; sourceTree = "<group>"; };
 		69E99517E9EAA4D99552859C /* WorkspaceTemplate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceTemplate.swift; sourceTree = "<group>"; };
 		6BC138BE273ED92291124633 /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
+		6BE40F31B76E5EA4A9A830CB /* CloseConfirmationSelection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloseConfirmationSelection.swift; sourceTree = "<group>"; };
 		6C5489AD4C2AF3E168C216B4 /* WorklaneDestinationCatalog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorklaneDestinationCatalog.swift; sourceTree = "<group>"; };
 		6CE07AB1014F599610545628 /* CodexToolStatusResolver+ShellReturn.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "CodexToolStatusResolver+ShellReturn.swift"; sourceTree = "<group>"; };
 		6D46D74C2BFDAC52C678BDB1 /* TerminalMetadata.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalMetadata.swift; sourceTree = "<group>"; };
@@ -1006,6 +1009,7 @@
 		898B152AC508F23715DB2518 /* OpenCodeLiveThemeSync.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenCodeLiveThemeSync.swift; sourceTree = "<group>"; };
 		8A2F8763B5E0AC31AB0EFC22 /* WorklaneStoreTitleTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorklaneStoreTitleTests.swift; sourceTree = "<group>"; };
 		8A5AA4E83079005D5C787066 /* GlobalSearchCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlobalSearchCoordinator.swift; sourceTree = "<group>"; };
+		8A697D7595C78915298E78E0 /* ClaudeEventAdapter+Interactions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ClaudeEventAdapter+Interactions.swift"; sourceTree = "<group>"; };
 		8AF50948B1AF143E418C8144 /* TaskManagerRootPIDTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TaskManagerRootPIDTests.swift; sourceTree = "<group>"; };
 		8B1279FB2EA650A570BAD4E8 /* TaskRunnerDiscoveryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TaskRunnerDiscoveryTests.swift; sourceTree = "<group>"; };
 		8B439DFE48A26552AB9DFCFC /* CodexToolStatusResolver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexToolStatusResolver.swift; sourceTree = "<group>"; };
@@ -1400,6 +1404,7 @@
 			isa = PBXGroup;
 			children = (
 				AAE5397C365594A855625BE1 /* CloseConfirmationContext.swift */,
+				6BE40F31B76E5EA4A9A830CB /* CloseConfirmationSelection.swift */,
 				E706A2076EAD5DD8C5AD0882 /* NotificationSoundManager.swift */,
 				9E06B6AF9A2D4A3F2872F62E /* NotificationStore.swift */,
 				E101FFDD49FF6625AC16DDED /* PaneAuxiliaryState.swift */,
@@ -1752,6 +1757,7 @@
 				7BFDA5B89851F5FF285DFCFA /* AgentEventAdapting.swift */,
 				82C2F7AE1B971AED06DCFB20 /* AgyEventAdapter.swift */,
 				5E9037893B162FC1AD87A0DF /* ClaudeEventAdapter.swift */,
+				8A697D7595C78915298E78E0 /* ClaudeEventAdapter+Interactions.swift */,
 				C18B2FF6F681F4948B49A9FE /* CodexEventAdapter.swift */,
 				B16413FC0363A393599D36E7 /* CodexNotifyEventAdapter.swift */,
 				A8BBED34BE061909F63C315D /* CopilotEventAdapter.swift */,
@@ -2823,6 +2829,7 @@
 				667A04C8CFE0127371DF68C6 /* BookmarksPopoverViewModel.swift in Sources */,
 				C9ACF6200671CC901D3D0C6C /* CaretTooltip.swift in Sources */,
 				6AF1CD2BF77470AF7368F0F5 /* ClaudeCodeTitleOverrideReducer.swift in Sources */,
+				A61BC15810CD2E6564730F28 /* ClaudeEventAdapter+Interactions.swift in Sources */,
 				D737EBF7DF106CC48AC0E1CE /* ClaudeEventAdapter.swift in Sources */,
 				720727A2DA0A0EA0C32EC86E /* ClaudeHookSessionStore.swift in Sources */,
 				0AA879EAFB09310C3F6B58C3 /* CleanCopyChromeDecoration.swift in Sources */,
@@ -2834,6 +2841,7 @@
 				FBDA06CC21019E395A19A6ED /* CleanCopyURLHelpers.swift in Sources */,
 				85AA36B075A627B684DA8C88 /* CloseConfirmationContext.swift in Sources */,
 				65F7A5CB3F1EF2571AADB53F /* CloseConfirmationCopy.swift in Sources */,
+				CB0C2CB05FF50159D35A04D9 /* CloseConfirmationSelection.swift in Sources */,
 				7C47C97F74DD168347F1CB2F /* ClosedPaneEntry.swift in Sources */,
 				7416113E7130419074A5842C /* ClosedPaneRestoreHelpers.swift in Sources */,
 				2E7726CCE8D1D2DC6D44DB22 /* ClosedPaneStack.swift in Sources */,

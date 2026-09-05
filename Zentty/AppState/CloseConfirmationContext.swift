@@ -17,13 +17,15 @@ enum CloseConfirmationActivity: Equatable, Sendable {
         }
     }
 
-    /// Text for use inside a sentence: commands are quoted, names are not.
+    /// Text for use inside a sentence. Tool names read as proper nouns
+    /// ("Claude Code is still running"); commands and bare process names are
+    /// quoted so a lowercase `node` does not open the sentence unmarked.
     var sentenceText: String {
         switch self {
-        case .tool(let name), .process(let name):
+        case .tool(let name):
             return name
-        case .command(let command):
-            return "“\(command)”"
+        case .command(let text), .process(let text):
+            return "“\(text)”"
         }
     }
 }

@@ -739,6 +739,31 @@ extension WorklaneStore {
         stopSignalLogger.debug(
             "metadata.claudeSpinnerResume pane=\(paneID.rawValue, privacy: .public) title=\(metadata.title ?? "<nil>", privacy: .public)"
         )
+        clearClaudeHookInteractionContext(sessionID: existingStatus.sessionID, promptText: existingStatus.text)
+    }
+
+    /// The hook bridge keeps the open prompt in its session store so a sibling
+    /// tool's PostToolUse leaves it alone. Once the title shows Claude working
+    /// again that prompt is answered; without this the bridge would keep
+    /// dropping PostToolUse heartbeats for the rest of the turn and a later
+    /// Notification could resurface the stale approval text.
+    ///
+    /// Only the prompt this pane was showing is cleared: the spinner title can
+    /// land after the bridge has already stored the *next* PermissionRequest,
+    /// and that one must survive.
+    private func clearClaudeHookInteractionContext(sessionID: String?, promptText: String?) {
+        guard let sessionID, !sessionID.isEmpty,
+              let sessionStore = claudeHookSessionStoreProvider()
+        else {
+            return
+        }
+        do {
+            try sessionStore.clearInteractionContext(sessionID: sessionID, ifTextMatches: promptText)
+        } catch {
+            stopSignalLogger.error(
+                "metadata.claudeSpinnerResume clearInteractionContext failed session=\(sessionID, privacy: .public) error=\(String(describing: error), privacy: .public)"
+            )
+        }
     }
 
     /// When a Claude Code session is running but the terminal title transitions

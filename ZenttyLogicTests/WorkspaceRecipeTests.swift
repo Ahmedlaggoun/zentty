@@ -44,6 +44,112 @@ final class WorkspaceRecipeTests: XCTestCase {
         XCTAssertNil(legacy.frame)
     }
 
+    func test_window_sidebar_round_trips_and_legacy_recipe_decodes_as_nil() throws {
+        let window = WorkspaceRecipe.Window(
+            id: "window-main",
+            worklanes: [],
+            activeWorklaneID: nil,
+            sidebar: WorkspaceRecipe.Sidebar(mode: .hidden, width: 260)
+        )
+
+        let data = try JSONEncoder().encode(window)
+        let restored = try JSONDecoder().decode(WorkspaceRecipe.Window.self, from: data)
+
+        XCTAssertEqual(restored.sidebar?.visibility, "hidden")
+        XCTAssertEqual(restored.sidebar?.visibilityMode, .hidden)
+        XCTAssertEqual(restored.sidebar?.width, 260)
+
+        let legacyRecipeData = try XCTUnwrap(
+            """
+            {
+              "schemaVersion": 3,
+              "windows": [
+                { "id": "legacy-window", "worklanes": [], "activeWorklaneID": null }
+              ]
+            }
+            """.data(using: .utf8)
+        )
+        let legacy = try JSONDecoder().decode(WorkspaceRecipe.self, from: legacyRecipeData)
+        let migrated = WorkspaceRecipeMigration.migrate(legacy)
+
+        XCTAssertNil(legacy.windows[0].sidebar)
+        XCTAssertNil(migrated.windows[0].sidebar, "migration must not invent sidebar state")
+        XCTAssertEqual(migrated.schemaVersion, WorkspaceRecipe.currentSchemaVersion)
+    }
+
+    func test_window_sidebar_reads_transient_or_unknown_visibility_safely() {
+        XCTAssertEqual(WorkspaceRecipe.Sidebar(visibility: "hoverPeek", width: 200).visibilityMode, .hidden)
+        XCTAssertEqual(WorkspaceRecipe.Sidebar(visibility: "someFutureMode", width: 200).visibilityMode, .pinnedOpen)
+    }
+
+    func test_window_sidebar_empty_object_decodes_to_defaults_instead_of_failing_recipe() throws {
+        let window = try decodeWindow(sidebarJSON: "{}")
+
+        let sidebar = try XCTUnwrap(window.sidebar, "a partial sidebar entry must not be dropped")
+        XCTAssertEqual(sidebar.visibilityMode, .pinnedOpen)
+        XCTAssertEqual(sidebar.width, Double(SidebarWidthPreference.defaultWidth))
+        XCTAssertEqual(window.id, "window-main", "the rest of the window must still decode")
+    }
+
+    func test_window_sidebar_missing_width_keeps_visibility_and_defaults_width() throws {
+        let window = try decodeWindow(sidebarJSON: #"{"visibility":"hidden"}"#)
+
+        let sidebar = try XCTUnwrap(window.sidebar)
+        XCTAssertEqual(sidebar.visibility, "hidden")
+        XCTAssertEqual(sidebar.visibilityMode, .hidden)
+        XCTAssertEqual(sidebar.width, Double(SidebarWidthPreference.defaultWidth))
+    }
+
+    func test_window_sidebar_wrong_types_degrade_per_field() throws {
+        let mistyped = try decodeWindow(sidebarJSON: #"{"visibility":3,"width":"wide"}"#)
+        XCTAssertEqual(mistyped.sidebar?.visibilityMode, .pinnedOpen)
+        XCTAssertEqual(mistyped.sidebar?.width, Double(SidebarWidthPreference.defaultWidth))
+
+        let negativeWidth = try decodeWindow(sidebarJSON: #"{"visibility":"hidden","width":-40}"#)
+        XCTAssertEqual(negativeWidth.sidebar?.visibilityMode, .hidden, "a bad width must not clobber a good visibility")
+        XCTAssertEqual(negativeWidth.sidebar?.width, Double(SidebarWidthPreference.defaultWidth))
+
+        let notAnObject = try decodeWindow(sidebarJSON: #""hidden""#)
+        XCTAssertEqual(notAnObject.sidebar?.visibilityMode, .pinnedOpen)
+        XCTAssertEqual(notAnObject.sidebar?.width, Double(SidebarWidthPreference.defaultWidth))
+    }
+
+    private func decodeWindow(sidebarJSON: String) throws -> WorkspaceRecipe.Window {
+        let data = try XCTUnwrap(
+            """
+            { "id": "window-main", "worklanes": [], "activeWorklaneID": null, "sidebar": \(sidebarJSON) }
+            """.data(using: .utf8)
+        )
+        return try JSONDecoder().decode(WorkspaceRecipe.Window.self, from: data)
+    }
+
+    func test_exporter_and_importer_carry_window_sidebar_state() {
+        let sidebar = WorkspaceRecipe.Sidebar(mode: .hidden, width: 300)
+        let window = WorkspaceRecipeExporter.makeWindow(
+            windowID: WindowID("window-main"),
+            worklanes: [],
+            activeWorklaneID: nil,
+            sidebar: sidebar
+        )
+        XCTAssertEqual(window.sidebar, sidebar)
+
+        let imported = WorkspaceRecipeImporter.makeWorklanes(
+            from: window,
+            windowID: WindowID("window-main"),
+            layoutContext: .fallback,
+            processEnvironment: [:]
+        )
+        XCTAssertEqual(imported.sidebar, sidebar)
+
+        let legacy = WorkspaceRecipeImporter.makeWorklanes(
+            from: WorkspaceRecipe.Window(id: "legacy", worklanes: [], activeWorklaneID: nil),
+            windowID: WindowID("legacy"),
+            layoutContext: .fallback,
+            processEnvironment: [:]
+        )
+        XCTAssertNil(legacy.sidebar)
+    }
+
     func test_exporter_persists_window_frame_when_available() throws {
         let window = WorkspaceRecipeExporter.makeWindow(
             windowID: WindowID("window-main"),

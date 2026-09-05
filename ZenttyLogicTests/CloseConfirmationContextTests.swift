@@ -217,6 +217,139 @@ final class CloseConfirmationContextTests: XCTestCase {
         XCTAssertEqual(copy.informativeText, "The running process in this pane will be terminated.")
     }
 
+    func test_pane_copy_quotes_bare_process_name() throws {
+        let worklane = makeWorklane(
+            title: nil,
+            panes: [PaneState(id: paneA, title: "shell")],
+            metadata: [paneA: TerminalMetadata(processName: "node")],
+            running: [paneA: nil]
+        )
+        let context = try XCTUnwrap(PaneCloseConfirmationContext.make(paneID: paneA, in: worklane))
+
+        let copy = CloseConfirmationCopy.pane(context)
+
+        XCTAssertEqual(context.activity, .process("node"))
+        XCTAssertTrue(
+            copy.informativeText.hasPrefix("“node” is still running and will be terminated."),
+            copy.informativeText
+        )
+    }
+
+    func test_worklane_copy_collapses_repeated_activities_with_a_count() throws {
+        let worklane = makeWorklane(
+            title: "zentty",
+            panes: [
+                PaneState(id: paneA, title: "shell"),
+                PaneState(id: paneB, title: "shell"),
+                PaneState(id: paneC, title: "shell"),
+            ],
+            metadata: [
+                paneA: TerminalMetadata(processName: "claude"),
+                paneB: TerminalMetadata(processName: "claude"),
+            ],
+            running: [paneA: "claude", paneB: "claude", paneC: "pnpm dev"]
+        )
+
+        let context = try XCTUnwrap(WorklaneCloseConfirmationContext.make(worklane: worklane))
+        let copy = CloseConfirmationCopy.worklane(context)
+
+        XCTAssertEqual(context.runningActivities, ["Claude Code", "Claude Code", "pnpm dev"])
+        XCTAssertEqual(
+            copy.informativeText,
+            "3 of 3 panes have running processes that will be terminated: Claude Code (2), pnpm dev."
+        )
+    }
+
+    func test_grouped_activity_list_keeps_first_seen_order() {
+        XCTAssertEqual(CloseConfirmationCopy.groupedActivityList([]), "")
+        XCTAssertEqual(CloseConfirmationCopy.groupedActivityList(["node"]), "node")
+        XCTAssertEqual(
+            CloseConfirmationCopy.groupedActivityList(["pnpm dev", "Claude Code", "pnpm dev", "Codex", "pnpm dev"]),
+            "pnpm dev (3), Claude Code, Codex"
+        )
+    }
+
+    // MARK: - Selection restore after Cancel
+
+    private func makeSelectionWorklanes() -> [WorklaneState] {
+        [
+            WorklaneState(
+                id: WorklaneID("a"),
+                title: "A",
+                paneStripState: PaneStripState(
+                    panes: [PaneState(id: PaneID("a1"), title: "a1"), PaneState(id: PaneID("a2"), title: "a2")],
+                    focusedPaneID: PaneID("a1")
+                )
+            ),
+            WorklaneState(
+                id: WorklaneID("b"),
+                title: "B",
+                paneStripState: PaneStripState(
+                    panes: [PaneState(id: PaneID("b1"), title: "b1")],
+                    focusedPaneID: PaneID("b1")
+                )
+            ),
+        ]
+    }
+
+    func test_selection_snapshot_captures_active_worklane_and_focused_pane() {
+        let snapshot = CloseConfirmationSelectionSnapshot.capture(
+            worklanes: makeSelectionWorklanes(), activeWorklaneID: WorklaneID("a")
+        )
+        XCTAssertEqual(snapshot, CloseConfirmationSelectionSnapshot(worklaneID: WorklaneID("a"), paneID: PaneID("a1")))
+        XCTAssertNil(CloseConfirmationSelectionSnapshot.capture(
+            worklanes: makeSelectionWorklanes(), activeWorklaneID: WorklaneID("missing")
+        ))
+    }
+
+    func test_selection_snapshot_restores_other_worklane_and_pane_after_sheet_moved_selection() {
+        let snapshot = CloseConfirmationSelectionSnapshot(worklaneID: WorklaneID("a"), paneID: PaneID("a1"))
+
+        // Sheet highlighted a pane in worklane B; Cancel goes back to A / a1.
+        XCTAssertEqual(
+            snapshot.restoreAction(worklanes: makeSelectionWorklanes(), activeWorklaneID: WorklaneID("b")),
+            .selectWorklaneAndFocusPane(WorklaneID("a"), PaneID("a1"))
+        )
+    }
+
+    func test_selection_snapshot_refocuses_pane_within_same_worklane() {
+        var worklanes = makeSelectionWorklanes()
+        worklanes[0].paneStripState.focusPane(id: PaneID("a2"))
+        let snapshot = CloseConfirmationSelectionSnapshot(worklaneID: WorklaneID("a"), paneID: PaneID("a1"))
+
+        XCTAssertEqual(
+            snapshot.restoreAction(worklanes: worklanes, activeWorklaneID: WorklaneID("a")),
+            .selectWorklaneAndFocusPane(WorklaneID("a"), PaneID("a1"))
+        )
+    }
+
+    func test_selection_snapshot_does_nothing_when_nothing_moved() {
+        let snapshot = CloseConfirmationSelectionSnapshot(worklaneID: WorklaneID("a"), paneID: PaneID("a1"))
+        XCTAssertEqual(
+            snapshot.restoreAction(worklanes: makeSelectionWorklanes(), activeWorklaneID: WorklaneID("a")),
+            .none
+        )
+    }
+
+    func test_selection_snapshot_falls_back_to_worklane_when_pane_is_gone() {
+        var worklanes = makeSelectionWorklanes()
+        _ = worklanes[0].paneStripState.removePane(id: PaneID("a1"))
+        let snapshot = CloseConfirmationSelectionSnapshot(worklaneID: WorklaneID("a"), paneID: PaneID("a1"))
+
+        XCTAssertEqual(
+            snapshot.restoreAction(worklanes: worklanes, activeWorklaneID: WorklaneID("b")),
+            .selectWorklane(WorklaneID("a"))
+        )
+    }
+
+    func test_selection_snapshot_does_nothing_when_worklane_is_gone() {
+        let snapshot = CloseConfirmationSelectionSnapshot(worklaneID: WorklaneID("gone"), paneID: PaneID("x"))
+        XCTAssertEqual(
+            snapshot.restoreAction(worklanes: makeSelectionWorklanes(), activeWorklaneID: WorklaneID("b")),
+            .none
+        )
+    }
+
     func test_pane_copy_for_session_history() throws {
         let worklane = makeWorklane(
             title: nil,

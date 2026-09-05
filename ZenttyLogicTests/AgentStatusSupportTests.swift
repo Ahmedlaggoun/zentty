@@ -4049,7 +4049,8 @@ final class AgentStatusSupportTests: XCTestCase {
                 environment: [
                     "ZENTTY_WORKLANE_ID": "worklane-main",
                     "ZENTTY_PANE_ID": "worklane-main-shell",
-                ]
+                ],
+                subagentStore: try makeSubagentRegistryStore()
             )
 
             XCTAssertTrue(payloads.isEmpty, "\(event) for AskUserQuestion must not overwrite canonical needs-input")
@@ -7295,7 +7296,8 @@ final class AgentStatusSupportTests: XCTestCase {
                 environment: [
                     "ZENTTY_WORKLANE_ID": "worklane-main",
                     "ZENTTY_PANE_ID": "worklane-main-shell",
-                ]
+                ],
+                subagentStore: try makeSubagentRegistryStore()
             ).first
         )
 
@@ -7316,7 +7318,8 @@ final class AgentStatusSupportTests: XCTestCase {
                 environment: [
                     "ZENTTY_WORKLANE_ID": "worklane-main",
                     "ZENTTY_PANE_ID": "worklane-main-shell",
-                ]
+                ],
+                subagentStore: try makeSubagentRegistryStore()
             ).first
         )
 
@@ -7337,7 +7340,8 @@ final class AgentStatusSupportTests: XCTestCase {
                 environment: [
                     "ZENTTY_WORKLANE_ID": "worklane-main",
                     "ZENTTY_PANE_ID": "worklane-main-shell",
-                ]
+                ],
+                subagentStore: try makeSubagentRegistryStore()
             ).first
         )
 
@@ -7358,7 +7362,8 @@ final class AgentStatusSupportTests: XCTestCase {
                 environment: [
                     "ZENTTY_WORKLANE_ID": "worklane-main",
                     "ZENTTY_PANE_ID": "worklane-main-shell",
-                ]
+                ],
+                subagentStore: try makeSubagentRegistryStore()
             ).first
         )
 
@@ -7380,7 +7385,8 @@ final class AgentStatusSupportTests: XCTestCase {
                 environment: [
                     "ZENTTY_WORKLANE_ID": "worklane-main",
                     "ZENTTY_PANE_ID": "worklane-main-shell",
-                ]
+                ],
+                subagentStore: try makeSubagentRegistryStore()
             ).first
         )
 
@@ -7399,7 +7405,8 @@ final class AgentStatusSupportTests: XCTestCase {
                 "ZENTTY_WORKLANE_ID": "worklane-main",
                 "ZENTTY_PANE_ID": "worklane-main-shell",
                 "ZENTTY_CODEX_PID": "4242",
-            ]
+            ],
+            subagentStore: try makeSubagentRegistryStore()
         )
 
         XCTAssertEqual(
@@ -7450,7 +7457,8 @@ final class AgentStatusSupportTests: XCTestCase {
                 environment: [
                     "ZENTTY_WORKLANE_ID": "worklane-main",
                     "ZENTTY_PANE_ID": "worklane-main-shell",
-                ]
+                ],
+                subagentStore: try makeSubagentRegistryStore()
             ).first
         )
 
@@ -10009,6 +10017,15 @@ final class AgentStatusSupportTests: XCTestCase {
 
         XCTAssertEqual(store.notifications.count, 1)
         XCTAssertEqual(store.notifications.first?.statusText, "Agent ready")
+    }
+
+    private func makeSubagentRegistryStore() throws -> AgentSubagentRegistryStore {
+        // Keep adapter tests off the real ~/Library/Application Support registry file.
+        let directoryURL = try makeTemporaryDirectory(named: "agent-subagent-registry")
+        return AgentSubagentRegistryStore(
+            stateURL: directoryURL.appendingPathComponent("agent-subagent-sessions.json"),
+            transcriptModificationDate: { _ in nil }
+        )
     }
 
     private func makeClaudeHookSessionStore() throws -> ClaudeHookSessionStore {
