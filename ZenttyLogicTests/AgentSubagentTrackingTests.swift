@@ -149,6 +149,35 @@ final class AgentSubagentTrackingTests: XCTestCase {
         XCTAssertEqual(try store.rootSessionID(key: paneKey), "root-1")
     }
 
+    func test_registry_retires_entries_whose_transcript_went_quiet() throws {
+        var now = Date(timeIntervalSince1970: 10_000)
+        var modifiedAt: [String: Date] = [:]
+        let store = try makeRegistryStore(now: { now }, transcriptModificationDate: { modifiedAt[$0] })
+
+        try store.start(key: paneKey, entry: PaneAgentSubagentEntry(id: "busy", transcriptPath: "/t/busy.jsonl"))
+        try store.start(key: paneKey, entry: PaneAgentSubagentEntry(id: "quiet", transcriptPath: "/t/quiet.jsonl"))
+        try store.start(key: paneKey, entry: PaneAgentSubagentEntry(id: "no-transcript"))
+        try store.start(key: paneKey, entry: PaneAgentSubagentEntry(id: "not-yet-written", transcriptPath: "/t/missing.jsonl"))
+        modifiedAt["/t/busy.jsonl"] = now
+        modifiedAt["/t/quiet.jsonl"] = now
+
+        now = now.addingTimeInterval(AgentSubagentRegistryStore.transcriptQuietWindow + 1)
+        modifiedAt["/t/busy.jsonl"] = now
+        XCTAssertEqual(
+            try store.summary(key: paneKey)?.entries.map(\.id),
+            ["busy", "no-transcript", "not-yet-written"],
+            "only an existing transcript that stopped being written retires its entry"
+        )
+
+        now = now.addingTimeInterval(AgentSubagentRegistryStore.staleEntryWindow)
+        modifiedAt["/t/busy.jsonl"] = now
+        XCTAssertEqual(
+            try store.summary(key: paneKey)?.entries.map(\.id),
+            ["busy"],
+            "entries without a readable transcript still fall back to the stale window"
+        )
+    }
+
     // MARK: - Model resolver
 
     func test_claude_model_resolver_prefers_meta_sidecar_then_transcript() throws {
@@ -166,6 +195,13 @@ final class AgentSubagentTrackingTests: XCTestCase {
         {"agentType":"general-purpose","description":"x","toolUseId":"toolu_1","spawnDepth":1,"model":"sonnet"}
         """.write(toFile: AgentSubagentModelResolver.claudeMetaPath(agentTranscriptPath: transcriptPath), atomically: true, encoding: .utf8)
         XCTAssertEqual(AgentSubagentModelResolver.claudeModel(agentTranscriptPath: transcriptPath), "sonnet")
+
+        // A fork inherits the parent's model; the sidecar says `inherit`, so
+        // the transcript's real model wins.
+        try """
+        {"agentType":"fork","description":"x","toolUseId":"toolu_2","spawnDepth":2,"model":"inherit"}
+        """.write(toFile: AgentSubagentModelResolver.claudeMetaPath(agentTranscriptPath: transcriptPath), atomically: true, encoding: .utf8)
+        XCTAssertEqual(AgentSubagentModelResolver.claudeModel(agentTranscriptPath: transcriptPath), "claude-opus-5")
     }
 
     func test_claude_agent_transcript_path_derives_from_session_transcript() {
@@ -261,23 +297,135 @@ final class AgentSubagentTrackingTests: XCTestCase {
         XCTAssertEqual(payload.subagents?.entries.first?.modelLabel, "sonnet")
     }
 
-    func test_claude_stop_clears_subagents_explicitly() throws {
+    func test_claude_stop_keeps_async_subagents_alive() throws {
+        // Claude Code launches Agent tool calls asynchronously: the parent ends
+        // its turn (Stop) while the subagents keep running and re-wakes on a
+        // task notification. Stop must therefore carry the live set, not blank it.
         let sessionStore = try makeClaudeSessionStore()
         let subagentStore = try makeRegistryStore()
-        _ = try claudePayloads(
-            #"{"hook_event_name":"SubagentStart","session_id":"session-1","agent_id":"abc","agent_type":"Explore"}"#,
-            sessionStore: sessionStore,
-            subagentStore: subagentStore
-        )
+        for id in ["a1", "a2", "a3"] {
+            _ = try claudePayloads(
+                #"{"hook_event_name":"SubagentStart","session_id":"session-1","agent_id":"\#(id)","agent_type":"general-purpose"}"#,
+                sessionStore: sessionStore,
+                subagentStore: subagentStore
+            )
+        }
+
         let stopped = try claudePayloads(
             #"{"hook_event_name":"Stop","session_id":"session-1"}"#,
             sessionStore: sessionStore,
             subagentStore: subagentStore
         )
-        let payload = try XCTUnwrap(stopped.first)
-        XCTAssertEqual(payload.state, .idle)
-        XCTAssertEqual(payload.subagents, .empty)
-        XCTAssertEqual(try subagentStore.summary(key: paneKey), .empty)
+        let stopPayload = try XCTUnwrap(stopped.first)
+        XCTAssertEqual(stopPayload.state, .idle)
+        XCTAssertEqual(stopPayload.subagents?.count, 3, "parent going idle must not blank running subagents")
+
+        let idlePrompt = try claudePayloads(
+            #"{"hook_event_name":"Notification","notification_type":"idle_prompt","session_id":"session-1","message":"Claude is waiting for your input"}"#,
+            sessionStore: sessionStore,
+            subagentStore: subagentStore
+        )
+        XCTAssertEqual(idlePrompt.first?.subagents?.count, 3, "idle prompt must not blank running subagents")
+
+        _ = try claudePayloads(
+            #"{"hook_event_name":"SubagentStop","session_id":"session-1","agent_id":"a2","agent_type":"general-purpose"}"#,
+            sessionStore: sessionStore,
+            subagentStore: subagentStore
+        )
+        let stoppedAgain = try claudePayloads(
+            #"{"hook_event_name":"Stop","session_id":"session-1"}"#,
+            sessionStore: sessionStore,
+            subagentStore: subagentStore
+        )
+        XCTAssertEqual(stoppedAgain.first?.subagents?.entries.map(\.id), ["a1", "a3"])
+
+        for id in ["a1", "a3"] {
+            _ = try claudePayloads(
+                #"{"hook_event_name":"SubagentStop","session_id":"session-1","agent_id":"\#(id)"}"#,
+                sessionStore: sessionStore,
+                subagentStore: subagentStore
+            )
+        }
+        let finalStop = try claudePayloads(
+            #"{"hook_event_name":"Stop","session_id":"session-1"}"#,
+            sessionStore: sessionStore,
+            subagentStore: subagentStore
+        )
+        XCTAssertEqual(finalStop.first?.subagents, .empty, "explicit empty once every subagent stopped")
+    }
+
+    func test_claude_stop_without_recorded_subagents_leaves_payload_untouched() throws {
+        let sessionStore = try makeClaudeSessionStore()
+        let subagentStore = try makeRegistryStore()
+        let stopped = try claudePayloads(
+            #"{"hook_event_name":"Stop","session_id":"session-1"}"#,
+            sessionStore: sessionStore,
+            subagentStore: subagentStore
+        )
+        XCTAssertNil(stopped.first?.subagents)
+    }
+
+    func test_claude_nested_fork_tracks_distinct_ids() throws {
+        // A subagent spawning its own forks fires SubagentStart/Stop with the
+        // child's agent_id from inside the enclosing subagent.
+        let sessionStore = try makeClaudeSessionStore()
+        let subagentStore = try makeRegistryStore()
+        _ = try claudePayloads(
+            #"{"hook_event_name":"SubagentStart","session_id":"session-1","agent_id":"outer","agent_type":"general-purpose"}"#,
+            sessionStore: sessionStore,
+            subagentStore: subagentStore
+        )
+        let nestedStart = try claudePayloads(
+            #"{"hook_event_name":"SubagentStart","session_id":"session-1","agent_id":"inner","agent_type":"fork"}"#,
+            sessionStore: sessionStore,
+            subagentStore: subagentStore
+        )
+        XCTAssertEqual(nestedStart.first?.subagents?.entries.map(\.id), ["inner", "outer"])
+
+        let nestedStop = try claudePayloads(
+            #"{"hook_event_name":"SubagentStop","session_id":"session-1","agent_id":"inner","agent_type":"fork"}"#,
+            sessionStore: sessionStore,
+            subagentStore: subagentStore
+        )
+        XCTAssertEqual(nestedStop.first?.subagents?.entries.map(\.id), ["outer"])
+    }
+
+    func test_claude_hook_inside_subagent_re_registers_a_retired_child() throws {
+        // Liveness pruning can retire a child that sat in a long tool call. Its
+        // next hook (which carries agent_id) puts it back.
+        let sessionStore = try makeClaudeSessionStore()
+        var now = Date(timeIntervalSince1970: 1_000)
+        let directory = try makeTemporaryDirectory()
+        let transcriptPath = directory.appendingPathComponent("agent-abc.jsonl").path
+        try "{}".write(toFile: transcriptPath, atomically: true, encoding: .utf8)
+        var transcriptModifiedAt = now
+        let subagentStore = try makeRegistryStore(
+            now: { now },
+            transcriptModificationDate: { _ in transcriptModifiedAt }
+        )
+
+        _ = try claudePayloads(
+            #"{"hook_event_name":"SubagentStart","session_id":"session-1","agent_id":"abc","agent_type":"Explore","agent_transcript_path":"\#(transcriptPath)"}"#,
+            sessionStore: sessionStore,
+            subagentStore: subagentStore
+        )
+        now = now.addingTimeInterval(AgentSubagentRegistryStore.transcriptQuietWindow + 1)
+        let parentHook = try claudePayloads(
+            #"{"hook_event_name":"PreToolUse","session_id":"session-1","tool_name":"Bash"}"#,
+            sessionStore: sessionStore,
+            subagentStore: subagentStore
+        )
+        XCTAssertEqual(parentHook.first?.subagents, .empty, "retirement must reach the reducer as an explicit empty set")
+        XCTAssertEqual(try subagentStore.summary(key: paneKey), .empty, "quiet transcript retires the entry")
+
+        transcriptModifiedAt = now
+        let toolUse = try claudePayloads(
+            #"{"hook_event_name":"PostToolUse","session_id":"session-1","tool_name":"Bash","agent_id":"abc","agent_type":"Explore","agent_transcript_path":"\#(transcriptPath)"}"#,
+            sessionStore: sessionStore,
+            subagentStore: subagentStore
+        )
+        XCTAssertEqual(toolUse.first?.subagents?.entries.map(\.id), ["abc"])
+        XCTAssertEqual(toolUse.first?.subagents?.entries.first?.agentType, "Explore")
     }
 
     func test_claude_unrelated_hook_leaves_subagents_untouched_when_none_recorded() throws {
@@ -396,6 +544,43 @@ final class AgentSubagentTrackingTests: XCTestCase {
         XCTAssertEqual(stopped.first?.subagents, .empty)
     }
 
+    func test_grok_stop_keeps_background_subagents_and_derives_child_transcript() throws {
+        // spawn_subagent runs in the background by default: the parent's
+        // `stop` fires while the child is still working.
+        let subagentStore = try makeRegistryStore()
+        let started = try AgentEventBridge.grokAdapter(
+            data: Data(#"{"hook_event_name":"SubagentStart","sessionId":"parent","subagentId":"child-1","subagentType":"explore","transcriptPath":"/Users/me/.grok/sessions/cwd/parent/updates.jsonl"}"#.utf8),
+            environment: environment,
+            subagentStore: subagentStore
+        )
+        XCTAssertEqual(
+            started.first?.subagents?.entries.first?.transcriptPath,
+            "/Users/me/.grok/sessions/cwd/child-1/updates.jsonl"
+        )
+
+        let stopped = try AgentEventBridge.grokAdapter(
+            data: Data(#"{"hook_event_name":"Stop","sessionId":"parent"}"#.utf8),
+            environment: environment,
+            subagentStore: subagentStore
+        )
+        XCTAssertEqual(stopped.first?.state, .idle)
+        XCTAssertEqual(stopped.first?.subagents?.entries.map(\.id), ["child-1"])
+
+        _ = try AgentEventBridge.grokAdapter(
+            data: Data(#"{"hook_event_name":"SubagentStop","sessionId":"child-1","subagentId":"child-1"}"#.utf8),
+            environment: environment,
+            subagentStore: subagentStore
+        )
+        let stoppedAgain = try AgentEventBridge.grokAdapter(
+            data: Data(#"{"hook_event_name":"Stop","sessionId":"parent"}"#.utf8),
+            environment: environment,
+            subagentStore: subagentStore
+        )
+        XCTAssertEqual(stoppedAgain.first?.subagents, .empty)
+        XCTAssertNil(AgentEventBridge.grokSubagentTranscriptPath(parentTranscriptPath: nil, subagentID: "x"))
+        XCTAssertNil(AgentEventBridge.grokSubagentTranscriptPath(parentTranscriptPath: "/updates.jsonl", subagentID: "x"))
+    }
+
     func test_grok_hooks_installer_registers_subagent_events_without_matcher() {
         XCTAssertTrue(GrokHooksInstaller.defaultManagedEvents.contains("SubagentStart"))
         XCTAssertTrue(GrokHooksInstaller.defaultManagedEvents.contains("SubagentStop"))
@@ -414,6 +599,26 @@ final class AgentSubagentTrackingTests: XCTestCase {
 
         reducerState.apply(claudePayload(state: .idle, subagents: .empty), now: startedAt.addingTimeInterval(2))
         XCTAssertEqual(reducerState.reducedStatus(now: startedAt.addingTimeInterval(2))?.subagents, .empty)
+    }
+
+    func test_reducer_keeps_idle_session_visible_while_subagents_run() {
+        let startedAt = Date(timeIntervalSince1970: 100)
+        var reducerState = PaneAgentReducerState()
+        let summary = PaneAgentSubagentSummary(entries: [PaneAgentSubagentEntry(id: "a", model: "claude-opus-5")])
+
+        reducerState.apply(claudePayload(state: .running, subagents: summary), now: startedAt)
+        reducerState.apply(claudePayload(state: .idle, subagents: summary), now: startedAt.addingTimeInterval(1))
+
+        let afterIdleWindow = startedAt.addingTimeInterval(1 + PaneAgentReducerState.idleVisibilityWindow + 1)
+        reducerState.sweep(now: afterIdleWindow, isProcessAlive: { _ in true })
+        let status = reducerState.reducedStatus(now: afterIdleWindow)
+        XCTAssertEqual(status?.state, .idle, "idle parent stays visible while background subagents run")
+        XCTAssertEqual(status?.subagents, summary)
+
+        reducerState.apply(claudePayload(state: .idle, subagents: .empty), now: afterIdleWindow)
+        let afterSecondWindow = afterIdleWindow.addingTimeInterval(PaneAgentReducerState.idleVisibilityWindow + 1)
+        reducerState.sweep(now: afterSecondWindow, isProcessAlive: { _ in true })
+        XCTAssertNil(reducerState.reducedStatus(now: afterSecondWindow), "normal idle expiry resumes once the subagents retire")
     }
 
     // MARK: - Helpers
@@ -469,11 +674,16 @@ final class AgentSubagentTrackingTests: XCTestCase {
         return store
     }
 
-    private func makeRegistryStore(now: @escaping () -> Date = Date.init) throws -> AgentSubagentRegistryStore {
-        AgentSubagentRegistryStore(
-            stateURL: try makeTemporaryDirectory().appendingPathComponent("agent-subagent-sessions.json"),
-            now: now
-        )
+    private func makeRegistryStore(
+        now: @escaping () -> Date = Date.init,
+        transcriptModificationDate: ((String) -> Date?)? = nil
+    ) throws -> AgentSubagentRegistryStore {
+        let stateURL = try makeTemporaryDirectory().appendingPathComponent("agent-subagent-sessions.json")
+        if let transcriptModificationDate {
+            return AgentSubagentRegistryStore(stateURL: stateURL, now: now, transcriptModificationDate: transcriptModificationDate)
+        }
+        // Tests that do not care about liveness treat every transcript as alive.
+        return AgentSubagentRegistryStore(stateURL: stateURL, now: now, transcriptModificationDate: { _ in nil })
     }
 
     private func makeTemporaryDirectory() throws -> URL {

@@ -69,6 +69,30 @@
       "--max-budget-usd",
       "2.00",
       "For an integration hook regression test: use the Agent tool once, with subagent_type Explore, to list the files in the current directory. Wait for it to finish, then reply with exactly DONE."
+    ],
+    "subagents_async": [
+      "--setting-sources",
+      "project,local",
+      "--print",
+      "--verbose",
+      "--output-format",
+      "stream-json",
+      "--include-hook-events",
+      "--max-budget-usd",
+      "2.00",
+      "For an integration hook regression test: use the Agent tool exactly once, with subagent_type Explore and run_in_background true, to list the files in the current directory. Do not wait for it: as soon as the Agent tool call returns, reply with exactly DONE and end your turn. Later, when the task notification for that agent arrives, reply with exactly DONE again."
+    ],
+    "subagents_nested": [
+      "--setting-sources",
+      "project,local",
+      "--print",
+      "--verbose",
+      "--output-format",
+      "stream-json",
+      "--include-hook-events",
+      "--max-budget-usd",
+      "2.00",
+      "For an integration hook regression test: use the Agent tool exactly once, with subagent_type general-purpose, and give it this exact task: \"Use the Agent tool exactly once, with subagent_type Explore, to list the files in the current directory. Wait for it to finish, then reply with exactly DONE.\" Wait for the general-purpose agent to finish, then reply with exactly DONE."
     ]
   },
   "expectations": {
@@ -144,6 +168,35 @@
         "Stop"
       ],
       "subagent_payload_required": true
+    },
+    "subagents_async": {
+      "required_events": [
+        "SessionStart",
+        "UserPromptSubmit",
+        "SubagentStart",
+        "Stop",
+        "SubagentStop"
+      ],
+      "subagent_payload_required": true,
+      "event_order": [
+        [
+          "Stop",
+          "SubagentStop"
+        ]
+      ]
+    },
+    "subagents_nested": {
+      "required_events": [
+        "SessionStart",
+        "UserPromptSubmit",
+        "SubagentStart",
+        "SubagentStart",
+        "SubagentStop",
+        "SubagentStop",
+        "Stop"
+      ],
+      "subagent_payload_required": true,
+      "subagent_nested_required": true
     }
   },
   "input_by_scenario": {

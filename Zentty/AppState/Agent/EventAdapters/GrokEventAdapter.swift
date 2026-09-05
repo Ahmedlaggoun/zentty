@@ -59,7 +59,11 @@ extension AgentEventBridge {
             return [lifecyclePayload(target: target, toolName: toolName, state: .running, sessionID: sessionID, cwd: cwd)]
 
         case "stop", "turncomplete", "turn_complete":
-            let subagents = try subagentStore.clear(key: subagentKey)
+            // `spawn_subagent` runs in the background by default and the
+            // parent auto-wakes when a child finishes, so the parent's turn
+            // ending says nothing about its subagents. Carry the live set;
+            // `subagent_stop` and transcript liveness retire entries.
+            let subagents = try subagentStore.summary(key: subagentKey)
             return [lifecyclePayload(target: target, toolName: toolName, state: .idle, sessionID: sessionID, cwd: cwd, subagents: subagents)]
 
         case "subagentstart", "subagent_start":
@@ -68,7 +72,9 @@ extension AgentEventBridge {
             return [lifecyclePayload(target: target, toolName: toolName, state: .running, sessionID: sessionID, cwd: cwd, subagents: subagents)]
 
         case "subagentstop", "subagent_stop", "subagentend", "subagent_end":
-            let subagents = try subagentStore.stop(key: subagentKey, subagentID: grokSubagentID(from: jsonObject))
+            // The stop hook runs in the child's context, so its session id is
+            // the subagent id when no explicit id field is present.
+            let subagents = try subagentStore.stop(key: subagentKey, subagentID: grokSubagentID(from: jsonObject) ?? sessionID)
             return [lifecyclePayload(target: target, toolName: toolName, state: .running, sessionID: sessionID, cwd: cwd, subagents: subagents)]
 
         case "sessionend", "session_end", "end":
@@ -132,13 +138,35 @@ extension AgentEventBridge {
     }
 
     static func grokSubagentEntry(from jsonObject: [String: Any]) -> PaneAgentSubagentEntry {
-        PaneAgentSubagentEntry(
-            id: grokSubagentID(from: jsonObject) ?? UUID().uuidString,
+        let subagentID = grokSubagentID(from: jsonObject)
+        return PaneAgentSubagentEntry(
+            id: subagentID ?? UUID().uuidString,
             agentType: JSONKeyAccess.firstString(in: jsonObject, keys: ["agent_type", "agentType", "subagent_type", "subagentType", "agent_name", "agentName"]),
             model: JSONKeyAccess.firstString(in: jsonObject, keys: ["model", "model_id", "modelId"]),
             nickname: JSONKeyAccess.firstString(in: jsonObject, keys: ["agent_nickname", "agentNickname", "nickname"]),
             transcriptPath: JSONKeyAccess.firstString(in: jsonObject, keys: ["agent_transcript_path", "agentTranscriptPath"])
+                ?? grokSubagentTranscriptPath(
+                    parentTranscriptPath: JSONKeyAccess.firstString(in: jsonObject, keys: ["transcript_path", "transcriptPath"]),
+                    subagentID: subagentID
+                )
         )
+    }
+
+    /// Grok 1.0 keeps every session under
+    /// `~/.grok/sessions/<cwd>/<sessionId>/updates.jsonl`; a subagent is a
+    /// session of its own next to its parent, keyed by the `subagentId` the
+    /// start hook reports. That file is the liveness signal for the registry.
+    static func grokSubagentTranscriptPath(parentTranscriptPath: String?, subagentID: String?) -> String? {
+        guard let parentTranscriptPath, let subagentID, !subagentID.isEmpty, !subagentID.contains("/") else {
+            return nil
+        }
+        let parent = URL(fileURLWithPath: parentTranscriptPath)
+        let sessionsRoot = parent.deletingLastPathComponent().deletingLastPathComponent()
+        guard sessionsRoot.path != "/" else { return nil }
+        return sessionsRoot
+            .appendingPathComponent(subagentID, isDirectory: true)
+            .appendingPathComponent(parent.lastPathComponent, isDirectory: false)
+            .path
     }
 }
 

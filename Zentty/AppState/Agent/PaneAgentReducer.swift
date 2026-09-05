@@ -125,8 +125,12 @@ struct PaneAgentReducerState: Equatable, Sendable {
                 session.updatedAt = now
             }
 
+            // A parent waiting on background subagents is idle but not done:
+            // keep it (and its badge) visible until the children retire.
+            let hasLiveSubagents = session.subagents.map { !$0.isEmpty } ?? false
             let shouldExpireIdle = session.state == .idle
                 && session.trackedPID == nil
+                && !hasLiveSubagents
                 && (session.idleVisibleUntil.map { now >= $0 } ?? false)
             let shouldExpireUnresolvedStop = session.state == .unresolvedStop
                 && (session.unresolvedStopVisibleUntil.map { now >= $0 } ?? false)
@@ -354,7 +358,10 @@ struct PaneAgentReducerState: Equatable, Sendable {
         let sessions = sessionsByID.values.filter { session in
             if session.state == .idle,
                let idleVisibleUntil = session.idleVisibleUntil {
-                return now <= idleVisibleUntil
+                // Idle with background subagents still running stays visible;
+                // the idle window only applies once they have retired.
+                let hasLiveSubagents = session.subagents.map { !$0.isEmpty } ?? false
+                return hasLiveSubagents || now <= idleVisibleUntil
             }
 
             if session.state == .unresolvedStop,

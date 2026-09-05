@@ -749,6 +749,20 @@ enum WorklaneSidebarSummaryBuilder {
             || presentation.interactionKind != nil
             || presentation.interactionLabel != nil
             || presentation.interactionSymbolName != nil else {
+            if presentation.runtimePhase == .idle, presentation.subagents?.isEmpty == false {
+                // The parent finished its turn but its background subagents
+                // are still working: keep a status row so the badge has a home.
+                return PaneSidebarStatusPresentation(
+                    statusText: Self.idleWithSubagentsStatusText,
+                    statusSymbolName: nil,
+                    attentionState: nil,
+                    interactionKind: nil,
+                    interactionLabel: nil,
+                    interactionSymbolName: nil,
+                    taskProgress: nil,
+                    isWorking: false
+                )
+            }
             return PaneSidebarStatusPresentation(
                 statusText: nil,
                 statusSymbolName: nil,
@@ -1121,6 +1135,9 @@ enum WorklaneSidebarSummaryBuilder {
 
         return fallback ?? plainStatusText(for: attentionState)
     }
+
+    /// Status row text for a pane whose agent is idle while subagents run.
+    static let idleWithSubagentsStatusText = "Waiting for subagents"
 
     private static func plainStatusText(for state: WorklaneAttentionState) -> String {
         switch state {

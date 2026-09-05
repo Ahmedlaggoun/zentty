@@ -387,6 +387,185 @@ class SyntheticScenarioTests(unittest.TestCase):
         self.assertIsNone(agent_bench.missing_subagent_payload_detail(without_model, model_required=False))
         self.assertFalse(agent_bench.load_profiles(ROOT / "profiles")["grok"].expectations["subagents"].subagent_model_required)
 
+    def test_claude_async_and_nested_subagent_profiles_pin_upstream_contract(self):
+        claude = agent_bench.load_profiles(ROOT / "profiles")["claude"]
+        base_flags = claude.launch_args_by_scenario["subagents"][:-1]
+        async_expectation = claude.expectations["subagents_async"]
+        self.assertEqual(async_expectation.event_order, [["Stop", "SubagentStop"]])
+        self.assertTrue(async_expectation.subagent_payload_required)
+        self.assertFalse(async_expectation.subagent_nested_required)
+        for event in ("SubagentStart", "Stop", "SubagentStop"):
+            self.assertIn(event, async_expectation.required_events)
+        self.assertEqual(claude.launch_args_by_scenario["subagents_async"][:-1], base_flags)
+        self.assertIn("run_in_background", claude.launch_args_by_scenario["subagents_async"][-1])
+
+        nested_expectation = claude.expectations["subagents_nested"]
+        self.assertTrue(nested_expectation.subagent_nested_required)
+        self.assertTrue(nested_expectation.subagent_payload_required)
+        self.assertEqual(nested_expectation.event_order, [])
+        # Two starts and two stops are required so the completion predicate
+        # keeps the process alive until the nested pair has reported.
+        self.assertEqual(nested_expectation.required_events.count("SubagentStart"), 2)
+        self.assertEqual(nested_expectation.required_events.count("SubagentStop"), 2)
+        self.assertEqual(claude.launch_args_by_scenario["subagents_nested"][:-1], base_flags)
+        # Defaults stay off for scenarios that do not opt in.
+        self.assertEqual(claude.expectations["subagents"].event_order, [])
+        self.assertFalse(claude.expectations["subagents"].subagent_nested_required)
+
+    def test_event_order_passes_when_stop_precedes_subagent_stop(self):
+        expectation = agent_bench.ScenarioExpectation(
+            name="subagents_async",
+            required_events=["SessionStart", "SubagentStart", "Stop", "SubagentStop"],
+            event_order=[["Stop", "SubagentStop"]],
+        )
+        records = [
+            agent_bench.TraceRecord(kind="hook", agent="claude", scenario="subagents_async", event_name=event)
+            for event in ("SessionStart", "UserPromptSubmit", "SubagentStart", "Stop", "SubagentStop", "Stop")
+        ]
+        self.assertIsNone(agent_bench.event_order_violation_detail("claude", "subagents_async", expectation, records))
+        result = agent_bench.classify_completed_result(
+            agent="claude",
+            scenario="subagents_async",
+            expectation=expectation,
+            records=records,
+            terminal_observations=[],
+            output="DONE",
+            skip_patterns=[],
+            exit_code=0,
+            completed_by_predicate=True,
+            strict=True,
+        )
+        self.assertTrue(result.passed)
+        self.assertEqual(result.result_kind, "hook-pass")
+
+    def test_event_order_fails_when_subagent_stops_before_parent_stop(self):
+        expectation = agent_bench.ScenarioExpectation(
+            name="subagents_async",
+            required_events=["SessionStart", "SubagentStart", "Stop", "SubagentStop"],
+            event_order=[["Stop", "SubagentStop"]],
+        )
+        records = [
+            agent_bench.TraceRecord(kind="hook", agent="claude", scenario="subagents_async", event_name=event)
+            for event in ("SessionStart", "SubagentStart", "SubagentStop", "Stop")
+        ]
+        detail = agent_bench.event_order_violation_detail("claude", "subagents_async", expectation, records)
+        self.assertEqual(detail, "expected Stop before SubagentStop but observed order was: SessionStart, SubagentStart, SubagentStop, Stop")
+        result = agent_bench.classify_completed_result(
+            agent="claude",
+            scenario="subagents_async",
+            expectation=expectation,
+            records=records,
+            terminal_observations=[],
+            output="DONE",
+            skip_patterns=[],
+            exit_code=0,
+            completed_by_predicate=True,
+            strict=True,
+        )
+        self.assertFalse(result.passed)
+        self.assertEqual(result.result_kind, "hook-order")
+        self.assertEqual(result.detail, detail)
+        # The timeout path applies the same contract.
+        timeout_result = agent_bench.classify_timeout_result(
+            agent="claude",
+            scenario="subagents_async",
+            expectation=expectation,
+            records=records,
+            terminal_observations=[],
+            output="",
+            skip_patterns=[],
+            timeout=30,
+            strict=True,
+        )
+        self.assertFalse(timeout_result.passed)
+        self.assertEqual(timeout_result.result_kind, "hook-order")
+
+    def test_event_order_ignores_records_from_other_scenarios_and_names_missing_events(self):
+        expectation = agent_bench.ScenarioExpectation(name="subagents_async", required_events=[], event_order=[["Stop", "SubagentStop"]])
+        records = [
+            agent_bench.TraceRecord(kind="hook", agent="claude", scenario="subagents", event_name="Stop"),
+            agent_bench.TraceRecord(kind="hook", agent="claude", scenario="subagents_async", event_name="SubagentStop"),
+        ]
+        self.assertEqual(
+            agent_bench.event_order_violation_detail("claude", "subagents_async", expectation, records),
+            "expected Stop before SubagentStop but Stop was never observed",
+        )
+
+    def test_nested_subagent_validation_requires_two_distinct_matched_pairs(self):
+        self.assertEqual(
+            agent_bench.missing_nested_subagent_detail([{"event": "start", "agent_id": "a"}, {"event": "stop", "agent_id": "a"}]),
+            "nested subagents require at least 2 SubagentStart hooks but 1 were captured",
+        )
+        self.assertEqual(
+            agent_bench.missing_nested_subagent_detail(
+                [{"event": "start", "agent_id": "a"}, {"event": "start", "agent_id": "b"}, {"event": "stop", "agent_id": "b"}]
+            ),
+            "nested subagents require at least 2 SubagentStop hooks but 1 were captured",
+        )
+        self.assertEqual(
+            agent_bench.missing_nested_subagent_detail(
+                [{"event": "start", "agent_id": "a"}, {"event": "start"}, {"event": "stop", "agent_id": "a"}, {"event": "stop"}]
+            ),
+            "SubagentStart payload did not carry an agent_id",
+        )
+        self.assertEqual(
+            agent_bench.missing_nested_subagent_detail(
+                [{"event": "start", "agent_id": "a"}, {"event": "start", "agent_id": "a"}, {"event": "stop", "agent_id": "a"}, {"event": "stop", "agent_id": "a"}]
+            ),
+            "SubagentStart hooks did not carry distinct agent ids: a, a",
+        )
+        self.assertEqual(
+            agent_bench.missing_nested_subagent_detail(
+                [{"event": "start", "agent_id": "a"}, {"event": "start", "agent_id": "b"}, {"event": "stop", "agent_id": "b"}, {"event": "stop", "agent_id": "zzz"}]
+            ),
+            "SubagentStop agent_id did not match any SubagentStart: zzz",
+        )
+        self.assertEqual(
+            agent_bench.missing_nested_subagent_detail(
+                [{"event": "start", "agent_id": "a"}, {"event": "start", "agent_id": "b"}, {"event": "stop", "agent_id": "a"}, {"event": "stop", "agent_id": "a"}]
+            ),
+            "SubagentStart without a matching SubagentStop: b",
+        )
+        self.assertIsNone(
+            agent_bench.missing_nested_subagent_detail(
+                [{"event": "start", "agent_id": "a"}, {"event": "start", "agent_id": "b"}, {"event": "stop", "agent_id": "b"}, {"event": "stop", "agent_id": "a"}]
+            )
+        )
+
+    def test_nested_subagent_expectation_classifies_from_trace_records(self):
+        expectation = agent_bench.ScenarioExpectation(
+            name="subagents_nested",
+            required_events=["SubagentStart", "SubagentStart", "SubagentStop", "SubagentStop", "Stop"],
+            subagent_nested_required=True,
+        )
+
+        def record(event: str, agent_id: str) -> agent_bench.TraceRecord:
+            kind = "start" if event == "SubagentStart" else "stop"
+            return agent_bench.TraceRecord(
+                kind="hook",
+                agent="claude",
+                scenario="subagents_nested",
+                event_name=event,
+                extra={"subagent": {"event": kind, "agent_id": agent_id, "agent_type": "Explore", "model": "opus"}},
+            )
+
+        stop = agent_bench.TraceRecord(kind="hook", agent="claude", scenario="subagents_nested", event_name="Stop")
+        passing = [record("SubagentStart", "outer"), record("SubagentStart", "inner"), record("SubagentStop", "inner"), record("SubagentStop", "outer"), stop]
+        result = agent_bench.classify_completed_result(
+            agent="claude", scenario="subagents_nested", expectation=expectation, records=passing, terminal_observations=[],
+            output="DONE", skip_patterns=[], exit_code=0, completed_by_predicate=True, strict=True,
+        )
+        self.assertTrue(result.passed, result.detail)
+
+        failing = [record("SubagentStart", "outer"), record("SubagentStart", "outer"), record("SubagentStop", "outer"), record("SubagentStop", "outer"), stop]
+        result = agent_bench.classify_completed_result(
+            agent="claude", scenario="subagents_nested", expectation=expectation, records=failing, terminal_observations=[],
+            output="DONE", skip_patterns=[], exit_code=0, completed_by_predicate=True, strict=True,
+        )
+        self.assertFalse(result.passed)
+        self.assertEqual(result.result_kind, "missing-nested-subagent")
+        self.assertEqual(result.detail, "SubagentStart hooks did not carry distinct agent ids: outer, outer")
+
     def test_stop_race_fixture_contains_late_notification_after_stop(self):
         fixture_path = ROOT / "fixtures" / "claude_stop_then_late_notification.jsonl"
         events = []

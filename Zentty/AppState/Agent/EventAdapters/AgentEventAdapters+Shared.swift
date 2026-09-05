@@ -179,10 +179,18 @@ extension AgentEventBridge {
         subagentStore: AgentSubagentRegistryStore,
         resolver: (PaneAgentSubagentEntry) -> PaneAgentSubagentEntry?
     ) throws -> [AgentStatusPayload] {
-        guard let current = try subagentStore.summary(key: key), !current.isEmpty else {
+        guard let (current, retired) = try subagentStore.prunedSummary(key: key) else {
             return payloads
         }
-        let refreshed = try subagentStore.refreshMissingModels(key: key, resolver: resolver) ?? current
+        // A long-standing empty set is nothing new for the reducer. One that
+        // just became empty (liveness pruning retired the last entry) must
+        // travel explicitly, or the reducer keeps its previous snapshot.
+        if current.isEmpty, !retired {
+            return payloads
+        }
+        let refreshed = current.isEmpty
+            ? current
+            : (try subagentStore.refreshMissingModels(key: key, resolver: resolver) ?? current)
         return payloads.map { payload in
             guard payload.signalKind == .lifecycle, payload.state != nil, payload.subagents == nil else {
                 return payload

@@ -45,7 +45,8 @@ hook, and terminal observations.
 
 - `result_kind`: `hook-pass`, `process-timeout`, `agent-refusal`,
   `auth-skip`, `missing-hook`, `bootstrap-pass`, `missing-bootstrap`,
-  `missing-session-identity`, `scenario-skip`, or `binary-skip`.
+  `missing-session-identity`, `missing-subagent-payload`, `hook-order`,
+  `missing-nested-subagent`, `scenario-skip`, or `binary-skip`.
 - `timeline`: relative-millisecond events for that scenario.
 - `terminal_observations`: advisory OSC title, OSC 9, and progress signals.
 - `session_identity_observations`: hook-provided session IDs and tracked PIDs
@@ -88,3 +89,23 @@ hook payload names an agent type and that the transcript sidecar next to it
 yields a model (`agent-<id>.meta.json` or the first assistant line for Claude,
 the sub-thread rollout's `turn_context` for Codex), because those two facts are
 what the badge and its expanded list are built from.
+
+`subagents_async` and `subagents_nested` (Claude only) pin the upstream
+contract that the badge logic depends on since Claude Code 2.1.261 launches
+every Agent tool call asynchronously:
+
+- `subagents_async` asks for one Explore agent with `run_in_background` and an
+  immediate `DONE`. Besides the usual required events it sets
+  `event_order: [["Stop", "SubagentStop"]]`: some `Stop` must be observed
+  before the last `SubagentStop`, proving the parent went idle while its
+  subagent was still alive. `Stop` therefore must not clear the badge. A
+  violation reports `hook-order` with the observed hook sequence.
+- `subagents_nested` asks for one general-purpose agent that itself spawns one
+  Explore agent. It requires two `SubagentStart` and two `SubagentStop` events
+  and sets `subagent_nested_required: true`: the starts must carry distinct
+  `agent_id`s and every stop must match a start. A violation reports
+  `missing-nested-subagent`.
+
+`event_order` is generic: each entry is a `[before, after]` pair of hook event
+names, checked against the scenario's own hook records after the required
+events pass.
