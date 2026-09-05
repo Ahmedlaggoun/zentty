@@ -1,3 +1,4 @@
+import Carbon.HIToolbox
 import XCTest
 @testable import Zentty
 
@@ -948,6 +949,110 @@ final class RootViewCompositionTests: AppKitTestCase {
         webButton.performClick(nil)
 
         XCTAssertEqual(selectedID, WorklaneID("worklane-web"))
+    }
+
+    // MARK: - numbered worklane selection
+
+    private func makeNumberedWorklanes() -> [WorklaneState] {
+        ["A", "B", "C"].map { name in
+            let paneID = PaneID("pane-\(name)")
+            return WorklaneState(
+                id: WorklaneID("worklane-\(name)"),
+                title: name,
+                paneStripState: PaneStripState(
+                    panes: [PaneState(id: paneID, title: "shell-\(name)")],
+                    focusedPaneID: paneID
+                )
+            )
+        }
+    }
+
+    private func sidebarActiveWorklaneID(in controller: RootViewController) throws -> WorklaneID? {
+        let sidebarView = try XCTUnwrap(controller.view.subviews.compactMap { $0 as? SidebarView }.first)
+        return sidebarView.debugAccessForTesting.worklaneSummaries.first(where: \.isActive)?.worklaneID
+    }
+
+    func test_route_select_worklane_uses_current_order_and_ignores_out_of_range_positions() throws {
+        let controller = makeController()
+        hostInVisibleWindow(controller)
+        controller.replaceWorklanes(makeNumberedWorklanes(), activeWorklaneID: WorklaneID("worklane-A"))
+
+        controller.routeSelectWorklane(position: 2)
+        XCTAssertEqual(controller.activeWorklaneIDForTesting, WorklaneID("worklane-B"))
+
+        XCTAssertTrue(controller.worklaneStore.reorderWorklanes(to: [
+            WorklaneID("worklane-C"), WorklaneID("worklane-B"), WorklaneID("worklane-A"),
+        ]))
+        controller.routeSelectWorklane(position: 1)
+        XCTAssertEqual(controller.activeWorklaneIDForTesting, WorklaneID("worklane-C"))
+        controller.routeSelectWorklane(position: 3)
+        XCTAssertEqual(controller.activeWorklaneIDForTesting, WorklaneID("worklane-A"))
+
+        controller.routeSelectWorklane(position: 0)
+        controller.routeSelectWorklane(position: 4)
+        controller.routeSelectWorklane(position: 99)
+        XCTAssertEqual(controller.activeWorklaneIDForTesting, WorklaneID("worklane-A"))
+    }
+
+    func test_route_select_worklane_during_peek_moves_peek_selection_without_touching_store() throws {
+        let controller = makeController()
+        hostInVisibleWindow(controller)
+        controller.replaceWorklanes(makeNumberedWorklanes(), activeWorklaneID: WorklaneID("worklane-A"))
+        controller.view.layoutSubtreeIfNeeded()
+
+        // Two quick Ctrl-Tab taps: the first arms, the second commits the deferred
+        // step to B and opens the peek with its selection advanced to C. This opens
+        // the peek without waiting on the hold timer.
+        controller.routeNextWorklane()
+        controller.routeNextWorklane()
+        XCTAssertEqual(controller.activeWorklaneIDForTesting, WorklaneID("worklane-B"))
+        XCTAssertEqual(try sidebarActiveWorklaneID(in: controller), WorklaneID("worklane-C"), "Peek should be open on C")
+
+        controller.routeSelectWorklane(position: 1)
+
+        XCTAssertEqual(
+            try sidebarActiveWorklaneID(in: controller),
+            WorklaneID("worklane-A"),
+            "An absolute jump during a peek moves the peek selection"
+        )
+        XCTAssertEqual(
+            controller.activeWorklaneIDForTesting,
+            WorklaneID("worklane-B"),
+            "The store's active worklane must not change until Ctrl is released"
+        )
+
+        controller.routeSelectWorklane(position: 99)
+        XCTAssertEqual(try sidebarActiveWorklaneID(in: controller), WorklaneID("worklane-A"))
+        XCTAssertEqual(controller.activeWorklaneIDForTesting, WorklaneID("worklane-B"))
+
+        // Release Ctrl through the app event queue so the peek's local key
+        // monitor commits the selection and uninstalls itself.
+        try releasePeekControl()
+        XCTAssertEqual(
+            controller.activeWorklaneIDForTesting,
+            WorklaneID("worklane-A"),
+            "Releasing Ctrl commits the peek selection"
+        )
+    }
+
+    /// Sends a Ctrl-up `flagsChanged` event through `NSApp.sendEvent`, which is
+    /// where local event monitors (the peek key monitor) get their turn.
+    private func releasePeekControl() throws {
+        let ctrlUp = try XCTUnwrap(
+            NSEvent.keyEvent(
+                with: .flagsChanged,
+                location: .zero,
+                modifierFlags: [],
+                timestamp: ProcessInfo.processInfo.systemUptime,
+                windowNumber: 0,
+                context: nil,
+                characters: "",
+                charactersIgnoringModifiers: "",
+                isARepeat: false,
+                keyCode: UInt16(kVK_Control)
+            )
+        )
+        NSApp.sendEvent(ctrlUp)
     }
 
     func test_close_worklane_prompts_when_target_worklane_requires_pane_close_confirmation() throws {

@@ -3115,8 +3115,10 @@ extension RootViewController: AppActionRouterEnvironment {
     /// Absolute worklane selection shared by the sidebar click and the numbered
     /// shortcuts. Ctrl-Tab goes through `WorklanePeekController.handleTab` because
     /// it is relative and tap-vs-hold sensitive; an absolute jump cannot. While a
-    /// peek is open the jump moves the peek selection instead of the store, the
-    /// same way a click inside the peek overlay does, so Ctrl release commits it.
+    /// peek is open a sidebar click moves the peek selection instead of the store,
+    /// the same way a click inside the peek overlay does, so Ctrl release commits
+    /// it. (⌘1–9 do not reach this branch in practice: Ctrl is held for the
+    /// whole peek, so the key monitor sees those presses first.)
     private func selectWorklaneFromNavigation(id worklaneID: WorklaneID) {
         if case .peeking = peekController.phase,
            let worklane = worklaneStore.worklanes.first(where: { $0.id == worklaneID }),

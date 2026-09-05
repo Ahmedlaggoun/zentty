@@ -403,6 +403,16 @@ final class ShortcutsSettingsSectionViewController: SettingsScrollableSectionVie
         handleConflictReassignClicked(nil)
     }
 
+    func applyPresetForTesting(_ preset: ShortcutPreset) {
+        applyPreset(preset)
+    }
+
+    func clearSelectionForTesting() {
+        selectedCommandID = nil
+        syncSelectionToTableView()
+        refreshDetailPane()
+    }
+
     func apply(shortcuts: AppConfig.Shortcuts) {
         currentShortcuts = shortcuts.normalized()
         shortcutManager = ShortcutManager(shortcuts: currentShortcuts)
@@ -1167,17 +1177,42 @@ final class ShortcutsSettingsSectionViewController: SettingsScrollableSectionVie
     }
 
     private func persistShortcut(_ shortcut: KeyboardShortcut?, for commandID: AppCommandID) {
-        try? configStore.update { config in
+        persistShortcuts(describedAs: "persist \(String(describing: shortcut)) for \(commandID.rawValue)") { config in
             config.shortcuts = config.shortcuts.updating(commandID: commandID, shortcut: shortcut)
         }
         apply(shortcuts: configStore.current.shortcuts)
+    }
+
+    /// Runs a shortcuts config write and, when it fails, logs and pins the
+    /// write-failure message to the selected command so the issue row shows
+    /// it. Bulk actions (presets, reset, import) can run with nothing
+    /// selected; the first visible command is selected so the message has a
+    /// row to live on.
+    private func persistShortcuts(
+        describedAs description: String,
+        _ mutate: (inout AppConfig) throws -> Void
+    ) {
+        do {
+            try configStore.update(mutate)
+        } catch {
+            shortcutsLogger.error("Failed to \(description): \(error.localizedDescription)")
+            if selectedCommandID == nil {
+                selectedCommandID = browserItems.compactMap(\.commandID).first
+                    ?? AppCommandRegistry.definitions.first?.id
+            }
+            if let selectedCommandID {
+                issueByCommandID[selectedCommandID] = .message(
+                    "Couldn’t save the shortcut change. Check that the config file is writable and try again."
+                )
+            }
+        }
     }
 
     private func resetAllShortcuts() {
         recordingCommandID = nil
         clearRecordingPreview()
         issueByCommandID.removeAll()
-        try? configStore.update { config in
+        persistShortcuts(describedAs: "reset shortcuts to defaults") { config in
             config.shortcuts = .default
         }
         searchField.stringValue = ""
@@ -1390,7 +1425,7 @@ final class ShortcutsSettingsSectionViewController: SettingsScrollableSectionVie
         issueByCommandID.removeAll()
         let resolver = ShortcutPresetResolver()
         let bindings = resolver.resolve(preset)
-        try? configStore.update { config in
+        persistShortcuts(describedAs: "apply shortcut preset \(preset.rawValue)") { config in
             config.shortcuts = AppConfig.Shortcuts(bindings: bindings)
         }
         searchField.stringValue = ""
@@ -1472,7 +1507,7 @@ final class ShortcutsSettingsSectionViewController: SettingsScrollableSectionVie
         recordingCommandID = nil
         clearRecordingPreview()
         issueByCommandID.removeAll()
-        try? configStore.update { config in
+        persistShortcuts(describedAs: "import \(bindings.count) shortcut bindings") { config in
             config.shortcuts = AppConfig.Shortcuts(bindings: bindings)
         }
         searchField.stringValue = ""

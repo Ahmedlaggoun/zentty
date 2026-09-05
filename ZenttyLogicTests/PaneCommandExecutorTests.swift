@@ -88,6 +88,26 @@ final class PaneCommandExecutorTests: XCTestCase {
         XCTAssertEqual(store.activeWorklane?.paneStripState.panes.count, 1)
     }
 
+    func test_close_confirmation_closes_the_pane_it_was_raised_for_even_after_focus_moves() throws {
+        let store = makeStore(paneCount: 2, focusedHasHistory: true)
+        let configStore = makeConfigStore()
+        try configStore.update { $0.confirmations.confirmBeforeClosingPane = true }
+        let spy = HooksSpy()
+        let executor = makeExecutor(store: store, configStore: configStore, hooks: spy.makeHooks())
+
+        executor.handlePaneCommand(.closeFocusedPane)
+        XCTAssertEqual(spy.presentedContext?.paneName, "server")
+
+        // Focus wanders to the other pane while the sheet is still up.
+        store.focusPane(id: paneB)
+        XCTAssertEqual(store.activeWorklane?.paneStripState.focusedPaneID, paneB)
+
+        try XCTUnwrap(spy.capturedOnConfirm)()
+
+        let remainingPaneIDs = store.activeWorklane?.paneStripState.panes.map(\.id)
+        XCTAssertEqual(remainingPaneIDs, [paneB], "The pane the prompt was raised for must close, not the newly focused one")
+    }
+
     // MARK: - Helpers
 
     private func makeExecutor(

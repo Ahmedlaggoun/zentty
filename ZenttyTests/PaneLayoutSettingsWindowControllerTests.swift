@@ -1336,12 +1336,191 @@ final class SettingsWindowControllerTests: XCTestCase {
         shortcutsController.activateConflictReassignForTesting()
 
         XCTAssertNil(shortcutsController.conflictTargetTitleForTesting)
-        XCTAssertNotNil(
+        let errorMessage = try XCTUnwrap(
             shortcutsController.errorMessageForTesting,
             "A failed config write must surface an error instead of silently dropping the change"
         )
+        XCTAssertTrue(
+            errorMessage.hasPrefix("Couldn’t save"),
+            "Expected the write-failure message, got: \(errorMessage)"
+        )
         XCTAssertEqual(shortcutsController.displayString(for: .selectWorklane1), "Unassigned")
         XCTAssertEqual(shortcutsController.displayString(for: .arrangeWidthFull), "\u{2318}1")
+        XCTAssertTrue(store.current.shortcuts.bindings.isEmpty, "Nothing should be persisted when the write fails")
+    }
+
+    func test_shortcuts_conflict_reassign_unassigns_rebound_command_when_its_default_is_taken_by_a_third_command() throws {
+        let store = AppConfigStore(
+            fileURL: AppConfigStore.temporaryFileURL(prefix: "ZenttyTests.SettingsWindow")
+        )
+        // Toggle Sidebar (A) was rebound away from ⌘S, and Find (C) now holds ⌘S.
+        // Assign Anyway hands A's rebound key to New Worklane (B); A cannot fall
+        // back to its default because C owns it, so A ends up Unassigned.
+        let rebound = KeyboardShortcut(key: .character("k"), modifiers: [.command, .option, .shift])
+        let toggleSidebarDefault = try XCTUnwrap(AppCommandRegistry.definition(for: .toggleSidebar).defaultShortcut)
+        try store.update { config in
+            config.shortcuts = config.shortcuts
+                .updating(commandID: .toggleSidebar, shortcut: rebound)
+                .updating(commandID: .find, shortcut: toggleSidebarDefault)
+        }
+        let controller = SettingsWindowController(
+            configStore: store,
+            initialSection: .shortcuts
+        )
+        addTeardownBlock { controller.window?.close() }
+
+        controller.show(section: .shortcuts, sender: nil)
+        waitForLayout()
+
+        let contentController = try XCTUnwrap(
+            controller.window?.contentViewController as? SettingsViewController
+        )
+        let shortcutsController = try XCTUnwrap(
+            contentController.currentSectionViewController as? ShortcutsSettingsSectionViewController
+        )
+
+        shortcutsController.selectCommandForTesting(.newWorklane)
+        shortcutsController.attemptShortcutAssignmentForTesting(rebound)
+        XCTAssertEqual(shortcutsController.conflictTargetTitleForTesting, "Toggle Sidebar")
+
+        shortcutsController.activateConflictReassignForTesting()
+
+        XCTAssertNil(shortcutsController.conflictTargetTitleForTesting)
+        XCTAssertNil(shortcutsController.errorMessageForTesting)
+        XCTAssertEqual(shortcutsController.displayString(for: .toggleSidebar), "Unassigned")
+
+        let manager = ShortcutManager(shortcuts: store.current.shortcuts)
+        XCTAssertNil(manager.shortcut(for: .toggleSidebar))
+        XCTAssertEqual(manager.shortcut(for: .find), toggleSidebarDefault, "The third command keeps the default it owns")
+        XCTAssertEqual(manager.shortcut(for: .newWorklane), rebound)
+        XCTAssertTrue(
+            store.current.shortcuts.bindings.contains(ShortcutBindingOverride(commandID: .toggleSidebar, shortcut: nil)),
+            "Expected an explicit unassigned override: \(store.current.shortcuts.bindings)"
+        )
+    }
+
+    func test_shortcuts_conflict_reassign_restores_rebound_command_default_when_the_new_owner_held_it() throws {
+        let store = AppConfigStore(
+            fileURL: AppConfigStore.temporaryFileURL(prefix: "ZenttyTests.SettingsWindow")
+        )
+        // Toggle Sidebar (A) was rebound away from ⌘S, and New Worklane (B) now
+        // holds ⌘S. Assign Anyway hands A's rebound key to B; B releases ⌘S in the
+        // same write, so A gets its default back instead of ending up Unassigned.
+        let rebound = KeyboardShortcut(key: .character("k"), modifiers: [.command, .option, .shift])
+        let toggleSidebarDefault = try XCTUnwrap(AppCommandRegistry.definition(for: .toggleSidebar).defaultShortcut)
+        try store.update { config in
+            config.shortcuts = config.shortcuts
+                .updating(commandID: .toggleSidebar, shortcut: rebound)
+                .updating(commandID: .newWorklane, shortcut: toggleSidebarDefault)
+        }
+        let controller = SettingsWindowController(
+            configStore: store,
+            initialSection: .shortcuts
+        )
+        addTeardownBlock { controller.window?.close() }
+
+        controller.show(section: .shortcuts, sender: nil)
+        waitForLayout()
+
+        let contentController = try XCTUnwrap(
+            controller.window?.contentViewController as? SettingsViewController
+        )
+        let shortcutsController = try XCTUnwrap(
+            contentController.currentSectionViewController as? ShortcutsSettingsSectionViewController
+        )
+
+        shortcutsController.selectCommandForTesting(.newWorklane)
+        shortcutsController.attemptShortcutAssignmentForTesting(rebound)
+        XCTAssertEqual(shortcutsController.conflictTargetTitleForTesting, "Toggle Sidebar")
+
+        shortcutsController.activateConflictReassignForTesting()
+
+        XCTAssertNil(shortcutsController.conflictTargetTitleForTesting)
+        XCTAssertNil(shortcutsController.errorMessageForTesting)
+        XCTAssertNotEqual(shortcutsController.displayString(for: .toggleSidebar), "Unassigned")
+
+        let manager = ShortcutManager(shortcuts: store.current.shortcuts)
+        XCTAssertEqual(manager.shortcut(for: .toggleSidebar), toggleSidebarDefault, "Toggle Sidebar should be back on its default")
+        XCTAssertEqual(manager.shortcut(for: .newWorklane), rebound)
+        XCTAssertFalse(
+            store.current.shortcuts.bindings.contains { $0.commandID == .toggleSidebar },
+            "Restoring the default should drop the override entirely: \(store.current.shortcuts.bindings)"
+        )
+    }
+
+    func test_shortcuts_apply_preset_reports_failed_config_write() throws {
+        // /dev/null is a file, so nothing can be created beneath it: every persist fails.
+        let store = AppConfigStore(
+            fileURL: URL(fileURLWithPath: "/dev/null/ZenttyTests.SettingsWindow/config.toml")
+        )
+        let controller = SettingsWindowController(
+            configStore: store,
+            initialSection: .shortcuts
+        )
+        addTeardownBlock { controller.window?.close() }
+
+        controller.show(section: .shortcuts, sender: nil)
+        waitForLayout()
+
+        let contentController = try XCTUnwrap(
+            controller.window?.contentViewController as? SettingsViewController
+        )
+        let shortcutsController = try XCTUnwrap(
+            contentController.currentSectionViewController as? ShortcutsSettingsSectionViewController
+        )
+
+        // Presets are usually applied with nothing selected; the message still
+        // needs a row to live on.
+        shortcutsController.clearSelectionForTesting()
+        XCTAssertNil(shortcutsController.errorMessageForTesting)
+        shortcutsController.applyPresetForTesting(try XCTUnwrap(ShortcutPreset(rawValue: "ghosttyCompatible")))
+
+        let errorMessage = try XCTUnwrap(
+            shortcutsController.errorMessageForTesting,
+            "A failed preset write must surface an error even when no command was selected"
+        )
+        XCTAssertTrue(errorMessage.hasPrefix("Couldn’t save"), "Expected the write-failure message, got: \(errorMessage)")
+        XCTAssertTrue(store.current.shortcuts.bindings.isEmpty, "Nothing should be persisted when the write fails")
+
+        // With a selection, the message lands on that command.
+        shortcutsController.selectCommandForTesting(.selectWorklane1)
+        XCTAssertNil(shortcutsController.errorMessageForTesting)
+        shortcutsController.applyPresetForTesting(try XCTUnwrap(ShortcutPreset(rawValue: "ghosttyCompatible")))
+        XCTAssertEqual(shortcutsController.errorMessageForTesting?.hasPrefix("Couldn’t save"), true)
+    }
+
+    func test_shortcuts_direct_assignment_reports_failed_config_write() throws {
+        // /dev/null is a file, so nothing can be created beneath it: every persist fails.
+        let store = AppConfigStore(
+            fileURL: URL(fileURLWithPath: "/dev/null/ZenttyTests.SettingsWindow/config.toml")
+        )
+        let controller = SettingsWindowController(
+            configStore: store,
+            initialSection: .shortcuts
+        )
+        addTeardownBlock { controller.window?.close() }
+
+        controller.show(section: .shortcuts, sender: nil)
+        waitForLayout()
+
+        let contentController = try XCTUnwrap(
+            controller.window?.contentViewController as? SettingsViewController
+        )
+        let shortcutsController = try XCTUnwrap(
+            contentController.currentSectionViewController as? ShortcutsSettingsSectionViewController
+        )
+
+        // A shortcut nobody else holds, so the write is attempted directly.
+        let pending = KeyboardShortcut(key: .character("k"), modifiers: [.command, .option, .shift])
+        shortcutsController.selectCommandForTesting(.newWorklane)
+        shortcutsController.attemptShortcutAssignmentForTesting(pending)
+
+        let errorMessage = try XCTUnwrap(
+            shortcutsController.errorMessageForTesting,
+            "A failed config write must surface an error instead of silently dropping the change"
+        )
+        XCTAssertTrue(errorMessage.hasPrefix("Couldn’t save"), "Expected the write-failure message, got: \(errorMessage)")
+        XCTAssertNotEqual(shortcutsController.displayString(for: .newWorklane), "\u{2318}\u{2325}\u{21E7}K")
         XCTAssertTrue(store.current.shortcuts.bindings.isEmpty, "Nothing should be persisted when the write fails")
     }
 

@@ -855,11 +855,21 @@ final class MainWindowController: NSObject, NSWindowDelegate {
         if !window.isVisible || window.isMiniaturized {
             return
         }
-        // Only reorder among Zentty's own windows. When another app is active
-        // (1Password holds focus), orderFront would push this window over the
-        // app the user was actually working in.
-        if !window.isKeyWindow, NSApp.isActive {
-            window.orderFront(nil)
+        // Only reorder among Zentty's own main windows. 1Password holds focus,
+        // so orderFront would push this window over it; ordering relative to
+        // Zentty's frontmost main window keeps the revealed pane on top of the
+        // other main windows without leaving the app's layer. Settings, peek
+        // overlays and other auxiliary windows are skipped so the anchor is
+        // never a panel that sits above every main window. A lone visible
+        // window has nothing to be reordered against, and while another app
+        // is active no Zentty window is key, so there is no fallback here.
+        if !window.isKeyWindow,
+           let frontmostOtherWindow = NSApp.orderedWindows.first(where: {
+               $0 !== window && $0.isVisible && !$0.isMiniaturized
+                   && $0.delegate is MainWindowController
+           })
+        {
+            window.order(.above, relativeTo: frontmostOtherWindow.windowNumber)
         }
         rootViewController.revealPaneForOnePasswordPrompt(
             worklaneID: worklaneID,

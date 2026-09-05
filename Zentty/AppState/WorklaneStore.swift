@@ -1838,13 +1838,6 @@ final class WorklaneStore {
         notify(.activeWorklaneChanged)
     }
 
-    func selectWorklane(atPosition position: Int) {
-        guard worklanes.indices.contains(position - 1) else {
-            return
-        }
-        selectWorklane(id: worklanes[position - 1].id)
-    }
-
     func selectNextWorklane() {
         guard worklanes.count > 1,
               let currentIndex = worklanes.firstIndex(where: { $0.id == activeWorklaneID }) else {

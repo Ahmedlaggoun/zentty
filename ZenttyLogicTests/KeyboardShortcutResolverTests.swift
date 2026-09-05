@@ -880,9 +880,9 @@ final class KeyboardShortcutResolverTests: XCTestCase {
             XCTAssertEqual(keyCode, expectedKeyCode, "Unexpected key code for \(commandID)")
         }
 
-        // AZERTY-style layout: the unshifted number row is punctuation, digits need Shift.
-        // Ghostty's `super+physical:one` keeps working there; the preset must resolve the
-        // digit through the layout instead of dying on a logical "1".
+        // AZERTY-style layout: the unshifted number row is punctuation, so the digit is
+        // only reachable via Shift. The preset must resolve through the layout and land
+        // on the shifted digit instead of dying on a logical "1".
         let azertyUnshiftedRow = ["&", "é", "\"", "'", "(", "§", "è", "!", "ç"]
         var azertyLikeOutputs: [StubKeyboardPreviewSourceProvider.Output] = []
         for (index, keyCode) in expectedKeyCodes.enumerated() {
@@ -899,6 +899,54 @@ final class KeyboardShortcutResolverTests: XCTestCase {
                 azertyManager.shortcut(for: commandID),
                 .init(key: .character("\(index + 1)"), modifiers: [.command, .shift]),
                 "Worklane \(index + 1) should resolve through the shifted digit on an AZERTY-style layout"
+            )
+        }
+    }
+
+    func test_ghostty_compatible_preset_binds_layout_and_reset_digits_to_physical_number_row_keys() throws {
+        let preset = try XCTUnwrap(ShortcutPreset(rawValue: "ghosttyCompatible"))
+        let expectations: [(commandID: AppCommandID, keyCode: UInt16, digit: String, modifiers: Set<KeyboardModifier>)] = [
+            (.arrangeHeightFull, UInt16(kVK_ANSI_1), "1", [.command, .option]),
+            (.arrangeHeightTwoPerColumn, UInt16(kVK_ANSI_2), "2", [.command, .option]),
+            (.arrangeHeightThreePerColumn, UInt16(kVK_ANSI_3), "3", [.command, .option]),
+            (.arrangeHeightFourPerColumn, UInt16(kVK_ANSI_4), "4", [.command, .option]),
+            (.resetPaneLayout, UInt16(kVK_ANSI_0), "0", [.command, .control, .option]),
+        ]
+
+        for expected in expectations {
+            let entry = try XCTUnwrap(preset.entries.first { $0.commandID == expected.commandID })
+            guard case let .physical(keyCode, .character) = entry.key else {
+                XCTFail("\(expected.commandID) must be a physical number-row key, got \(entry.key)")
+                continue
+            }
+            XCTAssertEqual(keyCode, expected.keyCode, "Unexpected key code for \(expected.commandID)")
+        }
+
+        // Same AZERTY-style stub as the worklane digits: unshifted row is punctuation,
+        // the digit is only reachable via Shift.
+        let azertyUnshiftedRow: [UInt16: String] = [
+            UInt16(kVK_ANSI_1): "&", UInt16(kVK_ANSI_2): "é", UInt16(kVK_ANSI_3): "\"",
+            UInt16(kVK_ANSI_4): "'", UInt16(kVK_ANSI_0): "à",
+        ]
+        var azertyLikeOutputs: [StubKeyboardPreviewSourceProvider.Output] = []
+        for expected in expectations {
+            let unshifted = try XCTUnwrap(azertyUnshiftedRow[expected.keyCode])
+            azertyLikeOutputs.append(.init(keyCode: expected.keyCode, modifiers: [], value: unshifted))
+            azertyLikeOutputs.append(.init(keyCode: expected.keyCode, modifiers: [.shift], value: expected.digit))
+        }
+        let azertyManager = ShortcutManager(
+            shortcuts: .init(
+                bindings: ShortcutPresetResolver(
+                    sourceProvider: StubKeyboardPreviewSourceProvider(geometry: .iso, outputs: azertyLikeOutputs)
+                ).resolve(preset)
+            )
+        )
+
+        for expected in expectations {
+            XCTAssertEqual(
+                azertyManager.shortcut(for: expected.commandID),
+                .init(key: .character(expected.digit), modifiers: expected.modifiers.union([.shift])),
+                "\(expected.commandID) should resolve through the shifted digit on an AZERTY-style layout"
             )
         }
     }
