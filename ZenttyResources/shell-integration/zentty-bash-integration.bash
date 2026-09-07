@@ -295,8 +295,9 @@ popd() {
     _zentty_report_directory_change
 }
 
-trap '_zentty_bash_preexec_hook' DEBUG
 PROMPT_COMMAND="_zentty_bash_prompt_hook"
 _zentty_ensure_wrapper_path
 _zentty_bind_leaked_key_events
 _zentty_bash_prompt_hook
+# DEBUG last: bootstrap helpers above must not emit spurious command-running signals.
+trap '_zentty_bash_preexec_hook' DEBUG

@@ -1273,6 +1273,10 @@ final class MainWindowController: NSObject, NSWindowDelegate {
         rootViewController.anyPaneRequiresQuitConfirmation
     }
 
+    var anyPaneHasRunningProcessForQuitConfirmation: Bool {
+        rootViewController.anyPaneHasRunningProcessForQuitConfirmation
+    }
+
     var terminalAppearance: NSAppearance? {
         let theme = currentWindowTheme
         let isDark = theme.windowBackground.isDarkThemeColor

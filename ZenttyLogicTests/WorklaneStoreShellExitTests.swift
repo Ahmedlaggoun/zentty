@@ -260,4 +260,196 @@ final class WorklaneStoreShellExitTests: XCTestCase {
         XCTAssertEqual(store.worklanes.map(\.id), [WorklaneID("w1"), WorklaneID("w3")])
         XCTAssertEqual(store.activeWorklaneID, WorklaneID("w1"))
     }
+
+    // MARK: - Quit confirmation / command history (#97)
+
+    func test_fresh_pane_does_not_require_quit_confirmation() {
+        let store = WorklaneStore()
+
+        XCTAssertFalse(store.anyPaneRequiresQuitConfirmation)
+        XCTAssertFalse(store.anyPaneHasRunningProcessForQuitConfirmation)
+        XCTAssertNil(store.paneCloseConfirmationReason(store.activeWorklane!.paneStripState.focusedPaneID!))
+    }
+
+    func test_internal_shell_bootstrap_command_does_not_mark_history() throws {
+        let store = WorklaneStore()
+        let paneID = try XCTUnwrap(store.activeWorklane?.paneStripState.focusedPaneID)
+        let worklaneID = try XCTUnwrap(store.activeWorklane?.id)
+
+        store.applyAgentStatusPayload(
+            shellStatePayload(
+                worklaneID: worklaneID,
+                paneID: paneID,
+                activity: .commandRunning,
+                command: "_zentty_ensure_wrapper_path"
+            )
+        )
+        store.applyAgentStatusPayload(
+            shellStatePayload(worklaneID: worklaneID, paneID: paneID, activity: .promptIdle)
+        )
+
+        let auxiliary = try XCTUnwrap(store.activeWorklane?.auxiliaryStateByPaneID[paneID])
+        XCTAssertNotEqual(auxiliary.shellActivityState, .commandRunning)
+        XCTAssertFalse(auxiliary.hasCommandHistory)
+        XCTAssertNil(auxiliary.raw.lastRunCommand)
+        XCTAssertNil(store.paneCloseConfirmationReason(paneID))
+        XCTAssertFalse(store.anyPaneRequiresQuitConfirmation)
+    }
+
+    func test_real_shell_command_marks_history_after_returning_to_prompt() throws {
+        let store = WorklaneStore()
+        let paneID = try XCTUnwrap(store.activeWorklane?.paneStripState.focusedPaneID)
+        let worklaneID = try XCTUnwrap(store.activeWorklane?.id)
+
+        store.applyAgentStatusPayload(
+            shellStatePayload(
+                worklaneID: worklaneID,
+                paneID: paneID,
+                activity: .commandRunning,
+                command: "git status"
+            )
+        )
+        store.applyAgentStatusPayload(
+            shellStatePayload(worklaneID: worklaneID, paneID: paneID, activity: .promptIdle)
+        )
+
+        let auxiliary = try XCTUnwrap(store.activeWorklane?.auxiliaryStateByPaneID[paneID])
+        XCTAssertTrue(auxiliary.hasCommandHistory)
+        XCTAssertEqual(auxiliary.raw.lastRunCommand, "git status")
+        XCTAssertEqual(store.paneCloseConfirmationReason(paneID), .sessionHistory)
+        XCTAssertTrue(store.anyPaneRequiresQuitConfirmation)
+        XCTAssertFalse(store.anyPaneHasRunningProcessForQuitConfirmation)
+    }
+
+    func test_running_process_still_blocks_even_without_history() {
+        let paneID = PaneID("main-shell")
+        let store = WorklaneStore(
+            worklanes: [
+                WorklaneState(
+                    id: WorklaneID("main"),
+                    title: nil,
+                    paneStripState: PaneStripState(
+                        panes: [PaneState(id: paneID, title: "shell")],
+                        focusedPaneID: paneID
+                    ),
+                    auxiliaryStateByPaneID: [
+                        paneID: PaneAuxiliaryState(
+                            raw: PaneRawState(shellActivityState: .commandRunning),
+                            presentation: PanePresentationState()
+                        )
+                    ]
+                )
+            ],
+            activeWorklaneID: WorklaneID("main")
+        )
+
+        XCTAssertEqual(store.paneCloseConfirmationReason(paneID), .runningProcess)
+        XCTAssertTrue(store.anyPaneRequiresQuitConfirmation)
+        XCTAssertTrue(store.anyPaneHasRunningProcessForQuitConfirmation)
+    }
+
+    func test_should_record_history_filters_internal_helpers() {
+        let worklaneID = WorklaneID("main")
+        let paneID = PaneID("pane")
+
+        XCTAssertFalse(
+            WorklaneStore.shouldRecordShellCommandHistory(
+                shellStatePayload(
+                    worklaneID: worklaneID,
+                    paneID: paneID,
+                    activity: .commandRunning,
+                    command: "_zentty_bind_leaked_key_events"
+                )
+            )
+        )
+        XCTAssertTrue(
+            WorklaneStore.shouldRecordShellCommandHistory(
+                shellStatePayload(
+                    worklaneID: worklaneID,
+                    paneID: paneID,
+                    activity: .commandRunning,
+                    command: "pnpm test"
+                )
+            )
+        )
+        XCTAssertTrue(
+            WorklaneStore.shouldRecordShellCommandHistory(
+                shellStatePayload(
+                    worklaneID: worklaneID,
+                    paneID: paneID,
+                    activity: .commandRunning,
+                    toolName: "Codex"
+                )
+            )
+        )
+    }
+
+    func test_bash_integration_installs_debug_trap_after_bootstrap() throws {
+        let scriptURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("ZenttyResources/shell-integration/zentty-bash-integration.bash")
+        let script = try String(contentsOf: scriptURL, encoding: .utf8)
+        let bootstrapIndex = try XCTUnwrap(script.range(of: "_zentty_bash_prompt_hook\n")?.upperBound)
+        let trapIndex = try XCTUnwrap(
+            script.range(of: "trap '_zentty_bash_preexec_hook' DEBUG")?.lowerBound
+        )
+        XCTAssertLessThan(bootstrapIndex, trapIndex)
+    }
+
+    func test_external_quit_bypass_policy() {
+        XCTAssertTrue(
+            QuitConfirmationPolicy.shouldBypassPromptForExternalQuit(
+                isExternalQuitRequest: true,
+                anyPaneHasRunningProcess: false
+            )
+        )
+        XCTAssertFalse(
+            QuitConfirmationPolicy.shouldBypassPromptForExternalQuit(
+                isExternalQuitRequest: true,
+                anyPaneHasRunningProcess: true
+            )
+        )
+        XCTAssertFalse(
+            QuitConfirmationPolicy.shouldBypassPromptForExternalQuit(
+                isExternalQuitRequest: false,
+                anyPaneHasRunningProcess: false
+            )
+        )
+    }
+
+    func test_external_quit_detection_compares_sender_pid() {
+        XCTAssertTrue(QuitConfirmationPolicy.isExternalSender(senderPID: 42_424, currentPID: 1))
+        XCTAssertFalse(QuitConfirmationPolicy.isExternalSender(senderPID: 42_424, currentPID: 42_424))
+        XCTAssertFalse(QuitConfirmationPolicy.isExternalSender(senderPID: 0, currentPID: 1))
+        XCTAssertFalse(
+            QuitConfirmationPolicy.isExternalApplicationQuitRequest(
+                appleEvent: nil,
+                currentPID: 1
+            )
+        )
+    }
+
+    private func shellStatePayload(
+        worklaneID: WorklaneID,
+        paneID: PaneID,
+        activity: PaneShellActivityState,
+        command: String? = nil,
+        toolName: String? = nil
+    ) -> AgentStatusPayload {
+        AgentStatusPayload(
+            worklaneID: worklaneID,
+            paneID: paneID,
+            signalKind: .shellState,
+            state: nil,
+            shellActivityState: activity,
+            shellCommand: command,
+            origin: .shell,
+            toolName: toolName,
+            text: nil,
+            artifactKind: nil,
+            artifactLabel: nil,
+            artifactURL: nil
+        )
+    }
 }
