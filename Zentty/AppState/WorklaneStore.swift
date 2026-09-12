@@ -655,6 +655,15 @@ final class WorklaneStore {
         }
     }
 
+    /// Live activity that should still block scripted/external quit.
+    var anyPaneHasRunningProcessForQuitConfirmation: Bool {
+        worklanes.contains { worklane in
+            worklane.auxiliaryStateByPaneID.values.contains {
+                Self.quitConfirmationReason(for: $0) == .runningProcess
+            }
+        }
+    }
+
     var hasRunningAgentPane: Bool {
         worklanes.contains { worklane in
             let livePaneIDs = Set(worklane.paneStripState.panes.map(\.id))

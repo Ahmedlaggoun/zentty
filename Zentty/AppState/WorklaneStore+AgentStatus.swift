@@ -566,6 +566,13 @@ extension WorklaneStore {
                 return
             }
 
+            // Ignore internal `_zentty_*` bootstrap / DEBUG-trap noise so it
+            // neither shows as live activity nor sticky-marks session history.
+            if shellActivityState == .commandRunning,
+               !Self.shouldRecordShellCommandHistory(payload) {
+                return
+            }
+
             // Pane-level state: always persisted, independent of agent status.
             auxiliaryState.shellActivityState = shellActivityState
             if shellActivityState == .commandRunning {
@@ -1547,5 +1554,24 @@ extension WorklaneStore {
         }
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
+    }
+
+    /// Shell-integration bootstrap can emit transient `command-running` for internal
+    /// helpers. Those must not sticky-mark session history (or scripted quit blocks).
+    static func shouldRecordShellCommandHistory(_ payload: AgentStatusPayload) -> Bool {
+        if let toolName = payload.toolName?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !toolName.isEmpty {
+            return true
+        }
+
+        guard let command = trimmedShellCommand(payload.shellCommand) else {
+            // Preserve prior behavior for agent/shell paths that mark running without `--command`.
+            return true
+        }
+
+        let firstToken = command.prefix {
+            !$0.isWhitespace && $0 != ";" && $0 != "|" && $0 != "&"
+        }
+        return !firstToken.hasPrefix("_zentty_")
     }
 }

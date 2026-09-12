@@ -1,4 +1,5 @@
 import AppKit
+import ApplicationServices
 import OSLog
 import UserNotifications
 
@@ -316,7 +317,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard configStore.current.confirmations.confirmBeforeQuitting,
-              let blockingController = windowControllers.values.first(where: { $0.anyPaneRequiresQuitConfirmation }) else {
+              let blockingController = windowControllers.values.first(where: \.anyPaneRequiresQuitConfirmation)
+        else {
+            return .terminateNow
+        }
+
+        // AppleScript / brew / other external quitters should not be blocked by idle
+        // session-history alone. Still confirm when a process is actively running.
+        if QuitConfirmationPolicy.shouldBypassPromptForExternalQuit(
+            isExternalQuitRequest: isExternalApplicationQuitRequest,
+            anyPaneHasRunningProcess: windowControllers.values.contains(
+                where: \.anyPaneHasRunningProcessForQuitConfirmation
+            )
+        ) {
             return .terminateNow
         }
 
@@ -354,6 +367,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         return .terminateCancel
+    }
+
+    /// True when quit was requested by another process (osascript, brew, etc.), not Cmd+Q/menu.
+    private var isExternalApplicationQuitRequest: Bool {
+        QuitConfirmationPolicy.isExternalApplicationQuitRequest(
+            appleEvent: NSAppleEventManager.shared().currentAppleEvent,
+            currentPID: getpid()
+        )
     }
 
     private func quitConfirmationPresentationController(
@@ -1100,5 +1121,38 @@ extension AppDelegate: UNUserNotificationCenterDelegate {
         willPresent notification: UNNotification
     ) async -> UNNotificationPresentationOptions {
         [.banner, .sound]
+    }
+}
+
+enum QuitConfirmationPolicy {
+    /// External quit (osascript / brew / other process) should skip the confirm sheet
+    /// when the app only has idle session history — not when a process is still running.
+    static func shouldBypassPromptForExternalQuit(
+        isExternalQuitRequest: Bool,
+        anyPaneHasRunningProcess: Bool
+    ) -> Bool {
+        isExternalQuitRequest && !anyPaneHasRunningProcess
+    }
+
+    static func isExternalSender(senderPID: pid_t, currentPID: pid_t) -> Bool {
+        senderPID != 0 && senderPID != currentPID
+    }
+
+    static func isExternalApplicationQuitRequest(
+        appleEvent: NSAppleEventDescriptor?,
+        currentPID: pid_t
+    ) -> Bool {
+        guard let appleEvent,
+              appleEvent.eventClass == AEEventClass(kCoreEventClass),
+              appleEvent.eventID == AEEventID(kAEQuitApplication)
+        else {
+            return false
+        }
+
+        guard let senderPIDDescriptor = appleEvent.attributeDescriptor(forKeyword: keySenderPIDAttr) else {
+            return false
+        }
+
+        return isExternalSender(senderPID: senderPIDDescriptor.int32Value, currentPID: currentPID)
     }
 }

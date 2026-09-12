@@ -2494,6 +2494,10 @@ final class RootViewController: NSViewController {
         worklaneStore.anyPaneRequiresQuitConfirmation
     }
 
+    var anyPaneHasRunningProcessForQuitConfirmation: Bool {
+        worklaneStore.anyPaneHasRunningProcessForQuitConfirmation
+    }
+
     func containsWorklane(_ worklaneID: WorklaneID) -> Bool {
         worklaneStore.worklanes.contains { $0.id == worklaneID }
     }
