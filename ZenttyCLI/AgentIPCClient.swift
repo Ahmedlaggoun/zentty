@@ -23,7 +23,7 @@ enum AgentIPCClient {
         }
         defer { close(fileDescriptor) }
 
-        configure(fileDescriptor, timeoutSeconds: timeoutSeconds)
+        try configure(fileDescriptor, timeoutSeconds: timeoutSeconds)
         try connect(fileDescriptor, socketPath: socketPath)
         try write(request: request, to: fileDescriptor)
 
@@ -38,9 +38,26 @@ enum AgentIPCClient {
         return response
     }
 
-    private static func configure(_ fileDescriptor: Int32, timeoutSeconds: Int = timeoutSeconds) {
+    private static func configure(_ fileDescriptor: Int32, timeoutSeconds: Int = timeoutSeconds) throws {
         let descriptorFlags = fcntl(fileDescriptor, F_GETFD)
         _ = fcntl(fileDescriptor, F_SETFD, descriptorFlags | FD_CLOEXEC)
+
+        // AgentToolLauncher catches IPC errors and starts the real agent
+        // directly. Without this, a peer closing between connect and send
+        // terminates the launcher with SIGPIPE before that fallback runs.
+        var noSigPipe: Int32 = 1
+        let noSigPipeResult = withUnsafePointer(to: &noSigPipe) { pointer in
+            setsockopt(
+                fileDescriptor,
+                SOL_SOCKET,
+                SO_NOSIGPIPE,
+                pointer,
+                socklen_t(MemoryLayout<Int32>.size)
+            )
+        }
+        guard noSigPipeResult == 0 else {
+            throw POSIXError(.init(rawValue: errno) ?? .EIO)
+        }
 
         var timeout = timeval(tv_sec: timeoutSeconds, tv_usec: 0)
         withUnsafePointer(to: &timeout) { pointer in

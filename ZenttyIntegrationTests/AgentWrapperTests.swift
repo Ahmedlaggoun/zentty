@@ -142,6 +142,48 @@ final class AgentWrapperTests: XCTestCase {
         XCTAssertEqual(try harness.readLines(named: "real-args.log"), ["--yolo"])
     }
 
+    func test_wrapper_falls_back_to_real_binary_when_ipc_peer_closes_before_bootstrap_write() throws {
+        let harness = try WrapperHarness(copyingScriptsNamed: ["codex", "zentty-agent-wrapper"])
+        try harness.installRealBinary(
+            named: "codex",
+            script: """
+            #!/bin/bash
+            set -euo pipefail
+            printf 'fallback ran\\n' >> "$REAL_ARGS_LOG"
+            if [[ -z "$(trap -p PIPE)" ]]; then
+              printf 'SIGPIPE default\\n' >> "$REAL_ARGS_LOG"
+            else
+              printf 'SIGPIPE changed\\n' >> "$REAL_ARGS_LOG"
+            fi
+            """
+        )
+        let server = try ClosingIPCServer()
+        defer { server.invalidate() }
+        // Force the request past the socket's send buffer. A tiny request can
+        // race with the peer close, then fail on recv and accidentally cover
+        // the launcher's fallback without exercising the SIGPIPE write path.
+        let paneToken = String(repeating: "t", count: 384 * 1024)
+
+        let result = try harness.run(
+            tool: "codex",
+            arguments: [],
+            extraEnvironment: [
+                "ZENTTY_CLI_BIN": try builtCLIPath(),
+                "ZENTTY_INSTANCE_SOCKET": server.socketPath,
+                "ZENTTY_PANE_TOKEN": paneToken,
+                "ZENTTY_WORKLANE_ID": "worklane-main",
+                "ZENTTY_PANE_ID": "pane-main",
+            ]
+        )
+
+        XCTAssertTrue(server.waitForPeerToClose(), "test peer was never reached")
+        XCTAssertEqual(result.exitCode, 0, "\(result.stderr)\n\(result.stdout)")
+        XCTAssertEqual(
+            try harness.readLines(named: "real-args.log"),
+            ["fallback ran", "SIGPIPE default"]
+        )
+    }
+
     func test_real_cli_ipc_accepts_dash_prefixed_passthrough_arguments() throws {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: try builtCLIPath())
@@ -1232,6 +1274,79 @@ private final class IPCRequestCaptureServer {
             throw capturedError
         }
         return captured
+    }
+}
+
+/// A peer that accepts a connection, then closes while the client writes.
+private final class ClosingIPCServer {
+    let socketPath: String
+    private let rootURL: URL
+    private var fileDescriptor: Int32
+    private let closeGroup = DispatchGroup()
+
+    init() throws {
+        rootURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+        socketPath = rootURL.appendingPathComponent("zentty.sock", isDirectory: false).path
+
+        fileDescriptor = socket(AF_UNIX, SOCK_STREAM, 0)
+        guard fileDescriptor >= 0 else {
+            throw POSIXError(.init(rawValue: errno) ?? .EIO)
+        }
+
+        var address = sockaddr_un()
+        address.sun_family = sa_family_t(AF_UNIX)
+        let utf8Path = socketPath.utf8CString
+        guard utf8Path.count <= MemoryLayout.size(ofValue: address.sun_path) else {
+            close(fileDescriptor)
+            throw POSIXError(.ENAMETOOLONG)
+        }
+        _ = withUnsafeMutablePointer(to: &address.sun_path.0) { pointer in
+            utf8Path.withUnsafeBufferPointer { buffer in
+                memcpy(pointer, buffer.baseAddress, buffer.count)
+            }
+        }
+
+        let bindResult = withUnsafePointer(to: &address) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                Darwin.bind(fileDescriptor, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
+            }
+        }
+        guard bindResult == 0, listen(fileDescriptor, 1) == 0 else {
+            let error = POSIXError(.init(rawValue: errno) ?? .EIO)
+            close(fileDescriptor)
+            throw error
+        }
+
+        let listeningFileDescriptor = fileDescriptor
+        closeGroup.enter()
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self else { return }
+            defer { self.closeGroup.leave() }
+            let client = accept(listeningFileDescriptor, nil, nil)
+            guard client >= 0 else { return }
+            _ = shutdown(client, SHUT_RDWR)
+            close(client)
+        }
+    }
+
+    deinit {
+        invalidate()
+    }
+
+    func invalidate() {
+        if fileDescriptor >= 0 {
+            _ = shutdown(fileDescriptor, SHUT_RDWR)
+            close(fileDescriptor)
+            fileDescriptor = -1
+        }
+        unlink(socketPath)
+        try? FileManager.default.removeItem(at: rootURL)
+    }
+
+    func waitForPeerToClose(timeout: TimeInterval = 5) -> Bool {
+        closeGroup.wait(timeout: .now() + timeout) == .success
     }
 }
 
