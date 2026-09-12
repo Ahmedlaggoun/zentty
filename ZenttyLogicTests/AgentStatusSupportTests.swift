@@ -104,6 +104,13 @@ final class AgentStatusSupportTests: XCTestCase {
         XCTAssertEqual(AgentTool.resolveKnown(named: "Hermes Agent"), .hermes)
     }
 
+    func test_agent_tool_recognizes_devin_for_explicit_and_known_tool_resolution() {
+        XCTAssertEqual(AgentTool.resolve(named: "devin"), .devin)
+        XCTAssertEqual(AgentTool.resolve(named: "Devin"), .devin)
+        XCTAssertEqual(AgentTool.resolveKnown(named: "devin"), .devin)
+        XCTAssertEqual(AgentTool.resolveKnown(named: "Devin"), .devin)
+    }
+
     func test_agent_tool_recognizes_small_harness_for_explicit_and_known_tool_resolution() {
         XCTAssertEqual(AgentTool.resolve(named: "small-harness"), .smallHarness)
         XCTAssertEqual(AgentTool.resolve(named: "Small Harness"), .smallHarness)
@@ -330,6 +337,40 @@ final class AgentStatusSupportTests: XCTestCase {
         XCTAssertFalse(source.contains("\"--continue\""))
     }
 
+    func test_devin_passthrough_policy_matches_devin_cli_help_snapshot() throws {
+        // Snapshot of `devin --help` verified 2026-09-12 against devin
+        // 3000.10.21. Management subcommands and early-exit flags bypass the
+        // bootstrap; `-p`/`--print` must NOT, because Devin fires hooks in
+        // print mode and one-shot runs still report pane status.
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let launcherPath = repoRoot
+            .appendingPathComponent("ZenttyCLI/AgentToolLauncher.swift")
+            .path
+        let source = try String(contentsOfFile: launcherPath, encoding: .utf8)
+
+        for subcommand in [
+            "auth", "mcp", "models", "doctor", "rules", "skills", "plugins",
+            "cloud", "desktop", "list", "ls", "rm", "ssh", "forward",
+            "update", "version", "migrate", "sandbox", "setup", "uninstall",
+            "acp", "help", "connect", "worker",
+        ] {
+            XCTAssertTrue(
+                source.contains("\"\(subcommand)\""),
+                "devinPassthroughSubcommands should contain \(subcommand)"
+            )
+        }
+        for flag in ["--help", "-h", "--version", "-V"] {
+            XCTAssertTrue(
+                source.contains("\"\(flag)\""),
+                "devinEarlyExitFlags should contain \(flag)"
+            )
+        }
+        XCTAssertTrue(source.contains("ZENTTY_DEVIN_HOOKS_DISABLED"))
+        XCTAssertTrue(source.contains("ZENTTY_DEVIN_PID"))
+    }
+
     func test_agent_tool_launcher_forwards_opencode_tui_and_xdg_environment() throws {
         // AgentToolLauncher lives in the ZenttyCLI target which tests don't
         // import, so read the source file directly to protect the bootstrap
@@ -445,7 +486,7 @@ final class AgentStatusSupportTests: XCTestCase {
         let bundle = try XCTUnwrap(Bundle(url: bundleRoot))
         XCTAssertEqual(
             AgentStatusHelper.wrapperDirectoryPaths(in: bundle),
-            ["amp", "claude", "codex", "copilot", "cursor", "droid", "gemini", "grok", "kimi", "opencode", "pi", "omp", "agy", "vibe", "small-harness"].map {
+            ["amp", "claude", "codex", "copilot", "cursor", "droid", "gemini", "grok", "kimi", "opencode", "pi", "omp", "agy", "vibe", "devin", "small-harness"].map {
                 binURL.appendingPathComponent($0, isDirectory: true).path
             }
         )
@@ -2786,6 +2827,218 @@ final class AgentStatusSupportTests: XCTestCase {
         for event in ["sessionStart", "sessionEnd", "userPromptSubmitted", "preToolUse", "postToolUse", "errorOccurred"] {
             XCTAssertNotNil(hooks[event], "Expected Copilot hook for \(event)")
         }
+    }
+
+    func test_agent_launch_bootstrap_builds_devin_overlay_from_default_user_config() throws {
+        let runtimeDirectory = try makeTemporaryDirectory(named: "agent-launch-devin-runtime")
+        let devinHome = try makeTemporaryDirectory(named: "agent-launch-devin-home")
+        let devinConfigDir = devinHome
+            .appendingPathComponent(".config", isDirectory: true)
+            .appendingPathComponent("devin", isDirectory: true)
+        try FileManager.default.createDirectory(at: devinConfigDir, withIntermediateDirectories: true)
+        try """
+        {
+          // user settings
+          "devin": {"org_id": "org-123",},
+          "hooks": {
+            "SessionStart": [
+              {"matcher": "", "hooks": [{"type": "command", "command": "echo existing", "timeout": 5}]},
+            ],
+          },
+        }
+        """.write(
+            to: devinConfigDir.appendingPathComponent("config.json", isDirectory: false),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let request = AgentIPCRequest(
+            kind: .bootstrap,
+            arguments: ["-p", "hello"],
+            standardInput: nil,
+            environment: [
+                "HOME": devinHome.path,
+                "ZENTTY_REAL_BINARY": "/usr/local/bin/devin",
+                "ZENTTY_CLI_BIN": "/tmp/zentty",
+            ],
+            expectsResponse: true,
+            tool: .devin
+        )
+
+        let plan = try AgentLaunchBootstrap.makePlan(
+            request: request,
+            target: AgentIPCTarget(
+                windowID: WindowID("window-main"),
+                worklaneID: WorklaneID("worklane-main"),
+                paneID: PaneID("pane-main")
+            ),
+            runtimeDirectoryURL: runtimeDirectory
+        )
+
+        XCTAssertEqual(plan.executablePath, "/usr/local/bin/devin")
+        XCTAssertEqual(plan.setEnvironment["ZENTTY_AGENT_TOOL"], "devin")
+        XCTAssertEqual(plan.arguments.prefix(2).first, "--config")
+        XCTAssertEqual(plan.arguments.suffix(2), ["-p", "hello"])
+
+        let configIndex = try XCTUnwrap(plan.arguments.firstIndex(of: "--config"))
+        let overlayConfigURL = URL(fileURLWithPath: plan.arguments[configIndex + 1], isDirectory: false)
+        let overlayData = try Data(contentsOf: overlayConfigURL)
+        let overlayConfig = try XCTUnwrap(JSONSerialization.jsonObject(with: overlayData) as? [String: Any])
+
+        // The user's non-hook settings survive the merge.
+        XCTAssertEqual((overlayConfig["devin"] as? [String: Any])?["org_id"] as? String, "org-123")
+
+        let hooks = try XCTUnwrap(overlayConfig["hooks"] as? [String: Any])
+        for event in [
+            "SessionStart", "SessionEnd", "UserPromptSubmit", "PreToolUse",
+            "PostToolUse", "PermissionRequest", "Stop", "PostCompaction",
+        ] {
+            XCTAssertNotNil(hooks[event], "Expected Devin hook for \(event)")
+        }
+
+        // The user's existing SessionStart group is preserved alongside ours.
+        let sessionStartGroups = try XCTUnwrap(hooks["SessionStart"] as? [[String: Any]])
+        XCTAssertEqual(sessionStartGroups.count, 2)
+        let sessionStartCommands = sessionStartGroups
+            .flatMap { $0["hooks"] as? [[String: Any]] ?? [] }
+            .compactMap { $0["command"] as? String }
+        XCTAssertTrue(sessionStartCommands.contains("echo existing"))
+        XCTAssertTrue(sessionStartCommands.contains { $0.contains("ipc agent-event --adapter=devin") })
+    }
+
+    func test_agent_launch_bootstrap_builds_devin_overlay_from_explicit_config_argument() throws {
+        let runtimeDirectory = try makeTemporaryDirectory(named: "agent-launch-devin-runtime-explicit")
+        let explicitConfig = try makeTemporaryDirectory(named: "agent-launch-devin-explicit")
+            .appendingPathComponent("my-config.json", isDirectory: false)
+        try #"{"theme_mode":"dark"}"#.write(to: explicitConfig, atomically: true, encoding: .utf8)
+
+        let request = AgentIPCRequest(
+            kind: .bootstrap,
+            arguments: ["--config", explicitConfig.path, "-p", "hello"],
+            standardInput: nil,
+            environment: [
+                "HOME": NSHomeDirectory(),
+                "ZENTTY_REAL_BINARY": "/usr/local/bin/devin",
+                "ZENTTY_CLI_BIN": "/tmp/zentty",
+            ],
+            expectsResponse: true,
+            tool: .devin
+        )
+
+        let plan = try AgentLaunchBootstrap.makePlan(
+            request: request,
+            target: AgentIPCTarget(
+                windowID: WindowID("window-main"),
+                worklaneID: WorklaneID("worklane-main"),
+                paneID: PaneID("pane-main")
+            ),
+            runtimeDirectoryURL: runtimeDirectory
+        )
+
+        // The user's `--config` is consumed: devin receives the overlay path,
+        // merged from the user-supplied file.
+        let configIndex = try XCTUnwrap(plan.arguments.firstIndex(of: "--config"))
+        let overlayPath = plan.arguments[configIndex + 1]
+        XCTAssertNotEqual(overlayPath, explicitConfig.path)
+        XCTAssertEqual(plan.arguments.filter { $0 == "--config" }.count, 1)
+        XCTAssertEqual(plan.arguments.suffix(2), ["-p", "hello"])
+
+        let overlayData = try Data(contentsOf: URL(fileURLWithPath: overlayPath, isDirectory: false))
+        let overlayConfig = try XCTUnwrap(JSONSerialization.jsonObject(with: overlayData) as? [String: Any])
+        XCTAssertEqual(overlayConfig["theme_mode"] as? String, "dark")
+        XCTAssertNotNil(overlayConfig["hooks"] as? [String: Any])
+    }
+
+    func test_agent_launch_bootstrap_devin_resolves_relative_config_from_pane_directory() throws {
+        let runtimeDirectory = try makeTemporaryDirectory(named: "devin-relative-runtime")
+        let paneDirectory = try makeTemporaryDirectory(named: "devin-relative-pane")
+        let configURL = paneDirectory.appendingPathComponent("devin.json")
+        try #"{"theme_mode":"dark"}"#.write(to: configURL, atomically: true, encoding: .utf8)
+
+        for configArguments in [["--config", "./devin.json"], ["--config=./devin.json"]] {
+            let request = AgentIPCRequest(
+                kind: .bootstrap,
+                arguments: configArguments + ["-p", "hello"],
+                standardInput: nil,
+                environment: [
+                    "PWD": paneDirectory.path,
+                    "ZENTTY_REAL_BINARY": "/usr/local/bin/devin",
+                    "ZENTTY_CLI_BIN": "/tmp/zentty",
+                ],
+                expectsResponse: true,
+                tool: .devin
+            )
+            let plan = try AgentLaunchBootstrap.makePlan(
+                request: request,
+                target: AgentIPCTarget(windowID: nil, worklaneID: WorklaneID("worklane-main"), paneID: PaneID("pane-main")),
+                runtimeDirectoryURL: runtimeDirectory
+            )
+            let data = try Data(contentsOf: URL(fileURLWithPath: plan.arguments[1]))
+            let config = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+            XCTAssertEqual(config["theme_mode"] as? String, "dark")
+            XCTAssertEqual(Array(plan.arguments.dropFirst(2)), ["-p", "hello"])
+        }
+    }
+
+    func test_agent_launch_bootstrap_devin_preserves_config_arguments_after_separator() throws {
+        let runtimeDirectory = try makeTemporaryDirectory(named: "devin-separator-runtime")
+        let configURL = runtimeDirectory.appendingPathComponent("source.json")
+        try #"{"theme_mode":"dark"}"#.write(to: configURL, atomically: true, encoding: .utf8)
+
+        for prompt in [["--config=example.json"], ["--config", "example.json"]] {
+            let forwarded = ["-p", "--"] + prompt
+            let request = AgentIPCRequest(
+                kind: .bootstrap,
+                arguments: ["--config", configURL.path] + forwarded,
+                standardInput: nil,
+                environment: [
+                    "ZENTTY_REAL_BINARY": "/usr/local/bin/devin",
+                    "ZENTTY_CLI_BIN": "/tmp/zentty",
+                ],
+                expectsResponse: true,
+                tool: .devin
+            )
+            let plan = try AgentLaunchBootstrap.makePlan(
+                request: request,
+                target: AgentIPCTarget(windowID: nil, worklaneID: WorklaneID("worklane-main"), paneID: PaneID("pane-main")),
+                runtimeDirectoryURL: runtimeDirectory
+            )
+            XCTAssertEqual(Array(plan.arguments.dropFirst(2)), forwarded)
+            let data = try Data(contentsOf: URL(fileURLWithPath: plan.arguments[1]))
+            let config = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+            XCTAssertEqual(config["theme_mode"] as? String, "dark")
+        }
+    }
+
+    func test_agent_launch_bootstrap_devin_hooks_disabled_returns_direct_plan() throws {
+        let runtimeDirectory = try makeTemporaryDirectory(named: "agent-launch-devin-runtime-disabled")
+
+        let request = AgentIPCRequest(
+            kind: .bootstrap,
+            arguments: ["-p", "hello"],
+            standardInput: nil,
+            environment: [
+                "HOME": NSHomeDirectory(),
+                "ZENTTY_REAL_BINARY": "/usr/local/bin/devin",
+                "ZENTTY_CLI_BIN": "/tmp/zentty",
+                "ZENTTY_DEVIN_HOOKS_DISABLED": "1",
+            ],
+            expectsResponse: true,
+            tool: .devin
+        )
+
+        let plan = try AgentLaunchBootstrap.makePlan(
+            request: request,
+            target: AgentIPCTarget(
+                windowID: WindowID("window-main"),
+                worklaneID: WorklaneID("worklane-main"),
+                paneID: PaneID("pane-main")
+            ),
+            runtimeDirectoryURL: runtimeDirectory
+        )
+
+        XCTAssertEqual(plan.arguments, ["-p", "hello"])
+        XCTAssertFalse(plan.arguments.contains("--config"))
     }
 
     func test_agent_launch_bootstrap_sets_cursor_agent_tool_and_passthrough_arguments() throws {
@@ -10806,6 +11059,7 @@ final class AgentStatusSupportTests: XCTestCase {
             ("hermes", "hermes"),
             ("vibe", "vibe"),
             ("vibe", "mistral-vibe"),
+            ("devin", "devin"),
             ("small-harness", "small-harness"),
         ]
     }

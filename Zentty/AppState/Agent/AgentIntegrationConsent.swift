@@ -83,7 +83,7 @@ extension AgentBootstrapTool {
             // integration class must be resolved before the variant is probed,
             // so the whole tool is consent-gated.)
             return .persistent
-        case .claude, .codex, .copilot, .gemini, .opencode, .pi, .omp, .smallHarness:
+        case .claude, .codex, .copilot, .gemini, .opencode, .pi, .omp, .devin, .smallHarness:
             return .ephemeral
         }
     }
@@ -113,6 +113,7 @@ extension AgentBootstrapTool {
         case .agy: return .agy
         case .hermes: return .hermes
         case .vibe: return .vibe
+        case .devin: return .devin
         case .smallHarness: return .smallHarness
         }
     }
@@ -136,7 +137,7 @@ extension AgentBootstrapTool {
         case .hermes: return HermesHooksInstaller.defaultConfigURL()
         case .vibe: return VibeHooksInstaller.defaultUserHooksFileURL()
         case .kimi: return KimiHooksInstaller.modernConfigURL(environment: ProcessInfo.processInfo.environment)
-        case .claude, .codex, .copilot, .gemini, .opencode, .pi, .omp, .smallHarness:
+        case .claude, .codex, .copilot, .gemini, .opencode, .pi, .omp, .devin, .smallHarness:
             return nil
         }
     }
@@ -154,7 +155,7 @@ enum AgentIntegrationConsent {
     /// Persistent (config-modifying) agents, in Settings display order.
     static let persistentTools: [AgentBootstrapTool] = [.amp, .cursor, .droid, .grok, .agy, .hermes, .vibe, .kimi]
     /// Ephemeral (built-in) agents, in Settings display order.
-    static let ephemeralTools: [AgentBootstrapTool] = [.claude, .codex, .copilot, .gemini, .opencode, .pi, .omp, .smallHarness]
+    static let ephemeralTools: [AgentBootstrapTool] = [.claude, .codex, .copilot, .gemini, .opencode, .pi, .omp, .devin, .smallHarness]
     /// All known agents, persistent group first.
     static let allTools: [AgentBootstrapTool] = persistentTools + ephemeralTools
 
@@ -235,7 +236,7 @@ enum AgentIntegrationHooks {
         case .cursor, .droid, .grok, .agy, .hermes, .vibe, .kimi:
             // Handled above via AgentHooksInstallerRegistry.
             return nil
-        case .claude, .codex, .copilot, .gemini, .opencode, .pi, .omp, .smallHarness:
+        case .claude, .codex, .copilot, .gemini, .opencode, .pi, .omp, .devin, .smallHarness:
             return nil
         }
     }

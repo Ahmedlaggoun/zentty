@@ -192,6 +192,15 @@ enum AgentLaunchBootstrap {
                 runtimeDirectoryURL: runtimeDirectoryURL,
                 fileManager: fileManager
             )
+        case .devin:
+            return try devinPlan(
+                executablePath: executablePath,
+                arguments: request.arguments,
+                environment: environment,
+                target: target,
+                runtimeDirectoryURL: runtimeDirectoryURL,
+                fileManager: fileManager
+            )
         }
     }
 
@@ -919,6 +928,71 @@ enum AgentLaunchBootstrap {
             arguments: plannedArguments,
             setEnvironment: setEnvironment,
             unsetEnvironment: unsetEnvironment,
+            preLaunchActions: []
+        )
+    }
+
+    /// Devin's `--config <PATH>` REPLACES the user config (`~/.config/devin/
+    /// config.json`) rather than layering on top of it — and Devin writes
+    /// in-session settings changes (permission grants, `/config` edits) back
+    /// to whatever path it was given. We therefore build a per-pane overlay:
+    /// the user's real config merged with the Zentty status hooks, written
+    /// under the launch runtime directory and passed via `--config`. Hooks are
+    /// collected from every source, so project-level `.devin/` hooks still run.
+    /// Caveat (same tradeoff as the legacy Kimi overlay): settings saved
+    /// mid-session land in the disposable overlay and are lost on next launch.
+    private static func devinPlan(
+        executablePath: String,
+        arguments: [String],
+        environment: [String: String],
+        target: AgentIPCTarget,
+        runtimeDirectoryURL: URL,
+        fileManager: FileManager
+    ) throws -> AgentLaunchPlan {
+        if environment["ZENTTY_DEVIN_HOOKS_DISABLED"] == "1" {
+            return directPlan(executablePath: executablePath, arguments: arguments)
+        }
+        guard let cliPath = environment["ZENTTY_CLI_BIN"]?.nilIfBlank else {
+            return AgentLaunchPlan(
+                executablePath: executablePath,
+                arguments: arguments,
+                setEnvironment: ["ZENTTY_AGENT_TOOL": "devin"],
+                unsetEnvironment: [],
+                preLaunchActions: []
+            )
+        }
+
+        // A user-supplied `--config` becomes the overlay's source instead of
+        // the default user config; passing both would have Devin ignore ours.
+        let (forwardedArguments, userConfigPath) = extractDevinConfigOverride(arguments)
+
+        let overlayDirectoryURL = try prepareToolDirectory(
+            tool: .devin,
+            target: target,
+            runtimeDirectoryURL: runtimeDirectoryURL,
+            fileManager: fileManager
+        )
+        let overlayConfigURL = overlayDirectoryURL.appendingPathComponent("config.json", isDirectory: false)
+        let workingDirectoryURL = environment["PWD"]?.nilIfBlank.map {
+            URL(fileURLWithPath: $0, isDirectory: true)
+        }
+        let sourceConfigURL = userConfigPath.map {
+            URL(fileURLWithPath: $0, isDirectory: false, relativeTo: workingDirectoryURL).absoluteURL
+        }
+            ?? devinUserConfigURL(environment: environment)
+        if fileManager.isReadableFile(atPath: sourceConfigURL.path),
+           let rawData = try? Data(contentsOf: sourceConfigURL),
+           let mergedData = try devinMergedConfigJSON(existingData: rawData, cliPath: cliPath) {
+            try mergedData.write(to: overlayConfigURL, options: .atomic)
+        } else {
+            try devinBaseConfigJSON(cliPath: cliPath).write(to: overlayConfigURL, options: .atomic)
+        }
+
+        return AgentLaunchPlan(
+            executablePath: executablePath,
+            arguments: ["--config", overlayConfigURL.path] + forwardedArguments,
+            setEnvironment: ["ZENTTY_AGENT_TOOL": "devin"],
+            unsetEnvironment: [],
             preLaunchActions: []
         )
     }
@@ -1662,6 +1736,115 @@ enum AgentLaunchBootstrap {
         return try compactJSONData(jsonObject)
     }
 
+    // MARK: - Devin config overlay
+
+    /// Devin hook events we subscribe to, with the timeout (seconds) Devin
+    /// applies to the hook command. Same Claude Code-compatible shape Devin
+    /// accepts under the `hooks` key of `config.json`.
+    private static let devinHookSpecs: [(event: String, timeout: Int)] = [
+        ("SessionStart", 10),
+        ("SessionEnd", 1),
+        ("UserPromptSubmit", 10),
+        ("PreToolUse", 5),
+        ("PostToolUse", 5),
+        ("PermissionRequest", 10),
+        ("Stop", 10),
+        ("PostCompaction", 10),
+    ]
+
+    private static func devinHookCommand(cliPath: String) -> String {
+        "\"\(shellEscapedDoubleQuoted(cliPath))\" ipc agent-event --adapter=devin"
+    }
+
+    private static func devinHookGroup(command: String, timeout: Int) -> [String: Any] {
+        [
+            "matcher": "",
+            "hooks": [[
+                "type": "command",
+                "command": command,
+                "timeout": timeout,
+            ]],
+        ]
+    }
+
+    private static func devinBaseConfigJSON(cliPath: String) throws -> Data {
+        var hooks: [String: Any] = [:]
+        let command = devinHookCommand(cliPath: cliPath)
+        for spec in devinHookSpecs {
+            hooks[spec.event] = [devinHookGroup(command: command, timeout: spec.timeout)]
+        }
+        return try compactJSONData(["hooks": hooks])
+    }
+
+    /// Devin config files are JSONC (comments + trailing commas allowed), so
+    /// the merge goes through the relaxed parser. Existing `hooks` entries are
+    /// preserved — Devin runs hooks from every group — and our group is only
+    /// appended when the exact command is not already present.
+    private static func devinMergedConfigJSON(existingData: Data, cliPath: String) throws -> Data? {
+        guard let uncommentedData = JSONCRelaxedParse.stripComments(in: existingData),
+              let cleanedData = JSONCRelaxedParse.stripTrailingCommas(in: uncommentedData),
+              var jsonObject = try JSONSerialization.jsonObject(with: cleanedData) as? [String: Any] else {
+            return nil
+        }
+
+        var hooks = jsonObject["hooks"] as? [String: Any] ?? [:]
+        let command = devinHookCommand(cliPath: cliPath)
+        for spec in devinHookSpecs {
+            var groups = hooks[spec.event] as? [[String: Any]] ?? []
+            let alreadyPresent = groups.contains { group in
+                let nestedHooks = group["hooks"] as? [[String: Any]] ?? []
+                return nestedHooks.contains {
+                    ($0["type"] as? String) == "command" && ($0["command"] as? String) == command
+                }
+            }
+            if !alreadyPresent {
+                groups.append(devinHookGroup(command: command, timeout: spec.timeout))
+            }
+            hooks[spec.event] = groups
+        }
+        jsonObject["hooks"] = hooks
+
+        return try compactJSONData(jsonObject)
+    }
+
+    private static func devinUserConfigURL(environment: [String: String]) -> URL {
+        let home = environment["HOME"]?.nilIfBlank ?? NSHomeDirectory()
+        return URL(fileURLWithPath: home, isDirectory: true)
+            .appendingPathComponent(".config", isDirectory: true)
+            .appendingPathComponent("devin", isDirectory: true)
+            .appendingPathComponent("config.json", isDirectory: false)
+    }
+
+    /// Consumes a user-supplied `--config <path>` / `--config=<path>` so the
+    /// overlay can take its place; the referenced file becomes the merge
+    /// source instead of the default user config.
+    private static func extractDevinConfigOverride(_ arguments: [String]) -> (forwardedArguments: [String], sourceConfigPath: String?) {
+        var forwarded: [String] = []
+        var sourceConfigPath: String?
+        var iterator = arguments.makeIterator()
+
+        while let argument = iterator.next() {
+            switch argument {
+            case "--":
+                forwarded.append(argument)
+                forwarded.append(contentsOf: iterator)
+                return (forwarded, sourceConfigPath)
+            case "--config":
+                if let value = iterator.next() {
+                    sourceConfigPath = value
+                } else {
+                    forwarded.append(argument)
+                }
+            case let value where value.hasPrefix("--config="):
+                sourceConfigPath = String(value.dropFirst("--config=".count))
+            default:
+                forwarded.append(argument)
+            }
+        }
+
+        return (forwarded, sourceConfigPath)
+    }
+
     private static func extractCopilotConfigDirOverride(_ arguments: [String]) -> (forwardedArguments: [String], sourceConfigDirectory: String?) {
         var forwarded: [String] = []
         var sourceConfigDirectory: String?
@@ -1822,7 +2005,7 @@ enum AgentLaunchBootstrap {
                 return ["KIMI_CODE_HOME"]
             }
             return []
-        case .amp, .codex, .copilot, .cursor, .droid, .gemini, .opencode, .pi, .omp, .grok, .agy, .hermes, .vibe:
+        case .amp, .codex, .copilot, .cursor, .droid, .gemini, .opencode, .pi, .omp, .grok, .agy, .hermes, .vibe, .devin:
             return []
         }
     }

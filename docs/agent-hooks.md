@@ -349,6 +349,39 @@ Each hook calls:
 - `PostToolUse(AskUserQuestion)` -> `running`
 
 
+## Devin CLI
+
+Wrapped `devin` launches use a per-launch overlay config under Zentty's runtime directory, passed via `devin --config <overlay>`. Devin's `--config` **replaces** the user config (`~/.config/devin/config.json`) rather than layering on top of it, so the overlay is the user's real config (parsed as JSONC) merged with the Zentty hook block for that session. Hooks are collected from every source, so project-level `.devin/hooks.v1.json` / `.devin/config.json` hooks still run alongside ours.
+
+Two consequences worth knowing:
+
+- Devin writes in-session settings changes (permission grants, `/config` edits) back to whatever `--config` path it was given — our disposable overlay. Those changes are lost on next launch; make durable changes in `~/.config/devin/config.json` or project `.devin/config.local.json` instead.
+- A user-supplied `devin --config <path>` is consumed by the bootstrap and becomes the overlay's merge source, so the user's choice is preserved.
+
+Devin management subcommands (`auth`, `mcp`, `models`, `doctor`, `rules`, `skills`, `plugins`, `cloud`, `list`, `update`, …) and early-exit flags (`--help`, `--version`) bypass Zentty bootstrap so the real `devin` binary handles them unchanged. `-p`/`--print` is intentionally **not** skipped — Devin fires hooks in print mode, so one-shot runs get pane status too. Set `ZENTTY_DEVIN_HOOKS_DISABLED=1` to bypass the overlay entirely.
+
+Zentty registers these Devin hooks, each calling `zentty ipc agent-event --adapter=devin`:
+
+- `SessionStart` -> session register (slug id) + PID attach + `starting`
+- `SessionEnd` -> clear session + PID mapping
+- `UserPromptSubmit` -> `running`
+- `PreToolUse` -> `running`; `ask_user_question` -> `needs-input` with decision text; `run_subagent` -> registers a subagent
+- `PostToolUse` -> `running`; `todo_write` -> task progress from `tool_input.todos`; `run_subagent`/`read_subagent` -> retires the subagent
+- `PermissionRequest` -> `needs-input` with approval text
+- `Stop` -> `idle`
+- `PostCompaction` -> `running`
+
+### Subagent tracking
+
+Devin has no `SubagentStart`/`SubagentStop` events, so lifecycle is inferred from the `run_subagent` tool call. `PreToolUse` registers an entry keyed by `tool_use_id` (`run_subagent_N`) with `profile` as the agent type and `title` as the nickname. A foreground call's `PostToolUse` retires it; a background call's `PostToolUse` re-keys the entry to the real `agent_id=` parsed from the output so a later `read_subagent` completion can retire it. `subagent_explore` maps to the `swe-1-6` model badge; `subagent_general` inherits the parent model and shows no label.
+
+Hooks fired inside a subagent share the parent's `session_id`/`prompt_id` and carry no `agent_id`. A `Stop` arriving while any tool call is still open is therefore a subagent's own turn end — it stays `running` and retires the oldest tracked entry when the open call isn't `run_subagent` itself. The parent's `Stop` only fires once it has no calls in flight, so `Stop` with an empty slot set is a real `idle`.
+
+### Session restore
+
+Devin session ids are word slugs (`thorn-angora`), resumable with `devin --resume <slug>`. Restore drafts keep the `.sessionID` identity requirement; the slug is validated (`[a-z0-9][a-z0-9-]*`) before it is interpolated into the resume command.
+
+
 ## Pi
 
 Wrapped `pi` launches inject an ephemeral coding-agent extension with `-e <bundle>/pi/extensions/zentty-pi-zentty.js`. The extension shares implementation with OMP via `shared/pi-family/zentty-pi-family-zentty.js` and emits canonical JSON through `zentty ipc agent-event`.

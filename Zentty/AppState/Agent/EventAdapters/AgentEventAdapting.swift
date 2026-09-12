@@ -45,6 +45,7 @@ enum AgentEventAdapterRegistry {
         AgyEventAdapter.adapterName: AgyEventAdapter.self,
         HermesEventAdapter.adapterName: HermesEventAdapter.self,
         VibeEventAdapter.adapterName: VibeEventAdapter.self,
+        DevinEventAdapter.adapterName: DevinEventAdapter.self,
     ]
 
     static func adapter(named name: String) -> (any AgentEventAdapting.Type)? {

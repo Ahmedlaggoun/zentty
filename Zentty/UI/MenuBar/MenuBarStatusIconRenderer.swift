@@ -441,6 +441,10 @@ enum MenuBarStatusIconRenderer {
             return "AgentIconHermes"
         case .vibe:
             return "AgentIconMistral"
+        case .devin:
+            // No Devin mark in the asset catalog yet; nil falls back to the
+            // generated letter tile.
+            return nil
         case .smallHarness:
             return nil
         case .custom:

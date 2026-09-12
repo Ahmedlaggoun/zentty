@@ -27,7 +27,7 @@ from collections import Counter
 from typing import Any
 
 
-SUPPORTED_AGENTS = ("agy", "amp", "claude", "codex", "copilot", "cursor", "droid", "gemini", "grok", "hermes", "kimi", "kimi-code", "omp", "opencode", "pi", "small-harness", "vibe")
+SUPPORTED_AGENTS = ("agy", "amp", "claude", "codex", "copilot", "cursor", "devin", "droid", "gemini", "grok", "hermes", "kimi", "kimi-code", "omp", "opencode", "pi", "small-harness", "vibe")
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 BENCH_ROOT = pathlib.Path(__file__).resolve().parent
 DEFAULT_RUNS_DIR = REPO_ROOT / ".agent-bench-runs"
@@ -53,6 +53,7 @@ ROUTING_ENV_KEYS = {
     "ZENTTY_KIMI_PID",
     "ZENTTY_GROK_PID",
     "ZENTTY_AGY_PID",
+    "ZENTTY_DEVIN_PID",
     "ZENTTY_SMALL_HARNESS_PID",
     "CODEX_HOME",
     "COPILOT_HOME",
@@ -312,7 +313,12 @@ def validate_scenario(
     records: list[TraceRecord],
     agent_tool: str | None = None,
 ) -> ScenarioResult:
-    observed = [record.event_name for record in records if record.agent == agent and record.scenario == expectation.name]
+    observed = [
+        name
+        for record in records
+        if record.agent == agent and record.scenario == expectation.name
+        for name in hook_record_event_names(record)
+    ]
     observed_values = [event for event in observed if event]
     observed_counts = Counter(observed_values)
     forbidden = [event for event in expectation.forbidden_events if observed_counts[event] > 0]
@@ -364,6 +370,21 @@ def validate_scenario(
         result_kind=result_kind,
         session_identity_observations=session_observations,
     )
+
+
+def hook_record_event_names(record: TraceRecord) -> list[str | None]:
+    """Event names a hook record satisfies. Besides the raw event name, tool
+    events also satisfy the tool-qualified form `EventName:tool_name` — used by
+    agents like Devin that express subagent lifecycle through the
+    `run_subagent` tool rather than dedicated Subagent* hooks."""
+    if not record.event_name:
+        return [None]
+    names = [record.event_name]
+    payload = parse_json_object(record.standard_input)
+    tool_name = first_string(payload, ["tool_name", "toolName"])
+    if tool_name:
+        names.append(f"{record.event_name}:{tool_name}")
+    return names
 
 
 def bootstrap_arguments(record: TraceRecord) -> list[str]:
@@ -502,6 +523,9 @@ def session_id_matches_pattern(session_id: str, pattern: str) -> bool:
         return re.fullmatch(r"T-[A-Za-z0-9_-]+", session_id) is not None
     if pattern == "opencode":
         return re.fullmatch(r"ses_[A-Za-z0-9]+", session_id) is not None
+    if pattern == "devin":
+        # Devin session ids are human-readable word slugs (`thorn-angora`).
+        return re.fullmatch(r"[a-z0-9][a-z0-9-]*", session_id) is not None
     return False
 
 
@@ -1100,20 +1124,42 @@ def subagent_trace_extra(agent: str | None, event_name: str | None, stdin_payloa
     payload = parse_json_object(stdin_payload)
     if lowered not in SUBAGENT_START_EVENTS | SUBAGENT_STOP_EVENTS:
         payload_event = str(first_string(payload, ["hook_event_name", "hookEventName"]) or "").lower()
-        if payload_event not in SUBAGENT_START_EVENTS | SUBAGENT_STOP_EVENTS:
+        if payload_event in SUBAGENT_START_EVENTS | SUBAGENT_STOP_EVENTS:
+            lowered = payload_event
+        elif agent == "devin" and payload_event in ("pretooluse", "posttooluse") and payload.get("tool_name") == "run_subagent":
+            # Devin has no Subagent* lifecycle events; the run_subagent tool
+            # call IS the contract. PreToolUse starts the subagent (input
+            # carries title/profile/is_background); PostToolUse ends a
+            # foreground run or hands a background run off with
+            # `agent_id=<hex>` embedded in the output text.
+            lowered = "subagentstart" if payload_event == "pretooluse" else "subagentstop"
+        else:
             return None
-        lowered = payload_event
     transcript_path = first_string(payload, ["agent_transcript_path", "agentTranscriptPath"])
     resolved = resolve_subagent_model(agent, transcript_path, payload)
+    tool_input = payload.get("tool_input") if isinstance(payload.get("tool_input"), dict) else {}
+    agent_id = first_string(payload, ["agent_id", "agentId", "turn_id", "turnId"])
+    run_agent_id: str | None = None
+    if agent == "devin":
+        # tool_use_id (`run_subagent_N`) is the stable key across the
+        # PreToolUse/PostToolUse pair; the runtime `agent_id` only exists in
+        # the PostToolUse output text.
+        agent_id = agent_id or first_string(payload, ["tool_use_id", "toolUseId"])
+        response = payload.get("tool_response") if isinstance(payload.get("tool_response"), dict) else {}
+        match = re.search(r"agent_id=([A-Za-z0-9_-]+)", str(response.get("output") or ""))
+        run_agent_id = match.group(1) if match else None
     observation: dict[str, Any] = {
         "event": "start" if lowered in SUBAGENT_START_EVENTS else "stop",
-        "agent_type": first_string(payload, ["agent_type", "agentType", "subagent_type", "subagentType", "agent_role", "agentRole"]),
-        "agent_id": first_string(payload, ["agent_id", "agentId", "turn_id", "turnId"]),
+        "agent_type": first_string(payload, ["agent_type", "agentType", "subagent_type", "subagentType", "agent_role", "agentRole"])
+        or first_string(tool_input, ["profile", "agent_type", "agentType"]),
+        "agent_id": agent_id,
         "transcript_path_present": bool(transcript_path),
         "transcript_exists": bool(transcript_path) and pathlib.Path(transcript_path).exists(),
         "model": resolved.get("model"),
-        "nickname": resolved.get("nickname"),
+        "nickname": resolved.get("nickname") or first_string(tool_input, ["title"]),
     }
+    if run_agent_id:
+        observation["run_agent_id"] = run_agent_id
     return {"subagent": observation}
 
 
@@ -1228,9 +1274,11 @@ def event_order_violation_detail(agent: str, scenario: str, expectation: Scenari
     """None when every `event_order` pair holds; otherwise which pair broke
     and the observed hook sequence, so the report explains the failure."""
     observed = [
-        record.event_name
+        name
         for record in records
-        if record.kind == "hook" and record.agent == agent and record.scenario == scenario and record.event_name
+        if record.kind == "hook" and record.agent == agent and record.scenario == scenario
+        for name in hook_record_event_names(record)
+        if name
     ]
     for pair in expectation.event_order:
         if len(pair) != 2:
@@ -1949,6 +1997,48 @@ class LaunchPlanner:
             hooks["hooks"][event] = [{"matcher": "TodoWrite", "command": command}]
         write_json(config_dir / "hooks.json", hooks)
         return self._launch_plan(executable, arguments, {"ZENTTY_AGENT_TOOL": "cursor", "CURSOR_CONFIG_DIR": str(config_dir)})
+
+    def _plan_devin(self, executable: str, arguments: list[str], environment: dict[str, Any], cli_path: str) -> dict[str, Any]:
+        """Mirror of AgentLaunchBootstrap.devinPlan: `--config` replaces the
+        user config, so the overlay is the user's real
+        ~/.config/devin/config.json merged with the Zentty hook groups. A
+        user-supplied --config is consumed and becomes the merge source."""
+        command = f'"{shell_escape_double_quoted(cli_path)}" ipc agent-event --adapter=devin'
+        hook_specs = (
+            ("SessionStart", 10), ("SessionEnd", 1), ("UserPromptSubmit", 10),
+            ("PreToolUse", 5), ("PostToolUse", 5), ("PermissionRequest", 10),
+            ("Stop", 10), ("PostCompaction", 10),
+        )
+        hook_group = lambda timeout: {"matcher": "", "hooks": [{"type": "command", "command": command, "timeout": timeout}]}
+
+        forwarded, source_override = _extract_devin_config_override(arguments)
+        if source_override:
+            source = pathlib.Path(source_override).expanduser()
+            if not source.is_absolute():
+                source = pathlib.Path(str(environment.get("PWD") or pathlib.Path.cwd())) / source
+        else:
+            home = pathlib.Path(str(environment.get("HOME") or pathlib.Path.home())).expanduser()
+            source = home / ".config" / "devin" / "config.json"
+
+        config = read_jsonc_object(source)
+        hooks = config.get("hooks") if isinstance(config.get("hooks"), dict) else {}
+        for event, timeout in hook_specs:
+            groups = hooks.get(event) if isinstance(hooks.get(event), list) else []
+            if not any(
+                isinstance(group, dict)
+                and any(
+                    isinstance(hook, dict) and hook.get("type") == "command" and hook.get("command") == command
+                    for hook in group.get("hooks") if isinstance(hook, dict)
+                )
+                for group in groups
+            ):
+                groups.append(hook_group(timeout))
+            hooks[event] = groups
+        config["hooks"] = hooks
+
+        overlay = self._overlay_dir("devin") / "config.json"
+        write_json(overlay, config)
+        return self._launch_plan(executable, ["--config", str(overlay), *forwarded], {"ZENTTY_AGENT_TOOL": "devin"})
 
     def _plan_droid(self, executable: str, arguments: list[str], environment: dict[str, Any], cli_path: str) -> dict[str, Any]:
         home = self._overlay_home("droid", environment, {".factory": {"settings.local.json", "hooks"}})
@@ -3701,6 +3791,77 @@ def read_json_object(path: pathlib.Path) -> dict[str, Any]:
     except json.JSONDecodeError:
         return {}
     return value if isinstance(value, dict) else {}
+
+
+def strip_jsonc(text: str) -> str:
+    """Remove // and /* */ comments and trailing commas, mirroring
+    JSONCRelaxedParse on the app side — Devin config files are JSONC."""
+    result: list[str] = []
+    index = 0
+    in_string = False
+    escaped = False
+    while index < len(text):
+        char = text[index]
+        nxt = text[index + 1] if index + 1 < len(text) else ""
+        if in_string:
+            result.append(char)
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            index += 1
+            continue
+        if char == '"':
+            in_string = True
+            result.append(char)
+            index += 1
+        elif char == "/" and nxt == "/":
+            while index < len(text) and text[index] not in "\r\n":
+                index += 1
+        elif char == "/" and nxt == "*":
+            index += 2
+            while index + 1 < len(text) and not (text[index] == "*" and text[index + 1] == "/"):
+                index += 1
+            index += 2
+        else:
+            result.append(char)
+            index += 1
+    cleaned = "".join(result)
+    return re.sub(r",(\s*[}\]])", r"\1", cleaned)
+
+
+def read_jsonc_object(path: pathlib.Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        value = json.loads(strip_jsonc(path.read_text(encoding="utf-8")))
+    except json.JSONDecodeError:
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _extract_devin_config_override(arguments: list[str]) -> tuple[list[str], str | None]:
+    """Python mirror of AgentLaunchBootstrap.extractDevinConfigOverride."""
+    forwarded: list[str] = []
+    source: str | None = None
+    iterator = iter(arguments)
+    for argument in iterator:
+        if argument == "--":
+            forwarded.extend([argument, *iterator])
+            break
+        elif argument == "--config":
+            value = next(iterator, None)
+            if value is None:
+                forwarded.append(argument)
+            else:
+                source = value
+        elif argument.startswith("--config="):
+            source = argument[len("--config="):]
+        else:
+            forwarded.append(argument)
+    return forwarded, source
 
 
 def codex_hook_trusted_hash(event_key: str, matcher: str | None, command: str, timeout: int) -> str:
