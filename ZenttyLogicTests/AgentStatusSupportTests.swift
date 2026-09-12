@@ -2949,6 +2949,67 @@ final class AgentStatusSupportTests: XCTestCase {
         XCTAssertNotNil(overlayConfig["hooks"] as? [String: Any])
     }
 
+    func test_agent_launch_bootstrap_devin_resolves_relative_config_from_pane_directory() throws {
+        let runtimeDirectory = try makeTemporaryDirectory(named: "devin-relative-runtime")
+        let paneDirectory = try makeTemporaryDirectory(named: "devin-relative-pane")
+        let configURL = paneDirectory.appendingPathComponent("devin.json")
+        try #"{"theme_mode":"dark"}"#.write(to: configURL, atomically: true, encoding: .utf8)
+
+        for configArguments in [["--config", "./devin.json"], ["--config=./devin.json"]] {
+            let request = AgentIPCRequest(
+                kind: .bootstrap,
+                arguments: configArguments + ["-p", "hello"],
+                standardInput: nil,
+                environment: [
+                    "PWD": paneDirectory.path,
+                    "ZENTTY_REAL_BINARY": "/usr/local/bin/devin",
+                    "ZENTTY_CLI_BIN": "/tmp/zentty",
+                ],
+                expectsResponse: true,
+                tool: .devin
+            )
+            let plan = try AgentLaunchBootstrap.makePlan(
+                request: request,
+                target: AgentIPCTarget(windowID: nil, worklaneID: WorklaneID("worklane-main"), paneID: PaneID("pane-main")),
+                runtimeDirectoryURL: runtimeDirectory
+            )
+            let data = try Data(contentsOf: URL(fileURLWithPath: plan.arguments[1]))
+            let config = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+            XCTAssertEqual(config["theme_mode"] as? String, "dark")
+            XCTAssertEqual(Array(plan.arguments.dropFirst(2)), ["-p", "hello"])
+        }
+    }
+
+    func test_agent_launch_bootstrap_devin_preserves_config_arguments_after_separator() throws {
+        let runtimeDirectory = try makeTemporaryDirectory(named: "devin-separator-runtime")
+        let configURL = runtimeDirectory.appendingPathComponent("source.json")
+        try #"{"theme_mode":"dark"}"#.write(to: configURL, atomically: true, encoding: .utf8)
+
+        for prompt in [["--config=example.json"], ["--config", "example.json"]] {
+            let forwarded = ["-p", "--"] + prompt
+            let request = AgentIPCRequest(
+                kind: .bootstrap,
+                arguments: ["--config", configURL.path] + forwarded,
+                standardInput: nil,
+                environment: [
+                    "ZENTTY_REAL_BINARY": "/usr/local/bin/devin",
+                    "ZENTTY_CLI_BIN": "/tmp/zentty",
+                ],
+                expectsResponse: true,
+                tool: .devin
+            )
+            let plan = try AgentLaunchBootstrap.makePlan(
+                request: request,
+                target: AgentIPCTarget(windowID: nil, worklaneID: WorklaneID("worklane-main"), paneID: PaneID("pane-main")),
+                runtimeDirectoryURL: runtimeDirectory
+            )
+            XCTAssertEqual(Array(plan.arguments.dropFirst(2)), forwarded)
+            let data = try Data(contentsOf: URL(fileURLWithPath: plan.arguments[1]))
+            let config = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+            XCTAssertEqual(config["theme_mode"] as? String, "dark")
+        }
+    }
+
     func test_agent_launch_bootstrap_devin_hooks_disabled_returns_direct_plan() throws {
         let runtimeDirectory = try makeTemporaryDirectory(named: "agent-launch-devin-runtime-disabled")
 

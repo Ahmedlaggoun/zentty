@@ -973,7 +973,12 @@ enum AgentLaunchBootstrap {
             fileManager: fileManager
         )
         let overlayConfigURL = overlayDirectoryURL.appendingPathComponent("config.json", isDirectory: false)
-        let sourceConfigURL = userConfigPath.map { URL(fileURLWithPath: $0, isDirectory: false) }
+        let workingDirectoryURL = environment["PWD"]?.nilIfBlank.map {
+            URL(fileURLWithPath: $0, isDirectory: true)
+        }
+        let sourceConfigURL = userConfigPath.map {
+            URL(fileURLWithPath: $0, isDirectory: false, relativeTo: workingDirectoryURL).absoluteURL
+        }
             ?? devinUserConfigURL(environment: environment)
         if fileManager.isReadableFile(atPath: sourceConfigURL.path),
            let rawData = try? Data(contentsOf: sourceConfigURL),
@@ -1820,6 +1825,10 @@ enum AgentLaunchBootstrap {
 
         while let argument = iterator.next() {
             switch argument {
+            case "--":
+                forwarded.append(argument)
+                forwarded.append(contentsOf: iterator)
+                return (forwarded, sourceConfigPath)
             case "--config":
                 if let value = iterator.next() {
                     sourceConfigPath = value

@@ -3398,6 +3398,42 @@ class EnvironmentTests(unittest.TestCase):
 
 
 class LaunchPlannerTests(unittest.TestCase):
+    def test_devin_config_override_resolves_against_launch_directory(self):
+        for relative in (True, False):
+            for equals_form in (True, False):
+                with self.subTest(relative=relative, equals_form=equals_form), tempfile.TemporaryDirectory() as tmp:
+                    root = pathlib.Path(tmp)
+                    source = root / "devin.json"
+                    original = '{"model": "custom-model"}'
+                    source.write_text(original, encoding="utf-8")
+                    config_path = "./devin.json" if relative else str(source)
+                    arguments = [f"--config={config_path}"] if equals_form else ["--config", config_path]
+                    profile = agent_bench.load_profiles(ROOT / "profiles")["devin"]
+                    planner = agent_bench.LaunchPlanner(
+                        profile=profile, scenario="smoke", run_dir=root / "run", resources_dir=None,
+                    )
+
+                    plan = planner._plan_devin(
+                        "/usr/bin/devin", [*arguments, "-p", "hello"],
+                        {"PWD": str(root)}, "/usr/bin/zentty",
+                    )
+
+                    config = json.loads(pathlib.Path(plan["arguments"][1]).read_text())
+                    self.assertEqual(config.get("model"), "custom-model")
+                    self.assertIn("SessionStart", config["hooks"])
+                    self.assertEqual(plan["arguments"][2:], ["-p", "hello"])
+                    self.assertEqual(source.read_text(), original)
+
+    def test_devin_config_extraction_preserves_arguments_after_separator(self):
+        for prompt in (["--config=example.json"], ["--config", "example.json"]):
+            for prefix, expected_source in (([], None), (["--config", "real.json"], "real.json")):
+                with self.subTest(prompt=prompt, prefix=prefix):
+                    forwarded = ["-p", "--", *prompt]
+                    self.assertEqual(
+                        agent_bench._extract_devin_config_override([*prefix, *forwarded]),
+                        (forwarded, expected_source),
+                    )
+
     def test_codex_plan_installs_compact_hooks(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)

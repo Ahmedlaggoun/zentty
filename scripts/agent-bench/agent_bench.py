@@ -2014,6 +2014,8 @@ class LaunchPlanner:
         forwarded, source_override = _extract_devin_config_override(arguments)
         if source_override:
             source = pathlib.Path(source_override).expanduser()
+            if not source.is_absolute():
+                source = pathlib.Path(str(environment.get("PWD") or pathlib.Path.cwd())) / source
         else:
             home = pathlib.Path(str(environment.get("HOME") or pathlib.Path.home())).expanduser()
             source = home / ".config" / "devin" / "config.json"
@@ -3846,7 +3848,10 @@ def _extract_devin_config_override(arguments: list[str]) -> tuple[list[str], str
     source: str | None = None
     iterator = iter(arguments)
     for argument in iterator:
-        if argument == "--config":
+        if argument == "--":
+            forwarded.extend([argument, *iterator])
+            break
+        elif argument == "--config":
             value = next(iterator, None)
             if value is None:
                 forwarded.append(argument)

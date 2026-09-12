@@ -302,6 +302,43 @@ final class DevinEventAdapterTests: XCTestCase {
         XCTAssertFalse(stop.contains { $0.state == .idle })
     }
 
+    func test_devin_adapter_overlapping_foreground_subagent_stops_preserve_parent_slots() throws {
+        let harness = try makeHarness()
+        _ = try harness.payloads(for: #"{"hook_event_name":"SessionStart","session_id":"s-1"}"#)
+        for id in ["first", "second"] {
+            _ = try harness.payloads(for: """
+            {"hook_event_name":"PreToolUse","session_id":"s-1","tool_name":"run_subagent","tool_use_id":"\(id)","tool_input":{"is_background":false}}
+            """)
+        }
+
+        XCTAssertTrue(try harness.payloads(for: #"{"hook_event_name":"Stop","session_id":"s-1"}"#).isEmpty)
+        XCTAssertEqual(try harness.sessionStore.lookup(sessionID: "s-1")?.preToolUseSlots(agentID: nil).count, 2)
+        let firstCompletion = try harness.payloads(for: #"{"hook_event_name":"PostToolUse","session_id":"s-1","tool_name":"run_subagent","tool_use_id":"first","tool_input":{"is_background":false}}"#)
+        XCTAssertEqual(firstCompletion.first?.subagents?.count, 1)
+
+        XCTAssertTrue(try harness.payloads(for: #"{"hook_event_name":"Stop","session_id":"s-1"}"#).isEmpty)
+        let secondCompletion = try harness.payloads(for: #"{"hook_event_name":"PostToolUse","session_id":"s-1","tool_name":"run_subagent","tool_use_id":"second","tool_input":{"is_background":false}}"#)
+        XCTAssertEqual(secondCompletion.first?.subagents?.count, 0)
+        XCTAssertEqual(try harness.payloads(for: #"{"hook_event_name":"Stop","session_id":"s-1"}"#).first?.state, .idle)
+    }
+
+    func test_devin_adapter_child_stop_and_sibling_completion_preserve_parent_approval() throws {
+        let harness = try makeHarness()
+        _ = try harness.payloads(for: #"{"hook_event_name":"SessionStart","session_id":"s-1"}"#)
+        _ = try harness.payloads(for: #"{"hook_event_name":"PreToolUse","session_id":"s-1","tool_name":"run_subagent","tool_use_id":"child","tool_input":{"is_background":false}}"#)
+        _ = try harness.payloads(for: #"{"hook_event_name":"PreToolUse","session_id":"s-1","tool_name":"exec","tool_use_id":"approval"}"#)
+        _ = try harness.payloads(for: #"{"hook_event_name":"PermissionRequest","session_id":"s-1","tool_name":"exec","tool_use_id":"approval","tool_input":{"command":"deploy"}}"#)
+
+        XCTAssertTrue(try harness.payloads(for: #"{"hook_event_name":"Stop","session_id":"s-1"}"#).isEmpty)
+        XCTAssertEqual(try harness.sessionStore.lookup(sessionID: "s-1")?.structuredInteractionKind, .approval)
+        XCTAssertTrue(try harness.payloads(for: #"{"hook_event_name":"PostToolUse","session_id":"s-1","tool_name":"run_subagent","tool_use_id":"child","tool_input":{"is_background":false}}"#).isEmpty)
+        XCTAssertEqual(try harness.sessionStore.lookup(sessionID: "s-1")?.structuredInteractionKind, .approval)
+
+        let approved = try harness.payloads(for: #"{"hook_event_name":"PostToolUse","session_id":"s-1","tool_name":"exec","tool_use_id":"approval"}"#)
+        XCTAssertEqual(approved.first?.state, .running)
+        XCTAssertNil(try harness.sessionStore.lookup(sessionID: "s-1")?.structuredInteractionKind)
+    }
+
     func test_devin_adapter_stop_with_background_subagent_retires_oldest() throws {
         let harness = try makeHarness()
         _ = try harness.payloads(for: #"{"hook_event_name":"SessionStart","session_id":"s-1"}"#)
@@ -334,6 +371,44 @@ final class DevinEventAdapterTests: XCTestCase {
         // Oldest subagent retired, pane still running (exec_0 is open).
         XCTAssertEqual(stop.first?.state, .running)
         XCTAssertEqual(stop.first?.subagents?.count, 0)
+    }
+
+    func test_devin_adapter_background_stop_preserves_pending_approval_and_updates_badge() throws {
+        let harness = try makeHarness()
+        _ = try harness.payloads(for: #"{"hook_event_name":"SessionStart","session_id":"s-1"}"#)
+        _ = try harness.payloads(for: #"{"hook_event_name":"PreToolUse","session_id":"s-1","tool_name":"run_subagent","tool_use_id":"child","tool_input":{"is_background":true}}"#)
+        _ = try harness.payloads(for: #"{"hook_event_name":"PostToolUse","session_id":"s-1","tool_name":"run_subagent","tool_use_id":"child","tool_input":{"is_background":true},"tool_response":{"output":"agent_id=ab12"}}"#)
+        _ = try harness.payloads(for: #"{"hook_event_name":"PreToolUse","session_id":"s-1","tool_name":"exec","tool_use_id":"sibling"}"#)
+        _ = try harness.payloads(for: #"{"hook_event_name":"PermissionRequest","session_id":"s-1","tool_name":"exec","tool_use_id":"approval","tool_input":{"command":"deploy"}}"#)
+
+        let stop = try harness.payloads(for: #"{"hook_event_name":"Stop","session_id":"s-1"}"#)
+        XCTAssertEqual(stop.first?.state, .needsInput)
+        XCTAssertEqual(stop.first?.interactionKind, .approval)
+        XCTAssertEqual(stop.first?.text, "Devin wants to run exec: deploy")
+        XCTAssertEqual(stop.first?.subagents?.count, 0)
+        XCTAssertEqual(try harness.sessionStore.lookup(sessionID: "s-1")?.structuredInteractionKind, .approval)
+        XCTAssertTrue(try harness.payloads(for: #"{"hook_event_name":"PostToolUse","session_id":"s-1","tool_name":"exec","tool_use_id":"sibling"}"#).isEmpty)
+    }
+
+    func test_devin_adapter_background_stop_during_approval_without_open_slots_preserves_prompt() throws {
+        let harness = try makeHarness()
+        _ = try harness.payloads(for: #"{"hook_event_name":"SessionStart","session_id":"s-1"}"#)
+        _ = try harness.payloads(for: #"{"hook_event_name":"PreToolUse","session_id":"s-1","tool_name":"run_subagent","tool_use_id":"child","tool_input":{"is_background":true}}"#)
+        _ = try harness.payloads(for: #"{"hook_event_name":"PostToolUse","session_id":"s-1","tool_name":"run_subagent","tool_use_id":"child","tool_input":{"is_background":true},"tool_response":{"output":"agent_id=ab12"}}"#)
+        _ = try harness.payloads(for: #"{"hook_event_name":"PreToolUse","session_id":"s-1","tool_name":"exec","tool_use_id":"approval"}"#)
+        _ = try harness.payloads(for: #"{"hook_event_name":"PermissionRequest","session_id":"s-1","tool_name":"exec","tool_use_id":"approval","tool_input":{"command":"deploy"}}"#)
+        XCTAssertTrue(try XCTUnwrap(harness.sessionStore.lookup(sessionID: "s-1")).preToolUseSlots(agentID: nil).isEmpty)
+
+        let stop = try harness.payloads(for: #"{"hook_event_name":"Stop","session_id":"s-1"}"#)
+        XCTAssertEqual(stop.first?.state, .needsInput)
+        XCTAssertEqual(stop.first?.interactionKind, .approval)
+        XCTAssertEqual(stop.first?.text, "Devin wants to run exec: deploy")
+        XCTAssertEqual(stop.first?.subagents?.count, 0)
+        XCTAssertEqual(try harness.sessionStore.lookup(sessionID: "s-1")?.structuredInteractionKind, .approval)
+
+        let parentStop = try harness.payloads(for: #"{"hook_event_name":"Stop","session_id":"s-1"}"#)
+        XCTAssertEqual(parentStop.first?.state, .idle)
+        XCTAssertNil(try harness.sessionStore.lookup(sessionID: "s-1")?.structuredInteractionKind)
     }
 
     func test_devin_adapter_unknown_hook_event_returns_empty() throws {

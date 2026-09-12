@@ -190,9 +190,6 @@ extension AgentEventBridge {
 
         case "Stop":
             let target = try devinResolvedTarget(sessionID: sessionID, environment: environment, sessionStore: sessionStore)
-            // Read the open tool slots BEFORE clearing interaction context —
-            // clearInteractionContext drops the slots too.
-            //
             // A Stop while any tool call is still open cannot be the parent's
             // turn end — the parent's Stop only fires when it has no calls in
             // flight. Hooks from inside a subagent share the parent's
@@ -200,23 +197,34 @@ extension AgentEventBridge {
             // own Stop. A run_subagent call still in flight means a foreground
             // subagent ended; any other open call means a background subagent
             // finished while the parent worked — retire the oldest entry.
-            let openSlots = sessionID.flatMap { try? sessionStore.lookup(sessionID: $0)?.preToolUseSlots(agentID: nil) } ?? []
-            if let sessionID {
-                try sessionStore.clearInteractionContext(sessionID: sessionID)
-            }
-            if !openSlots.isEmpty {
-                let key = devinSubagentKey(target)
+            let record = try sessionID.flatMap { try sessionStore.lookup(sessionID: $0) }
+            let openSlots = record?.preToolUseSlots(agentID: nil) ?? []
+            let key = devinSubagentKey(target)
+            let subagents = try subagentStore.summary(key: key)
+            // PermissionRequest consumes its tool slot; the pending prompt
+            // still identifies an active parent when a tracked child stops.
+            let hasPendingParent = record?.structuredInteractionKind != nil && subagents?.isEmpty == false
+            if !openSlots.isEmpty || hasPendingParent {
                 // Only attribute the Stop to a tracked background subagent when
                 // the registry actually holds one — and emit the resulting
                 // summary even when it is now empty, so the badge clears.
                 if !openSlots.contains(where: { devinIsSubagentTool($0.toolName) }),
-                   let existing = try? subagentStore.summary(key: key), !existing.isEmpty,
+                   subagents?.isEmpty == false,
                    let subagents = try? subagentStore.stop(key: key, subagentID: nil, retireOldestWhenUnknown: true) {
-                    return [lifecyclePayload(target: target, toolName: displayName, state: .running, sessionID: sessionID, cwd: cwd, subagents: subagents)]
+                    let pendingKind = record?.structuredInteractionKind
+                    return [lifecyclePayload(
+                        target: target, toolName: displayName,
+                        state: pendingKind == nil ? .running : .needsInput,
+                        text: record?.structuredInteractionText,
+                        interactionKind: pendingKind,
+                        sessionID: sessionID, cwd: cwd, subagents: subagents
+                    )]
                 }
                 return []
             }
-            let subagents = try subagentStore.summary(key: devinSubagentKey(target))
+            if let sessionID {
+                try sessionStore.clearInteractionContext(sessionID: sessionID)
+            }
             return [lifecyclePayload(target: target, toolName: displayName, state: .idle, sessionID: sessionID, cwd: cwd, subagents: subagents)]
 
         case "PostCompaction":
