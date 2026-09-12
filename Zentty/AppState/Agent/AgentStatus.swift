@@ -17,6 +17,7 @@ enum AgentTool: Equatable, Sendable {
     case agy
     case hermes
     case vibe
+    case devin
     case smallHarness
     case custom(String)
 
@@ -54,6 +55,8 @@ enum AgentTool: Equatable, Sendable {
             return "Hermes Agent"
         case .vibe:
             return "Mistral Vibe"
+        case .devin:
+            return "Devin"
         case .smallHarness:
             return "Small Harness"
         case .custom(let name):
@@ -141,6 +144,7 @@ enum AgentTool: Equatable, Sendable {
         // "Mistral Vibe" normalizes to "mistral vibe" (leading token "mistral");
         // the bare binary surfaces as "vibe". Match both leading tokens.
         ToolNameMatcher(tool: .vibe, isHookDrivenOnly: false, match: .leadingToken(["vibe", "mistral"])),
+        ToolNameMatcher(tool: .devin, isHookDrivenOnly: false, match: .leadingToken(["devin"])),
         ToolNameMatcher(tool: .smallHarness, isHookDrivenOnly: false, match: .containsAny(["small-harness", "small harness", "smallharness"])),
     ]
 

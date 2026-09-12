@@ -53,6 +53,9 @@ final class AgentIntegrationConsentTests: XCTestCase {
         // Modern kimi installs a persistent managed block, so it is consent-gated.
         XCTAssertEqual(AgentBootstrapTool.kimi.defaultIntegrationState, .ask)
         XCTAssertEqual(AgentBootstrapTool.copilot.defaultIntegrationState, .on)
+        // Devin uses an ephemeral --config overlay; nothing persists, so no
+        // consent prompt.
+        XCTAssertEqual(AgentBootstrapTool.devin.defaultIntegrationState, .on)
         XCTAssertEqual(AgentBootstrapTool.smallHarness.defaultIntegrationState, .on)
     }
 
@@ -94,6 +97,7 @@ final class AgentIntegrationConsentTests: XCTestCase {
     func test_gate_ephemeral_default_proceeds_never_needs_consent() {
         XCTAssertEqual(AgentIntegrationConsent.gate(for: .claude, storedState: nil, isRestore: false), .proceed)
         XCTAssertEqual(AgentIntegrationConsent.gate(for: .codex, storedState: nil, isRestore: true), .proceed)
+        XCTAssertEqual(AgentIntegrationConsent.gate(for: .devin, storedState: nil, isRestore: false), .proceed)
         XCTAssertEqual(AgentIntegrationConsent.gate(for: .smallHarness, storedState: nil, isRestore: true), .proceed)
     }
 

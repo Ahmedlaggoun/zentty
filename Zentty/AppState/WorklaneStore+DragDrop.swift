@@ -1006,6 +1006,7 @@ extension WorklaneStore {
             case .agy: return "agy"
             case .hermes: return "hermes"
             case .vibe: return "vibe"
+            case .devin: return "devin"
             case .smallHarness: return "small-harness"
             case .custom(let name): return name
             }

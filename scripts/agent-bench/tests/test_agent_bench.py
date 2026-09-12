@@ -2351,6 +2351,7 @@ class ProfileTests(unittest.TestCase):
                 "codex",
                 "copilot",
                 "cursor",
+                "devin",
                 "droid",
                 "gemini",
                 "grok",

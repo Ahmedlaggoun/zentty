@@ -567,7 +567,7 @@ enum SessionRestoreDraftExporter {
 
     private static func restoreIdentityRequirement(for tool: AgentTool) -> RestoreIdentityRequirement {
         switch tool {
-        case .amp, .claudeCode, .codex, .copilot, .cursor, .droid, .kimi, .openCode, .hermes, .vibe:
+        case .amp, .claudeCode, .codex, .copilot, .cursor, .droid, .kimi, .openCode, .hermes, .vibe, .devin:
             return .sessionID
         case .gemini, .pi, .omp, .grok, .agy, .smallHarness:
             return .workingDirectory
@@ -813,6 +813,22 @@ enum AgentResumeCommandBuilder {
                 return nil
             }
             return "vibe --resume \(sessionID)"
+        case .devin:
+            // Devin sessions are human-readable slugs (`thorn-angora`),
+            // resumable via `devin --resume <slug>`. Without one we can still
+            // continue the most recent session via `--continue`.
+            if draft.sessionID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                guard hasWorkingDirectory(draft) else {
+                    logRejectedWorkingDirectory(for: draft)
+                    return nil
+                }
+                return "devin --continue"
+            }
+            guard let sessionID = validatedDevinSessionID(from: draft.sessionID) else {
+                logRejectedSessionID(for: draft)
+                return nil
+            }
+            return "devin --resume \(sessionID)"
         default:
             return nil
         }
@@ -884,6 +900,17 @@ enum AgentResumeCommandBuilder {
         }
 
         let pattern = "^[A-Za-z0-9][A-Za-z0-9_-]{3,}$"
+        guard sessionID.range(of: pattern, options: .regularExpression) != nil else {
+            return nil
+        }
+        return sessionID
+    }
+
+    private static func validatedDevinSessionID(from sessionID: String) -> String? {
+        // Devin session IDs are human-readable word slugs (`thorn-angora`);
+        // accept letters, digits and dashes only so the slug is safe to
+        // interpolate into `devin --resume <slug>` unquoted.
+        let pattern = "^[a-z0-9][a-z0-9-]*$"
         guard sessionID.range(of: pattern, options: .regularExpression) != nil else {
             return nil
         }

@@ -410,6 +410,64 @@ final class AgentResumeCommandBuilderTests: XCTestCase {
         XCTAssertNil(AgentResumeCommandBuilder.command(for: draft))
     }
 
+    func test_builder_returns_devin_resume_command_for_slug_session_id() {
+        let draft = PaneRestoreDraft(
+            paneID: "pane-devin",
+            kind: .agentResume,
+            toolName: "Devin",
+            sessionID: "thorn-angora",
+            workingDirectory: "/tmp/project",
+            trackedPID: 4242
+        )
+
+        XCTAssertEqual(
+            AgentResumeCommandBuilder.command(for: draft),
+            "devin --resume thorn-angora"
+        )
+    }
+
+    func test_builder_returns_devin_continue_when_session_id_blank_and_cwd_present() {
+        let draft = PaneRestoreDraft(
+            paneID: "pane-devin",
+            kind: .agentResume,
+            toolName: "Devin",
+            sessionID: "",
+            workingDirectory: "/tmp/project",
+            trackedPID: 4242
+        )
+
+        XCTAssertEqual(
+            AgentResumeCommandBuilder.command(for: draft),
+            "devin --continue"
+        )
+    }
+
+    func test_builder_returns_nil_for_devin_when_session_id_has_shell_metacharacters() {
+        let draft = PaneRestoreDraft(
+            paneID: "pane-devin",
+            kind: .agentResume,
+            toolName: "Devin",
+            sessionID: "abc;rm -rf /",
+            workingDirectory: "/tmp/project",
+            trackedPID: 4242
+        )
+
+        XCTAssertNil(AgentResumeCommandBuilder.command(for: draft))
+    }
+
+    func test_builder_returns_nil_for_devin_when_session_id_blank_and_working_directory_missing() {
+        let draft = PaneRestoreDraft(
+            paneID: "pane-devin",
+            kind: .agentResume,
+            toolName: "Devin",
+            sessionID: "",
+            workingDirectory: nil,
+            trackedPID: 4242
+        )
+
+        XCTAssertNil(AgentResumeCommandBuilder.command(for: draft))
+    }
+
     func test_builder_returns_gemini_resume_command_when_working_directory_exists_without_session_id() {
         let draft = PaneRestoreDraft(
             paneID: "pane-gemini",

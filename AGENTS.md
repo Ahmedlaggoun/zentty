@@ -61,6 +61,13 @@ Re-run after:
 - any change to `AgyHooksInstaller`, `agyAdapter`, or `AgyCanonicalReEmitter`,
 - any change to `scripts/agent-bench/profiles/agy.json`.
 
+For the devin integration, the gate is `scripts/test-devin-bench`. It runs the full devin scenario sweep — `smoke,session_capture,tools,approval,restore_launch,subagents,subagents_async` — in `--strict` mode and covers the `--config` overlay contract plus subagent lifecycle inferred from `run_subagent` hooks.
+
+Re-run after:
+- any devin CLI version bump,
+- any change to `AgentLaunchBootstrap.devinPlan` or `DevinEventAdapter`,
+- any change to `scripts/agent-bench/profiles/devin.json`.
+
 Profile-level Python tests (`scripts/agent-bench/tests/test_agent_bench.py`) run via `python3 -m unittest discover scripts/agent-bench/tests` and catch bad profile shapes before the harness is even invoked.
 
 ## Error Handling

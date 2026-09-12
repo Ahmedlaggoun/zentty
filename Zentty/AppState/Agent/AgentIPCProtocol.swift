@@ -90,6 +90,7 @@ enum AgentBootstrapTool: String, Codable, Equatable, CaseIterable {
     case agy
     case hermes
     case vibe
+    case devin
     case smallHarness = "small-harness"
 
     /// Names of the real CLI binary (or binaries) this wrapped tool resolves to on PATH.
@@ -99,7 +100,7 @@ enum AgentBootstrapTool: String, Codable, Equatable, CaseIterable {
         switch self {
         case .cursor:
             return ["cursor-agent"]
-        case .amp, .claude, .codex, .copilot, .droid, .gemini, .opencode, .pi, .omp, .grok, .agy, .hermes, .smallHarness:
+        case .amp, .claude, .codex, .copilot, .droid, .gemini, .opencode, .pi, .omp, .grok, .agy, .hermes, .devin, .smallHarness:
             return [rawValue]
         case .kimi:
             return [rawValue, "kimi-cli"]

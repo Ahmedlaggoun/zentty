@@ -212,6 +212,20 @@ struct AgentToolLauncher {
                 return "vibe early-exit flag: \(flag)"
             }
             return nil
+        case .devin:
+            if environment["ZENTTY_DEVIN_HOOKS_DISABLED"] == "1" {
+                return "ZENTTY_DEVIN_HOOKS_DISABLED=1"
+            }
+            if let subcommand = arguments.first, !subcommand.hasPrefix("-"),
+               Self.devinPassthroughSubcommands.contains(subcommand) {
+                return "devin passthrough subcommand: \(subcommand)"
+            }
+            // Note: `-p`/`--print` is NOT skipped — Devin fires hooks in print
+            // mode too, so bootstrapping gives pane status for one-shot runs.
+            if let flag = arguments.first(where: { Self.devinEarlyExitFlags.contains(Self.optionName($0)) }) {
+                return "devin early-exit flag: \(flag)"
+            }
+            return nil
         case .smallHarness:
             if environment["ZENTTY_SMALL_HARNESS_HOOKS_DISABLED"] == "1" {
                 return "ZENTTY_SMALL_HARNESS_HOOKS_DISABLED=1"
@@ -293,6 +307,17 @@ struct AgentToolLauncher {
 
     static let vibeEarlyExitFlags: Set<String> = [
         "--help", "-h", "--version", "-v",
+    ]
+
+    static let devinPassthroughSubcommands: Set<String> = [
+        "auth", "mcp", "models", "doctor", "rules", "skills", "plugins",
+        "cloud", "desktop", "list", "ls", "rm", "ssh", "forward",
+        "update", "version", "migrate", "sandbox", "setup", "uninstall",
+        "acp", "help", "connect", "worker",
+    ]
+
+    static let devinEarlyExitFlags: Set<String> = [
+        "--help", "-h", "--version", "-V",
     ]
 
     static let smallHarnessPassthroughSubcommands: Set<String> = [
@@ -527,6 +552,8 @@ struct AgentToolLauncher {
             return "Hermes Agent"
         case .vibe:
             return "Mistral Vibe"
+        case .devin:
+            return "Devin"
         case .smallHarness:
             return "Small Harness"
         }
@@ -559,6 +586,7 @@ struct AgentToolLauncher {
             "ZENTTY_AGY_HOOKS_DISABLED",
             "ZENTTY_HERMES_HOOKS_DISABLED",
             "ZENTTY_VIBE_HOOKS_DISABLED",
+            "ZENTTY_DEVIN_HOOKS_DISABLED",
             "ZENTTY_SMALL_HARNESS_HOOKS_DISABLED",
             "ZENTTY_CODEX_NOTIFY_DISABLED",
             "GEMINI_CLI_SYSTEM_SETTINGS_PATH",
@@ -621,7 +649,7 @@ struct AgentToolLauncher {
             return EnvironmentPatch(set: [:], unset: ["CLAUDECODE"])
         case .smallHarness:
             return EnvironmentPatch(set: [:], unset: ["SMALL_HARNESS_MANAGED_HOOKS_FILE", "SMALL_HARNESS_MANAGED_HOOKS_JSON"])
-        case .amp, .codex, .copilot, .cursor, .droid, .gemini, .kimi, .opencode, .pi, .omp, .grok, .agy, .hermes, .vibe:
+        case .amp, .codex, .copilot, .cursor, .droid, .gemini, .kimi, .opencode, .pi, .omp, .grok, .agy, .hermes, .vibe, .devin:
             return EnvironmentPatch()
         }
     }
@@ -662,6 +690,8 @@ struct AgentToolLauncher {
             // launch so the hooks we install in ~/.vibe/hooks.toml actually
             // fire — independent of what the app-provided launch plan carried.
             environmentPatch.set["VIBE_ENABLE_EXPERIMENTAL_HOOKS"] = "true"
+        case .devin:
+            environmentPatch.set["ZENTTY_DEVIN_PID"] = "\(getpid())"
         case .smallHarness:
             environmentPatch.set["ZENTTY_SMALL_HARNESS_PID"] = "\(getpid())"
         case .opencode, .pi, .omp:
@@ -723,6 +753,7 @@ struct AgentToolLauncher {
             "ZENTTY_AGY_PID",
             "ZENTTY_HERMES_PID",
             "ZENTTY_VIBE_PID",
+            "ZENTTY_DEVIN_PID",
             "ZENTTY_SMALL_HARNESS_PID",
         ]
         return Dictionary(uniqueKeysWithValues: keys.compactMap { key in

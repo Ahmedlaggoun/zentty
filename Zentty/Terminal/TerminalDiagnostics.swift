@@ -579,6 +579,8 @@ final class TerminalDiagnostics: @unchecked Sendable {
             return "hermes"
         case .vibe:
             return "vibe"
+        case .devin:
+            return "devin"
         case .smallHarness:
             return "small-harness"
         case .custom(let name):

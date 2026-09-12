@@ -1,0 +1,129 @@
+{
+  "name": "devin",
+  "command": "devin",
+  "real_binary_names": ["devin"],
+  "version_args": ["--version"],
+  "launch_args_by_scenario": {
+    "smoke": [
+      "-p",
+      "--respect-workspace-trust",
+      "false",
+      "--permission-mode",
+      "dangerous",
+      "--",
+      "Run this exact shell command and nothing else: printf ZENTTY_AGENT_BENCH_OK"
+    ],
+    "session_capture": [
+      "-p",
+      "--respect-workspace-trust",
+      "false",
+      "--permission-mode",
+      "dangerous",
+      "--",
+      "Run this exact shell command and nothing else: printf ZENTTY_AGENT_BENCH_OK"
+    ],
+    "tools": [
+      "-p",
+      "--respect-workspace-trust",
+      "false",
+      "--permission-mode",
+      "dangerous",
+      "--",
+      "Run these two shell commands in order: printf ZENTTY_AGENT_BENCH_TOOLS_1 and then printf ZENTTY_AGENT_BENCH_TOOLS_2. Then reply with exactly DONE."
+    ],
+    "approval": [
+      "--respect-workspace-trust",
+      "false",
+      "--",
+      "Run this exact shell command and nothing else: printf ZENTTY_AGENT_BENCH_APPROVAL_OK"
+    ],
+    "restore_launch": [
+      "--resume",
+      "zentty-bench-slug"
+    ],
+    "subagents": [
+      "-p",
+      "--respect-workspace-trust",
+      "false",
+      "--permission-mode",
+      "dangerous",
+      "--",
+      "For an integration hook regression test: use the run_subagent tool exactly once, with profile subagent_explore and title \"bench-subagent\", to list the files in the current directory. Wait for it to finish, then reply with exactly DONE."
+    ],
+    "subagents_async": [
+      "-p",
+      "--respect-workspace-trust",
+      "false",
+      "--permission-mode",
+      "dangerous",
+      "--",
+      "For an integration hook regression test: use the run_subagent tool exactly once, with profile subagent_explore, title \"bench-subagent-async\" and is_background true, to list the files in the current directory. Do not wait for it: as soon as the run_subagent call returns, reply with exactly DONE and end your turn."
+    ]
+  },
+  "expectations": {
+    "smoke": {
+      "required_events": ["SessionStart", "UserPromptSubmit", "Stop", "SessionEnd"]
+    },
+    "session_capture": {
+      "required_events": ["SessionStart", "UserPromptSubmit", "Stop", "SessionEnd"],
+      "session_identity": {
+        "session_id_pattern": "devin",
+        "tracked_pid": true
+      }
+    },
+    "tools": {
+      "required_events": ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop", "SessionEnd"]
+    },
+    "approval": {
+      "required_events": ["SessionStart", "UserPromptSubmit", "PermissionRequest"]
+    },
+    "restore_launch": {
+      "required_events": [],
+      "required_bootstrap_arguments": [["--resume", "zentty-bench-slug"]]
+    },
+    "subagents": {
+      "required_events": [
+        "SessionStart",
+        "UserPromptSubmit",
+        "PreToolUse:run_subagent",
+        "PostToolUse:run_subagent",
+        "Stop",
+        "SessionEnd"
+      ],
+      "subagent_payload_required": true,
+      "subagent_model_required": false
+    },
+    "subagents_async": {
+      "required_events": [
+        "SessionStart",
+        "UserPromptSubmit",
+        "PreToolUse:run_subagent",
+        "PostToolUse:run_subagent",
+        "Stop",
+        "SessionEnd"
+      ],
+      "subagent_payload_required": true,
+      "subagent_model_required": false
+    }
+  },
+  "input_by_scenario": {
+    "approval": [
+      {
+        "match": "Approve once|allow once|Yes, allow|deny|permission",
+        "text": "1"
+      }
+    ]
+  },
+  "skip_patterns": [
+    "login",
+    "auth",
+    "not authenticated",
+    "api key",
+    "sign in",
+    "devin auth",
+    "run `devin setup`",
+    "devin setup",
+    "trust this",
+    "workspace trust"
+  ]
+}
