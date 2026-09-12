@@ -78,6 +78,7 @@ final class AppConfigStoreTests: XCTestCase {
         XCTAssertTrue(persisted.contains("smooth_scroll_enabled = false"))
         XCTAssertTrue(persisted.contains("focus_follows_mouse = false"))
         XCTAssertTrue(persisted.contains("focus_follows_mouse_delay = \"short\""))
+        XCTAssertTrue(persisted.contains("focus_on_1password_prompt = true"))
         XCTAssertTrue(persisted.contains("[open_with]"))
         XCTAssertTrue(persisted.contains("enabled_target_ids = [\"finder\", \"vscode\", \"cursor\", \"xcode\"]"))
         XCTAssertTrue(persisted.contains("[error_reporting]"))
@@ -96,6 +97,7 @@ final class AppConfigStoreTests: XCTestCase {
             smooth_scroll_enabled = true
             focus_follows_mouse = true
             focus_follows_mouse_delay = "immediate"
+            focus_on_1password_prompt = false
             """.write(to: fileURL, atomically: true, encoding: .utf8)
 
         let store = AppConfigStore(
@@ -111,6 +113,7 @@ final class AppConfigStoreTests: XCTestCase {
         XCTAssertTrue(store.current.panes.smoothScrollingEnabled)
         XCTAssertTrue(store.current.panes.focusFollowsMouse)
         XCTAssertEqual(store.current.panes.focusFollowsMouseDelay, .immediate)
+        XCTAssertFalse(store.current.panes.focusOnOnePasswordPrompt)
     }
 
     func test_store_reads_worklane_placement_from_config_file() throws {
@@ -279,6 +282,7 @@ final class AppConfigStoreTests: XCTestCase {
             config.panes.smoothScrollingEnabled = true
             config.panes.focusFollowsMouse = true
             config.panes.focusFollowsMouseDelay = .immediate
+            config.panes.focusOnOnePasswordPrompt = false
             config.openWith.primaryTargetID = "cursor"
             config.openWith.enabledTargetIDs = ["cursor", "finder"]
             config.errorReporting.enabled = false
@@ -298,6 +302,7 @@ final class AppConfigStoreTests: XCTestCase {
         XCTAssertTrue(persisted.contains("smooth_scroll_enabled = true"))
         XCTAssertTrue(persisted.contains("focus_follows_mouse = true"))
         XCTAssertTrue(persisted.contains("focus_follows_mouse_delay = \"immediate\""))
+        XCTAssertTrue(persisted.contains("focus_on_1password_prompt = false"))
         XCTAssertTrue(persisted.contains("primary_target_id = \"cursor\""))
         XCTAssertTrue(persisted.contains("[error_reporting]"))
         XCTAssertTrue(persisted.contains("enabled = false"))
@@ -1003,6 +1008,32 @@ final class AppConfigStoreTests: XCTestCase {
         XCTAssertEqual(store.current.shortcuts.bindings, [])
     }
 
+    func test_store_reports_change_origin_to_observers() throws {
+        let fileURL = temporaryDirectoryURL.appendingPathComponent("config.toml")
+        let store = AppConfigStore(
+            fileURL: fileURL,
+            sidebarWidthDefaults: sidebarWidthDefaults,
+            sidebarVisibilityDefaults: sidebarVisibilityDefaults,
+            paneLayoutDefaults: paneLayoutDefaults
+        )
+        let origins = OriginRecorder()
+        _ = store.addObserver(withOrigin: { _, origin in
+            origins.append(origin)
+        })
+
+        try store.update { config in
+            config.sidebar.width = 333
+        }
+
+        var edited = store.current
+        edited.sidebar.width = 351
+        try AppConfigTOML.encode(edited).write(to: fileURL, atomically: true, encoding: .utf8)
+        store.reloadFromDisk()
+
+        XCTAssertEqual(origins.values, [.inProcess, .externalReload])
+        XCTAssertEqual(store.current.sidebar.width, 351)
+    }
+
     func test_store_notifies_multiple_observers_for_updates() throws {
         let fileURL = temporaryDirectoryURL.appendingPathComponent("config.toml")
         let store = AppConfigStore(
@@ -1657,5 +1688,22 @@ final class AgentCaffeinationControllerTests: XCTestCase {
         )
 
         XCTAssertEqual(harness.endedTokenIDs, [1])
+    }
+}
+
+private final class OriginRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: [AppConfigChangeOrigin] = []
+
+    var values: [AppConfigChangeOrigin] {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage
+    }
+
+    func append(_ origin: AppConfigChangeOrigin) {
+        lock.lock()
+        defer { lock.unlock() }
+        storage.append(origin)
     }
 }

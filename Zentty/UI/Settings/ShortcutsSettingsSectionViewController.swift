@@ -1,5 +1,8 @@
 import AppKit
 import Carbon.HIToolbox
+import os
+
+private let shortcutsLogger = Logger(subsystem: "be.zenjoy.zentty", category: "ShortcutsSettings")
 
 @MainActor
 final class ShortcutsSettingsSectionViewController: SettingsScrollableSectionViewController, SettingsAppearanceUpdating {
@@ -23,6 +26,7 @@ final class ShortcutsSettingsSectionViewController: SettingsScrollableSectionVie
         static let shortcutControlHeight: CGFloat = 52
         static let shortcutControlInset: CGFloat = 12
         static let conflictSpacing: CGFloat = 6
+        static let conflictActionSpacing: CGFloat = 12
         static let previewHeight: CGFloat = 182
         static let keyboardPreviewLeadingBleed: CGFloat = 2
         static let headerRowHeight: CGFloat = max(searchHeight, headerActionSize)
@@ -36,7 +40,7 @@ final class ShortcutsSettingsSectionViewController: SettingsScrollableSectionVie
 
     private enum ShortcutIssue: Equatable {
         case message(String)
-        case conflict(AppCommandID)
+        case conflict(AppCommandID, pending: KeyboardShortcut)
     }
 
     private enum BrowserItem: Equatable {
@@ -68,7 +72,9 @@ final class ShortcutsSettingsSectionViewController: SettingsScrollableSectionVie
     private let errorLabel = NSTextField(labelWithString: "")
     private let conflictContainerView = NSStackView()
     private let conflictLabel = NSTextField(labelWithString: "This shortcut conflicts with another shortcut:")
+    private let conflictActionsView = NSStackView()
     private let conflictTargetButton = NSButton(title: "", target: nil, action: nil)
+    private let conflictReassignButton = NSButton(title: "Assign Anyway", target: nil, action: nil)
     private let keyboardPreviewContainerView = NSView()
     private let keyboardPreviewView = KeyboardShortcutPreviewView()
     private let layoutIndicatorLabel = NSTextField(labelWithString: "")
@@ -301,11 +307,23 @@ final class ShortcutsSettingsSectionViewController: SettingsScrollableSectionVie
 
     var conflictTargetTitleForTesting: String? {
         guard let selectedCommandID,
-              case let .conflict(conflictingCommandID) = issueByCommandID[selectedCommandID] else {
+              case let .conflict(conflictingCommandID, _) = issueByCommandID[selectedCommandID] else {
             return nil
         }
 
         return AppCommandRegistry.definition(for: conflictingCommandID).title
+    }
+
+    var showsConflictReassignActionForTesting: Bool {
+        conflictContainerView.isHidden == false && conflictReassignButton.isHidden == false
+    }
+
+    var errorMessageForTesting: String? {
+        guard let selectedCommandID,
+              case let .message(message) = issueByCommandID[selectedCommandID] else {
+            return nil
+        }
+        return message
     }
 
     var showsKeyboardPreviewForTesting: Bool {
@@ -379,6 +397,20 @@ final class ShortcutsSettingsSectionViewController: SettingsScrollableSectionVie
 
     func activateConflictTargetForTesting() {
         handleConflictTargetClicked(nil)
+    }
+
+    func activateConflictReassignForTesting() {
+        handleConflictReassignClicked(nil)
+    }
+
+    func applyPresetForTesting(_ preset: ShortcutPreset) {
+        applyPreset(preset)
+    }
+
+    func clearSelectionForTesting() {
+        selectedCommandID = nil
+        syncSelectionToTableView()
+        refreshDetailPane()
     }
 
     func apply(shortcuts: AppConfig.Shortcuts) {
@@ -613,7 +645,24 @@ final class ShortcutsSettingsSectionViewController: SettingsScrollableSectionVie
         conflictTargetButton.font = .systemFont(ofSize: 13, weight: .medium)
         conflictTargetButton.target = self
         conflictTargetButton.action = #selector(handleConflictTargetClicked(_:))
-        conflictContainerView.addArrangedSubview(conflictTargetButton)
+
+        conflictReassignButton.bezelStyle = .inline
+        conflictReassignButton.isBordered = false
+        conflictReassignButton.contentTintColor = .controlAccentColor
+        conflictReassignButton.font = .systemFont(ofSize: 13, weight: .medium)
+        conflictReassignButton.target = self
+        conflictReassignButton.action = #selector(handleConflictReassignClicked(_:))
+        conflictReassignButton.setAccessibilityLabel(
+            "Assign shortcut to this command; the conflicting command goes back to its default shortcut or becomes unassigned"
+        )
+
+        conflictActionsView.orientation = .horizontal
+        conflictActionsView.alignment = .firstBaseline
+        conflictActionsView.spacing = Layout.conflictActionSpacing
+        conflictActionsView.translatesAutoresizingMaskIntoConstraints = false
+        conflictActionsView.addArrangedSubview(conflictTargetButton)
+        conflictActionsView.addArrangedSubview(conflictReassignButton)
+        conflictContainerView.addArrangedSubview(conflictActionsView)
 
         stackView.addArrangedSubview(conflictContainerView)
         conflictContainerView.widthAnchor.constraint(equalTo: stackView.widthAnchor).isActive = true
@@ -772,10 +821,11 @@ final class ShortcutsSettingsSectionViewController: SettingsScrollableSectionVie
             errorLabel.stringValue = message
             errorLabel.isHidden = false
             conflictContainerView.isHidden = true
-        case let .conflict(conflictingCommandID):
+        case let .conflict(conflictingCommandID, _):
             errorLabel.stringValue = ""
             errorLabel.isHidden = true
             conflictTargetButton.title = "\(AppCommandRegistry.definition(for: conflictingCommandID).title) ↗"
+            conflictReassignButton.isHidden = false
             conflictContainerView.isHidden = false
         case nil:
             errorLabel.stringValue = ""
@@ -1106,7 +1156,7 @@ final class ShortcutsSettingsSectionViewController: SettingsScrollableSectionVie
         }
 
         if let conflict = shortcutManager.conflict(for: shortcut, assigningTo: commandID) {
-            issueByCommandID[commandID] = .conflict(conflict.commandID)
+            issueByCommandID[commandID] = .conflict(conflict.commandID, pending: shortcut)
             recordingCommandID = nil
             clearRecordingPreview()
             refreshVisibleState()
@@ -1127,17 +1177,42 @@ final class ShortcutsSettingsSectionViewController: SettingsScrollableSectionVie
     }
 
     private func persistShortcut(_ shortcut: KeyboardShortcut?, for commandID: AppCommandID) {
-        try? configStore.update { config in
+        persistShortcuts(describedAs: "persist \(String(describing: shortcut)) for \(commandID.rawValue)") { config in
             config.shortcuts = config.shortcuts.updating(commandID: commandID, shortcut: shortcut)
         }
         apply(shortcuts: configStore.current.shortcuts)
+    }
+
+    /// Runs a shortcuts config write and, when it fails, logs and pins the
+    /// write-failure message to the selected command so the issue row shows
+    /// it. Bulk actions (presets, reset, import) can run with nothing
+    /// selected; the first visible command is selected so the message has a
+    /// row to live on.
+    private func persistShortcuts(
+        describedAs description: String,
+        _ mutate: (inout AppConfig) throws -> Void
+    ) {
+        do {
+            try configStore.update(mutate)
+        } catch {
+            shortcutsLogger.error("Failed to \(description): \(error.localizedDescription)")
+            if selectedCommandID == nil {
+                selectedCommandID = browserItems.compactMap(\.commandID).first
+                    ?? AppCommandRegistry.definitions.first?.id
+            }
+            if let selectedCommandID {
+                issueByCommandID[selectedCommandID] = .message(
+                    "Couldn’t save the shortcut change. Check that the config file is writable and try again."
+                )
+            }
+        }
     }
 
     private func resetAllShortcuts() {
         recordingCommandID = nil
         clearRecordingPreview()
         issueByCommandID.removeAll()
-        try? configStore.update { config in
+        persistShortcuts(describedAs: "reset shortcuts to defaults") { config in
             config.shortcuts = .default
         }
         searchField.stringValue = ""
@@ -1238,10 +1313,63 @@ final class ShortcutsSettingsSectionViewController: SettingsScrollableSectionVie
         guard let selectedCommandID else {
             return
         }
-        guard case let .conflict(conflictingCommandID) = issueByCommandID[selectedCommandID] else {
+        guard case let .conflict(conflictingCommandID, _) = issueByCommandID[selectedCommandID] else {
             return
         }
         jumpToCommand(conflictingCommandID)
+    }
+
+    @objc
+    private func handleConflictReassignClicked(_ sender: Any?) {
+        guard let selectedCommandID,
+              case let .conflict(conflictingCommandID, pending) = issueByCommandID[selectedCommandID] else {
+            return
+        }
+
+        let replacement = replacementShortcutForConflictingCommand(
+            conflictingCommandID,
+            losing: pending,
+            to: selectedCommandID
+        )
+
+        recordingCommandID = nil
+        clearRecordingPreview()
+        do {
+            try configStore.update { config in
+                config.shortcuts = config.shortcuts
+                    .updating(commandID: conflictingCommandID, shortcut: replacement)
+                    .updating(commandID: selectedCommandID, shortcut: pending)
+            }
+            issueByCommandID[selectedCommandID] = nil
+        } catch {
+            shortcutsLogger.error(
+                "Failed to reassign \(String(describing: pending)) from \(conflictingCommandID.rawValue) to \(selectedCommandID.rawValue): \(error.localizedDescription)"
+            )
+            issueByCommandID[selectedCommandID] = .message(
+                "Couldn’t save the shortcut change. Check that the config file is writable and try again."
+            )
+        }
+        apply(shortcuts: configStore.current.shortcuts)
+    }
+
+    /// The shortcut the conflicting command keeps after "Assign Anyway" hands its
+    /// current one to `newOwner`: its default when that default is free (the command
+    /// had merely been rebound), otherwise unassigned. The new owner is about to
+    /// release whatever it holds, so its current shortcut does not count as taken.
+    private func replacementShortcutForConflictingCommand(
+        _ conflictingCommandID: AppCommandID,
+        losing pending: KeyboardShortcut,
+        to newOwner: AppCommandID
+    ) -> KeyboardShortcut? {
+        guard let defaultShortcut = AppCommandRegistry.definition(for: conflictingCommandID).defaultShortcut,
+              defaultShortcut != pending else {
+            return nil
+        }
+        if let holder = shortcutManager.conflict(for: defaultShortcut, assigningTo: conflictingCommandID),
+           holder.commandID != newOwner {
+            return nil
+        }
+        return defaultShortcut
     }
 
     @objc
@@ -1297,7 +1425,7 @@ final class ShortcutsSettingsSectionViewController: SettingsScrollableSectionVie
         issueByCommandID.removeAll()
         let resolver = ShortcutPresetResolver()
         let bindings = resolver.resolve(preset)
-        try? configStore.update { config in
+        persistShortcuts(describedAs: "apply shortcut preset \(preset.rawValue)") { config in
             config.shortcuts = AppConfig.Shortcuts(bindings: bindings)
         }
         searchField.stringValue = ""
@@ -1379,7 +1507,7 @@ final class ShortcutsSettingsSectionViewController: SettingsScrollableSectionVie
         recordingCommandID = nil
         clearRecordingPreview()
         issueByCommandID.removeAll()
-        try? configStore.update { config in
+        persistShortcuts(describedAs: "import \(bindings.count) shortcut bindings") { config in
             config.shortcuts = AppConfig.Shortcuts(bindings: bindings)
         }
         searchField.stringValue = ""

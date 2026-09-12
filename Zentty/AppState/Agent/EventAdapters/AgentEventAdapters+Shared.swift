@@ -32,6 +32,7 @@ extension AgentEventBridge {
         sessionID: String? = nil,
         cwd: String? = nil,
         taskProgress: PaneAgentTaskProgress? = nil,
+        subagents: PaneAgentSubagentSummary? = nil,
         transcriptPath: String? = nil
     ) -> AgentStatusPayload {
         AgentStatusPayload(
@@ -47,6 +48,7 @@ extension AgentEventBridge {
             confidence: .explicit,
             sessionID: sessionID,
             taskProgress: taskProgress,
+            subagents: subagents,
             artifactKind: nil,
             artifactLabel: nil,
             artifactURL: nil,
@@ -160,6 +162,40 @@ extension AgentEventBridge {
             return true
         default:
             return false
+        }
+    }
+}
+
+// MARK: - Subagent enrichment
+
+extension AgentEventBridge {
+    /// Attaches the pane's current subagent set to outgoing lifecycle payloads
+    /// that do not carry one yet, resolving models that were unknown at
+    /// `SubagentStart` (the subagent transcript only reveals its model after
+    /// the first response). No-op while the pane has no subagents recorded.
+    static func attachSubagents(
+        to payloads: [AgentStatusPayload],
+        key: AgentSubagentRegistryStore.Key,
+        subagentStore: AgentSubagentRegistryStore,
+        resolver: (PaneAgentSubagentEntry) -> PaneAgentSubagentEntry?
+    ) throws -> [AgentStatusPayload] {
+        guard let (current, retired) = try subagentStore.prunedSummary(key: key) else {
+            return payloads
+        }
+        // A long-standing empty set is nothing new for the reducer. One that
+        // just became empty (liveness pruning retired the last entry) must
+        // travel explicitly, or the reducer keeps its previous snapshot.
+        if current.isEmpty, !retired {
+            return payloads
+        }
+        let refreshed = current.isEmpty
+            ? current
+            : (try subagentStore.refreshMissingModels(key: key, resolver: resolver) ?? current)
+        return payloads.map { payload in
+            guard payload.signalKind == .lifecycle, payload.state != nil, payload.subagents == nil else {
+                return payload
+            }
+            return payload.with(subagents: refreshed)
         }
     }
 }

@@ -150,8 +150,9 @@ final class RootViewController: NSViewController {
         runtimeRegistry: runtimeRegistry,
         canvas: appCanvasView,
         hooks: PaneCommandExecutor.UIHooks(
-            presentClosePaneConfirmation: { [weak self] reason, onConfirm in
-                self?.showClosePaneConfirmation(reason: reason, onConfirm: onConfirm)
+            presentClosePaneConfirmation: { [weak self] context, onConfirm in
+                // ⌘W targets the focused pane, which is already on screen.
+                self?.showClosePaneConfirmation(context: context, highlighting: {}, onConfirm: onConfirm)
             },
             showToast: { [weak self] message in self?.showToast(message: message) },
             requestWindowClose: { [weak self] in self?.requestContainingWindowClose() }
@@ -174,6 +175,9 @@ final class RootViewController: NSViewController {
     private var paneLayoutPreferences: PaneLayoutPreferences
     private var shortcutManager: ShortcutManager
     private var lastAppliedAppearanceSettings: AppConfig.Appearance
+    /// The sidebar section of the config as this window last observed it. Used to
+    /// tell a real on-disk sidebar edit apart from an unrelated external change.
+    private var lastObservedConfigSidebar: AppConfig.Sidebar
     private var currentPaneLayoutContext: PaneLayoutContext
     private var sidebarWidthConstraint: NSLayoutConstraint?
     private var sidebarLeadingConstraint: NSLayoutConstraint?
@@ -289,6 +293,7 @@ final class RootViewController: NSViewController {
         self.paneLayoutPreferences = configStore.current.paneLayout
         self.shortcutManager = ShortcutManager(shortcuts: configStore.current.shortcuts)
         self.lastAppliedAppearanceSettings = configStore.current.appearance
+        self.lastObservedConfigSidebar = configStore.current.sidebar
         self.currentPaneLayoutContext = initialLayoutContext
         self.isUpdateAvailable = appUpdateStateStore.current.isUpdateAvailable
         self.sidebarMotionCoordinator = SidebarMotionCoordinator(
@@ -323,7 +328,8 @@ final class RootViewController: NSViewController {
             },
             serverDetectionProvider: { [weak configStore] in
                 configStore?.current.serverDetection ?? .default
-            }
+            },
+            claudeHookSessionStoreProvider: { ClaudeHookSessionStore() }
         )
         self.peekController = WorklanePeekController(
             worklaneAccess: worklaneStore
@@ -337,6 +343,14 @@ final class RootViewController: NSViewController {
             reviewStateResolver: reviewStateResolver
         )
         super.init(nibName: nil, bundle: nil)
+        if let restoredSidebar = initialWorkspaceState?.sidebar {
+            // A restored window comes back with its own sidebar state; only
+            // windows without recipe state seed from the config file.
+            sidebarMotionCoordinator.applyPersistedSidebarSettings(
+                restoredSidebar.appConfigSidebar,
+                availableWidth: nil
+            )
+        }
         windowChromeView.setShimmerCoordinator(sidebarView.sharedShimmerCoordinator)
         toasts = WindowToastPresenter(
             hostViewProvider: { [weak self] in self?.appCanvasView },
@@ -378,11 +392,11 @@ final class RootViewController: NSViewController {
         appUpdateObserverID = appUpdateStateStore.addObserver { [weak self] state in
             self?.handleAppUpdateAvailabilityChange(state.isUpdateAvailable)
         }
-        configObserverID = configStore.addObserver { [weak self] config in
+        configObserverID = configStore.addObserver(withOrigin: { [weak self] config, origin in
             DispatchQueue.main.async {
-                self?.applyPersistedConfig(config)
+                self?.applyPersistedConfig(config, origin: origin)
             }
-        }
+        })
         worklaneStore.scrollbackProvider = { [weak self] paneID in
             guard let self else { return nil }
             guard let runtime = self.runtimeRegistry.runtime(for: paneID),
@@ -797,9 +811,12 @@ final class RootViewController: NSViewController {
         appCanvasView.paneStripView.onPaneCloseRequested = { [weak self] paneID in
             guard let self else { return }
             if self.configStore.current.confirmations.confirmBeforeClosingPane,
-                let reason = self.worklaneStore.paneCloseConfirmationReason(paneID)
+                let context = self.worklaneStore.paneCloseConfirmationContext(paneID)
             {
-                self.showClosePaneConfirmation(reason: reason) {
+                self.showClosePaneConfirmation(
+                    context: context,
+                    highlighting: { self.worklaneStore.focusPane(id: paneID) }
+                ) {
                     self.paneCommands.closePane(id: paneID)
                 }
             } else {
@@ -1014,7 +1031,7 @@ final class RootViewController: NSViewController {
 
     private func setupSidebarCallbacks() {
         sidebarView.onWorklaneSelected = { [weak self] id in
-            self?.worklaneStore.selectWorklane(id: id)
+            self?.selectWorklaneFromNavigation(id: id)
         }
         sidebarView.onPaneSelected = { [weak self] worklaneID, paneID in
             self?.worklaneStore.selectWorklaneAndFocusPane(
@@ -1025,9 +1042,12 @@ final class RootViewController: NSViewController {
         sidebarView.onCloseWorklaneRequested = { [weak self] worklaneID in
             guard let self else { return }
             if self.configStore.current.confirmations.confirmBeforeClosingPane,
-               let reason = self.worklaneStore.worklaneCloseConfirmationReason(worklaneID)
+               let context = self.worklaneStore.worklaneCloseConfirmationContext(worklaneID)
             {
-                self.showCloseWorklaneConfirmation(reason: reason) {
+                self.showCloseWorklaneConfirmation(
+                    context: context,
+                    highlighting: { self.worklaneStore.selectWorklane(id: worklaneID) }
+                ) {
                     self.closeWorklane(id: worklaneID)
                 }
             } else {
@@ -1044,9 +1064,17 @@ final class RootViewController: NSViewController {
         sidebarView.onClosePaneRequested = { [weak self] worklaneID, paneID in
             guard let self else { return }
             if self.configStore.current.confirmations.confirmBeforeClosingPane,
-                let reason = self.worklaneStore.paneCloseConfirmationReason(paneID)
+                let context = self.worklaneStore.paneCloseConfirmationContext(paneID)
             {
-                self.showClosePaneConfirmation(reason: reason) {
+                self.showClosePaneConfirmation(
+                    context: context,
+                    highlighting: {
+                        self.worklaneStore.selectWorklaneAndFocusPane(
+                            worklaneID: worklaneID, paneID: paneID)
+                    }
+                ) {
+                    // Re-select: the active worklane can change while the
+                    // sheet is up, and closePane(id:) only sees the active one.
                     self.worklaneStore.selectWorklaneAndFocusPane(
                         worklaneID: worklaneID, paneID: paneID)
                     self.paneCommands.closePane(id: paneID)
@@ -1518,56 +1546,47 @@ final class RootViewController: NSViewController {
 
     private var isShowingCloseConfirmation = false
 
+    /// - Parameter highlighting: moves the selection onto the pane or worklane the
+    ///   sheet is about to name, so the prompt matches what is on screen. Runs only
+    ///   once the sheet is really going to appear; Cancel puts the selection back.
     private func showClosePaneConfirmation(
-        reason: WorklaneStore.PaneCloseReason,
+        context: PaneCloseConfirmationContext,
+        highlighting: () -> Void,
         onConfirm: @escaping () -> Void
     ) {
-        let informativeText = switch reason {
-        case .runningProcess:
-            "The running process in this pane will be terminated."
-        case .sessionHistory:
-            "This pane's session history will be lost."
-        }
-        showCloseConfirmation(
-            messageText: "Close this pane?",
-            informativeText: informativeText,
-            confirmButtonTitle: "Close Pane",
-            onConfirm: onConfirm
-        )
+        showCloseConfirmation(copy: .pane(context), highlighting: highlighting, onConfirm: onConfirm)
     }
 
     private func showCloseWorklaneConfirmation(
-        reason: WorklaneStore.PaneCloseReason,
+        context: WorklaneCloseConfirmationContext,
+        highlighting: () -> Void,
         onConfirm: @escaping () -> Void
     ) {
-        let informativeText = switch reason {
-        case .runningProcess:
-            "Running processes in this worklane will be terminated."
-        case .sessionHistory:
-            "This worklane's session history will be lost."
-        }
-        showCloseConfirmation(
-            messageText: "Close this worklane?",
-            informativeText: informativeText,
-            confirmButtonTitle: "Close Worklane",
-            onConfirm: onConfirm
-        )
+        showCloseConfirmation(copy: .worklane(context), highlighting: highlighting, onConfirm: onConfirm)
     }
 
     private func showCloseConfirmation(
-        messageText: String,
-        informativeText: String,
-        confirmButtonTitle: String,
+        copy: CloseConfirmationCopy,
+        highlighting: () -> Void,
         onConfirm: @escaping () -> Void
     ) {
         guard !isShowingCloseConfirmation else { return }
         isShowingCloseConfirmation = true
 
+        let previousSelection = CloseConfirmationSelectionSnapshot.capture(
+            worklanes: worklaneStore.worklanes,
+            activeWorklaneID: worklaneStore.activeWorklaneID
+        )
+        highlighting()
+        let onCancel = { [weak self] in
+            self?.restoreSelectionAfterCancelledClose(previousSelection)
+        }
+
         let alert = NSAlert()
-        alert.messageText = messageText
-        alert.informativeText = informativeText
+        alert.messageText = copy.messageText
+        alert.informativeText = copy.informativeText
         alert.alertStyle = .warning
-        alert.addButton(withTitle: confirmButtonTitle)
+        alert.addButton(withTitle: copy.confirmButtonTitle)
         alert.addButton(withTitle: "Cancel")
         let isDark = currentTheme.windowBackground.isDarkThemeColor
         alert.window.appearance = NSAppearance(named: isDark ? .darkAqua : .aqua)
@@ -1576,6 +1595,8 @@ final class RootViewController: NSViewController {
             isShowingCloseConfirmation = false
             if alert.runModal() == .alertFirstButtonReturn {
                 onConfirm()
+            } else {
+                onCancel()
             }
             return
         }
@@ -1584,7 +1605,25 @@ final class RootViewController: NSViewController {
             self?.isShowingCloseConfirmation = false
             if response == .alertFirstButtonReturn {
                 onConfirm()
+            } else {
+                onCancel()
             }
+        }
+    }
+
+    private func restoreSelectionAfterCancelledClose(_ snapshot: CloseConfirmationSelectionSnapshot?) {
+        guard let snapshot else { return }
+        let action = snapshot.restoreAction(
+            worklanes: worklaneStore.worklanes,
+            activeWorklaneID: worklaneStore.activeWorklaneID
+        )
+        switch action {
+        case .none:
+            break
+        case .selectWorklane(let worklaneID):
+            worklaneStore.selectWorklane(id: worklaneID)
+        case .selectWorklaneAndFocusPane(let worklaneID, let paneID):
+            worklaneStore.selectWorklaneAndFocusPane(worklaneID: worklaneID, paneID: paneID)
         }
     }
 
@@ -1592,6 +1631,15 @@ final class RootViewController: NSViewController {
         worklaneStore.selectWorklaneAndFocusPane(worklaneID: worklaneID, paneID: paneID)
         notificationCoordinator.store.resolve(
             windowID: windowID, worklaneID: worklaneID, paneID: paneID)
+    }
+
+    /// Like `navigateToPane` but without resolving pane notifications: the user
+    /// has not seen this pane yet, 1Password merely pointed us at it.
+    func revealPaneForOnePasswordPrompt(worklaneID: WorklaneID, paneID: PaneID, processName: String) {
+        worklaneStore.selectWorklaneAndFocusPane(worklaneID: worklaneID, paneID: paneID)
+        view.layoutSubtreeIfNeeded()
+        runtimeRegistry.runtime(for: paneID)?.forceViewportSync()
+        showToast(message: "1Password request from \(processName) in this pane", duration: 4)
     }
 
     private func navigateToNotification(_ notification: AppNotification) {
@@ -1637,6 +1685,11 @@ final class RootViewController: NSViewController {
             guard let paneID = activeWorklane?.paneStripState.focusedPaneID else { return nil }
             return activeWorklane?.auxiliaryStateByPaneID[paneID]?.shellContext?.path
         }()
+        let focusedPaneCopyTarget: PaneCopyTarget? = {
+            guard let paneID = activeWorklane?.paneStripState.focusedPaneID,
+                  let auxiliaryState = activeWorklane?.auxiliaryStateByPaneID[paneID] else { return nil }
+            return PaneCopyTargetResolver.target(for: auxiliaryState)
+        }()
         let focusedRestoredCommand: String? = {
             guard let paneID = activeWorklane?.paneStripState.focusedPaneID else { return nil }
             return worklaneStore.restoredRerunnableCommand(for: paneID)
@@ -1664,6 +1717,7 @@ final class RootViewController: NSViewController {
             shortcutManager: shortcutManager,
             availabilityContext: availabilityContext,
             focusedPanePath: focusedPanePath,
+            focusedPaneCopyTarget: focusedPaneCopyTarget,
             focusedBranchName: focusedBranchName,
             focusedRestoredCommand: focusedRestoredCommand,
             worklanes: worklaneStore.worklanes,
@@ -1826,23 +1880,21 @@ final class RootViewController: NSViewController {
 
     private func copyPath(forPaneID paneID: PaneID) {
         guard
-            let path = worklaneStore.activeWorklane?.auxiliaryStateByPaneID[paneID]?.shellContext?
-                .path,
-            !path.isEmpty
+            let auxiliaryState = worklaneStore.activeWorklane?.auxiliaryStateByPaneID[paneID],
+            let target = PaneCopyTargetResolver.target(for: auxiliaryState)
         else {
             return
         }
 
         NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(path, forType: .string)
-        showPathCopiedToast()
-    }
-
-    private func showPathCopiedToast() {
-        showToast(message: "Path copied")
+        NSPasteboard.general.setString(target.pasteboardString, forType: .string)
+        showToast(message: target.copiedToastMessage)
     }
 
     private func performCleanCopy() {
+        // Resolve the copy recipient so text fields don't inherit the active pane's width.
+        let copyTarget = NSApp.target(forAction: #selector(NSText.copy(_:)))
+        let columns = (copyTarget as? LibghosttyView)?.terminalColumns
         // Suppress callback cleaning — we clean at this call site instead.
         // Safe because ghostty_surface_binding_action is a synchronous C FFI call:
         // the clipboard write callback fires within performBindingAction before
@@ -1851,7 +1903,7 @@ final class RootViewController: NSViewController {
         NSApp.sendAction(#selector(NSText.copy(_:)), to: nil, from: nil)
         CleanCopyPipeline.suppressCallbackCleaning = false
 
-        let result = CleanCopyPipeline.cleanPasteboardInPlace(.general)
+        let result = CleanCopyPipeline.cleanPasteboardInPlace(.general, columns: columns)
         let message = (result?.wasModified == true) ? "Copied (cleaned)" : "Copied"
         showCopyToast(message: message)
     }
@@ -2108,8 +2160,8 @@ final class RootViewController: NSViewController {
 
     private func cancelPendingPaneStripScrollSwitchGestureIfNeeded(for action: AppAction) {
         switch action {
-        case .newWorklane, .nextWorklane, .previousWorklane, .navigateBack, .navigateForward,
-            .pane(_):
+        case .newWorklane, .nextWorklane, .previousWorklane, .selectWorklane,
+            .navigateBack, .navigateForward, .pane(_):
             appCanvasView.cancelPendingPaneStripScrollSwitchGesture()
         default:
             break
@@ -2405,6 +2457,15 @@ final class RootViewController: NSViewController {
         sidebarMotionCoordinator.mode
     }
 
+    /// What the workspace recipe stores for this window so a relaunch brings the
+    /// sidebar back the way this window had it, not the last-changed seed.
+    var sidebarRecipeState: WorkspaceRecipe.Sidebar {
+        WorkspaceRecipe.Sidebar(
+            mode: sidebarMotionCoordinator.persistedMode,
+            width: sidebarMotionCoordinator.currentSidebarWidth
+        )
+    }
+
     var isSidebarFloating: Bool {
         sidebarMotionCoordinator.isFloating
     }
@@ -2443,6 +2504,13 @@ final class RootViewController: NSViewController {
 
     func focusedPaneID(in worklaneID: WorklaneID) -> PaneID? {
         worklaneStore.worklanes.first { $0.id == worklaneID }?.paneStripState.focusedPaneID
+    }
+
+    func isPaneFocused(worklaneID: WorklaneID, paneID: PaneID) -> Bool {
+        guard let active = worklaneStore.activeWorklane, active.id == worklaneID else {
+            return false
+        }
+        return active.paneStripState.focusedPaneID == paneID
     }
 
     func containsPane(worklaneID: WorklaneID, paneID: PaneID) -> Bool {
@@ -2639,6 +2707,11 @@ final class RootViewController: NSViewController {
 
         func setSidebarWidth(_ width: CGFloat) {
             updateSidebarWidth(width, persist: false)
+        }
+
+        /// Mirrors a user drag of the sidebar resize handle: applies and persists.
+        func resizeSidebarAsUserForTesting(_ width: CGFloat) {
+            handleSidebarWidthChange(width)
         }
 
         func settleSidebarTransitionForTesting() {
@@ -2846,7 +2919,7 @@ final class RootViewController: NSViewController {
         appCanvasView.updateShortcutTooltips(shortcutManager)
     }
 
-    private func applyPersistedConfig(_ config: AppConfig) {
+    private func applyPersistedConfig(_ config: AppConfig, origin: AppConfigChangeOrigin) {
         let appearanceDidChange = config.appearance != lastAppliedAppearanceSettings
         lastAppliedAppearanceSettings = config.appearance
         paneLayoutPreferences = config.paneLayout
@@ -2856,11 +2929,20 @@ final class RootViewController: NSViewController {
         preloadOpenWithIcons()
         windowChromeView.apply(panes: config.panes)
         preloadProjectIcons()
-        sidebarMotionCoordinator.applyPersistedSidebarSettings(
-            config.sidebar,
-            availableWidth: resolvedSidebarAvailableWidth()
-        )
-        sidebarWidthConstraint?.constant = sidebarMotionCoordinator.currentSidebarWidth
+        // Sidebar visibility and width are per-window state. The config store only
+        // holds the most recently changed value so that new windows can seed from
+        // it; a change persisted by another window must not ripple into this one.
+        // An external edit of the sidebar section in the config file is still
+        // applied everywhere; unrelated external edits leave the sidebar alone.
+        let sidebarDidChangeOnDisk = origin == .externalReload && config.sidebar != lastObservedConfigSidebar
+        lastObservedConfigSidebar = config.sidebar
+        if sidebarDidChangeOnDisk {
+            sidebarMotionCoordinator.applyPersistedSidebarSettings(
+                config.sidebar,
+                availableWidth: resolvedSidebarAvailableWidth()
+            )
+            sidebarWidthConstraint?.constant = sidebarMotionCoordinator.currentSidebarWidth
+        }
         syncSidebarVisibilityControls(animated: false)
         applySidebarMotionState(
             sidebarMotionCoordinator.currentMotionState,
@@ -3027,6 +3109,28 @@ extension RootViewController: AppActionRouterEnvironment {
 
     func routePreviousWorklane() {
         peekController.handleTab(forward: false)
+    }
+
+    func routeSelectWorklane(position: Int) {
+        guard worklaneStore.worklanes.indices.contains(position - 1) else { return }
+        selectWorklaneFromNavigation(id: worklaneStore.worklanes[position - 1].id)
+    }
+
+    /// Absolute worklane selection shared by the sidebar click and the numbered
+    /// shortcuts. Ctrl-Tab goes through `WorklanePeekController.handleTab` because
+    /// it is relative and tap-vs-hold sensitive; an absolute jump cannot. While a
+    /// peek is open a sidebar click moves the peek selection instead of the store,
+    /// the same way a click inside the peek overlay does, so Ctrl release commits
+    /// it. (⌘1–9 do not reach this branch in practice: Ctrl is held for the
+    /// whole peek, so the key monitor sees those presses first.)
+    private func selectWorklaneFromNavigation(id worklaneID: WorklaneID) {
+        if case .peeking = peekController.phase,
+           let worklane = worklaneStore.worklanes.first(where: { $0.id == worklaneID }),
+           let paneID = worklane.paneStripState.focusedPaneID ?? worklane.paneStripState.panes.first?.id {
+            peekController.handleClick(at: .init(worklaneID: worklaneID, paneID: paneID))
+            return
+        }
+        worklaneStore.selectWorklane(id: worklaneID)
     }
 
     func routeMoveWorklaneUp() {

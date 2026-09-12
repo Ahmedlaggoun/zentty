@@ -1038,6 +1038,56 @@ final class WorklaneSidebarSummaryTests: XCTestCase {
         XCTAssertEqual(paneRow.detailText, "…/project")
     }
 
+    func test_builder_keeps_status_row_for_idle_pane_with_running_subagents() throws {
+        let paneID = PaneID("worklane-main-agent")
+        let subagents = PaneAgentSubagentSummary(entries: [
+            PaneAgentSubagentEntry(id: "a", agentType: "general-purpose", model: "claude-opus-5"),
+            PaneAgentSubagentEntry(id: "b", agentType: "fork", model: "claude-fable-5-1"),
+        ])
+        var auxiliaryState = PaneAuxiliaryState()
+        auxiliaryState.presentation = PanePresentationState(
+            cwd: "/tmp/project",
+            repoRoot: "/tmp/project",
+            branch: "main",
+            branchDisplayText: "main",
+            lookupBranch: "main",
+            identityText: "Claude Code",
+            contextText: "main · /tmp/project",
+            rememberedTitle: "Claude Code",
+            recognizedTool: .claudeCode,
+            runtimePhase: .idle,
+            statusText: nil,
+            pullRequest: nil,
+            reviewChips: [],
+            attentionArtifactLink: nil,
+            updatedAt: Date(timeIntervalSince1970: 42),
+            isWorking: false,
+            interactionKind: nil,
+            subagents: subagents
+        )
+
+        let worklane = WorklaneState(
+            id: WorklaneID("worklane-main"),
+            title: nil,
+            paneStripState: PaneStripState(
+                panes: [PaneState(id: paneID, title: "agent")],
+                focusedPaneID: paneID
+            ),
+            auxiliaryStateByPaneID: [paneID: auxiliaryState]
+        )
+
+        let summary = WorklaneSidebarSummaryBuilder.summary(for: worklane, isActive: true)
+        let paneRow = try XCTUnwrap(summary.paneRows.first)
+
+        XCTAssertEqual(paneRow.statusText, WorklaneSidebarSummaryBuilder.idleWithSubagentsStatusText)
+        XCTAssertFalse(paneRow.isWorking)
+        XCTAssertEqual(paneRow.subagents?.count, 2)
+        XCTAssertTrue(
+            SidebarWorklaneRowLayout.visibleTextRows(for: summary, availableWidth: nil).contains(.paneStatus(0)),
+            "the badge lives on the status row, so the row must render while the parent idles"
+        )
+    }
+
     func test_builder_uses_default_interaction_label_and_symbol_for_kind_only_metadata() {
         let paneID = PaneID("worklane-main-agent")
         var auxiliaryState = PaneAuxiliaryState()

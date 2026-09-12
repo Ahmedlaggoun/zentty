@@ -146,6 +146,12 @@ extension WorklaneStore {
                 metadata: metadata,
                 in: &worklane
             )
+        resumeClaudeCodeSessionIfTitleIndicatesSpinner(
+            paneID: paneID,
+            previousMetadata: previousMetadata,
+            metadata: metadata,
+            in: &worklane
+        )
         let claudeCodeInterrupted = markClaudeCodeSessionIdleIfTitleIndicatesIdle(
             paneID: paneID,
             metadata: metadata,
@@ -683,6 +689,81 @@ extension WorklaneStore {
         now: Date = Date()
     ) -> Bool {
         codexResolver.titleIdleSuppressionIsActive(raw, now: now)
+    }
+
+    /// When a Claude Code session is blocked on a permission / question prompt
+    /// and the terminal title flips from the idle glyph "✳" (which Claude shows
+    /// while the dialog is open) to a spinner glyph, the user has answered and
+    /// Claude is working again. Requires the *previous* title to be the idle
+    /// glyph so a stale spinner title racing the PermissionRequest hook cannot
+    /// clear a prompt that is still on screen.
+    private func resumeClaudeCodeSessionIfTitleIndicatesSpinner(
+        paneID: PaneID,
+        previousMetadata: TerminalMetadata?,
+        metadata: TerminalMetadata,
+        in worklane: inout WorklaneState
+    ) {
+        guard
+            let signature = TerminalMetadataChangeClassifier.diagnosticAgentStatusTitleSignature(
+                metadata.title,
+                recognizedTool: .claudeCode
+            ),
+            signature.phase == .running,
+            let previousSignature = TerminalMetadataChangeClassifier.diagnosticAgentStatusTitleSignature(
+                previousMetadata?.title,
+                recognizedTool: .claudeCode
+            ),
+            previousSignature.phase == .idle,
+            var auxiliaryState = worklane.auxiliaryStateByPaneID[paneID],
+            let existingStatus = auxiliaryState.agentStatus,
+            existingStatus.tool == .claudeCode,
+            existingStatus.state == .needsInput || existingStatus.interactionKind.requiresHumanAttention
+        else {
+            return
+        }
+
+        auxiliaryState.agentReducerState = AgentStatusReconciliation.seededReducerState(
+            auxiliaryState.agentReducerState,
+            from: existingStatus
+        )
+        let now = currentDateProvider()
+        guard auxiliaryState.agentReducerState.resumeExplicitClaudeCodeSessionFromSpinnerTitle(now: now) else {
+            return
+        }
+
+        auxiliaryState.agentStatus = AgentStatusReconciliation.hydratedStatus(
+            auxiliaryState.agentReducerState.reducedStatus(now: now),
+            existingStatus: existingStatus
+        )
+        worklane.auxiliaryStateByPaneID[paneID] = auxiliaryState
+        stopSignalLogger.debug(
+            "metadata.claudeSpinnerResume pane=\(paneID.rawValue, privacy: .public) title=\(metadata.title ?? "<nil>", privacy: .public)"
+        )
+        clearClaudeHookInteractionContext(sessionID: existingStatus.sessionID, promptText: existingStatus.text)
+    }
+
+    /// The hook bridge keeps the open prompt in its session store so a sibling
+    /// tool's PostToolUse leaves it alone. Once the title shows Claude working
+    /// again that prompt is answered; without this the bridge would keep
+    /// dropping PostToolUse heartbeats for the rest of the turn and a later
+    /// Notification could resurface the stale approval text.
+    ///
+    /// Only the prompt this pane was showing is cleared: the spinner title can
+    /// land after the bridge has already stored the *next* PermissionRequest,
+    /// and that one must survive.
+    private func clearClaudeHookInteractionContext(sessionID: String?, promptText: String?) {
+        guard let sessionID, !sessionID.isEmpty,
+              let sessionStore = claudeHookSessionStoreProvider()
+        else {
+            return
+        }
+        do {
+            try sessionStore.clearInteractionContext(sessionID: sessionID, ifTextMatches: promptText)
+        } catch {
+            stopSignalLogger.error(
+                "metadata.claudeSpinnerResume clearInteractionContext failed session=\(sessionID, privacy: .public) error=\(String(describing: error), privacy: .public)"
+            )
+        }
     }
 
     /// When a Claude Code session is running but the terminal title transitions

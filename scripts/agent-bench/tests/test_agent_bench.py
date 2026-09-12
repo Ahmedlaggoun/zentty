@@ -240,6 +240,409 @@ class SyntheticScenarioTests(unittest.TestCase):
             ["sessionStart", "subagentStart", "subagentStop", "stop"],
         )
 
+    def test_ensure_claude_workspace_trust_marks_repo_and_prunes_stale_bench_entries(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            config = root / ".claude.json"
+            repo = root / "run" / "repos" / "claude-approval"
+            repo.mkdir(parents=True)
+            stale = str(root / "old-run" / "repos" / "claude-smoke")
+            config.write_text(
+                json.dumps(
+                    {
+                        "projects": {
+                            "/Users/someone/project": {"hasTrustDialogAccepted": True, "lastCost": 1},
+                            stale: {"hasTrustDialogAccepted": True},
+                        },
+                        "other": "kept",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            self.assertTrue(agent_bench.ensure_claude_workspace_trust(repo, config_path=config))
+            written = json.loads(config.read_text(encoding="utf-8"))
+            self.assertEqual(written["other"], "kept")
+            self.assertEqual(written["projects"]["/Users/someone/project"], {"hasTrustDialogAccepted": True, "lastCost": 1})
+            self.assertNotIn(stale, written["projects"])
+            self.assertTrue(written["projects"][str(repo)]["hasTrustDialogAccepted"])
+            # Second call is a no-op.
+            self.assertFalse(agent_bench.ensure_claude_workspace_trust(repo, config_path=config))
+
+    def test_ensure_claude_workspace_trust_creates_config_when_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            config = root / ".claude.json"
+            repo = root / "repos" / "claude-smoke"
+            repo.mkdir(parents=True)
+            self.assertTrue(agent_bench.ensure_claude_workspace_trust(repo, config_path=config))
+            written = json.loads(config.read_text(encoding="utf-8"))
+            self.assertTrue(written["projects"][str(repo)]["hasTrustDialogAccepted"])
+
+    def test_claude_plan_mirrors_app_hook_set_including_post_tool_use(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            plan = agent_bench.LaunchPlanner(
+                profile=agent_bench.load_profiles(ROOT / "profiles")["claude"],
+                scenario="approval_then_work",
+                run_dir=root,
+                resources_dir=None,
+            ).plan(
+                {
+                    "arguments": ["hello"],
+                    "environment": {"ZENTTY_REAL_BINARY": "/usr/local/bin/claude", "ZENTTY_CLI_BIN": "/tmp/zentty-bench"},
+                }
+            )
+            arguments = plan["arguments"]
+            hooks = json.loads(arguments[arguments.index("--settings") + 1])["hooks"]
+            for event in ("PostToolUse", "PostToolUseFailure"):
+                self.assertEqual([entry["matcher"] for entry in hooks[event]], [""], event)
+            self.assertEqual(
+                [entry["matcher"] for entry in hooks["PreToolUse"]],
+                ["AskUserQuestion", "Bash|Write|Edit|MultiEdit|NotebookEdit"],
+            )
+            # Mirror of AgentLaunchBootstrap.claudePlan: the sidebar subagent
+            # badge depends on these two hooks being registered per launch.
+            for event in ("SubagentStart", "SubagentStop"):
+                self.assertEqual([entry["matcher"] for entry in hooks[event]], [""], event)
+
+    def test_claude_plan_pins_swift_hook_plan_events_matchers_and_timeouts(self):
+        # Fixture transcribed from AgentLaunchBootstrap.claudePlan
+        # (Zentty/AppState/Agent/AgentLaunchBootstrap.swift, the `settingsJSON`
+        # literal around line 828, plus claudeSessionStartHookEntries /
+        # claudeHookEntries / claudePreToolUseHookEntries). When the two
+        # disagree, the Swift plan wins: update this fixture and _plan_claude.
+        command = '"/tmp/zentty-bench" ipc agent-event --adapter=claude'
+
+        def entries(matchers, timeout):
+            return [{"matcher": matcher, "hooks": [{"type": "command", "command": command, "timeout": timeout}]} for matcher in matchers]
+
+        swift_plan = {
+            "SessionStart": entries(["startup", "resume", "clear", "compact"], 10),
+            "Stop": entries([""], 10),
+            "SessionEnd": entries([""], 1),
+            "Notification": entries([""], 10),
+            "PermissionRequest": entries([""], 10),
+            "UserPromptSubmit": entries([""], 10),
+            "PreToolUse": entries(["AskUserQuestion", "Bash|Write|Edit|MultiEdit|NotebookEdit"], 5),
+            "PostToolUse": entries([""], 5),
+            "PostToolUseFailure": entries([""], 5),
+            "PreCompact": entries([""], 10),
+            "PostCompact": entries([""], 10),
+            "TaskCreated": entries([""], 5),
+            "TaskCompleted": entries([""], 5),
+            "SubagentStart": entries([""], 5),
+            "SubagentStop": entries([""], 5),
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            plan = agent_bench.LaunchPlanner(
+                profile=agent_bench.load_profiles(ROOT / "profiles")["claude"],
+                scenario="smoke",
+                run_dir=pathlib.Path(tmp),
+                resources_dir=None,
+            ).plan(
+                {
+                    "arguments": ["hello"],
+                    "environment": {"ZENTTY_REAL_BINARY": "/usr/local/bin/claude", "ZENTTY_CLI_BIN": "/tmp/zentty-bench"},
+                }
+            )
+            arguments = plan["arguments"]
+            settings = json.loads(arguments[arguments.index("--settings") + 1])
+        self.assertEqual(settings, {"hooks": swift_plan})
+
+    def test_codex_plan_registers_and_trusts_subagent_hooks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            plan = agent_bench.LaunchPlanner(
+                profile=agent_bench.load_profiles(ROOT / "profiles")["codex"],
+                scenario="subagents",
+                run_dir=root,
+                resources_dir=None,
+            ).plan(
+                {
+                    "arguments": ["exec", "hello"],
+                    "environment": {"ZENTTY_REAL_BINARY": "/usr/local/bin/codex", "ZENTTY_CLI_BIN": "/tmp/zentty-bench"},
+                }
+            )
+            arguments = plan["arguments"]
+            self.assertTrue(any(arg.startswith("hooks.SubagentStart=") and "subagent-start" in arg for arg in arguments))
+            self.assertTrue(any(arg.startswith("hooks.SubagentStop=") and "subagent-stop" in arg for arg in arguments))
+            state = next(arg for arg in arguments if arg.startswith("hooks.state="))
+            self.assertIn("config.toml:subagent_start:0:0", state)
+            self.assertIn("config.toml:subagent_stop:0:0", state)
+
+    def test_subagent_profiles_require_start_stop_pair_and_payload(self):
+        profiles = agent_bench.load_profiles(ROOT / "profiles")
+        for name, start, stop in (("claude", "SubagentStart", "SubagentStop"), ("codex", "subagent-start", "subagent-stop"), ("grok", "subagent_start", "subagent_stop")):
+            expectation = profiles[name].expectations["subagents"]
+            self.assertIn(start, expectation.required_events, name)
+            self.assertIn(stop, expectation.required_events, name)
+            self.assertTrue(expectation.subagent_payload_required, name)
+            self.assertIn("subagents", profiles[name].launch_args_by_scenario, name)
+
+    def test_subagent_trace_extra_resolves_claude_model_from_meta_sidecar(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            transcript = pathlib.Path(tmp) / "agent-abc.jsonl"
+            (pathlib.Path(tmp) / "agent-abc.meta.json").write_text(json.dumps({"agentType": "Explore", "model": "opus"}))
+            payload = json.dumps({"hook_event_name": "SubagentStart", "agent_id": "abc", "agent_type": "Explore", "agent_transcript_path": str(transcript)})
+            extra = agent_bench.subagent_trace_extra("claude", "SubagentStart", payload)
+            self.assertEqual(extra["subagent"]["event"], "start")
+            self.assertEqual(extra["subagent"]["agent_type"], "Explore")
+            self.assertEqual(extra["subagent"]["model"], "opus")
+
+            transcript.write_text('{"type":"assistant","message":{"model":"claude-sonnet-5"}}\n')
+            (pathlib.Path(tmp) / "agent-abc.meta.json").unlink()
+            extra = agent_bench.subagent_trace_extra("claude", None, json.dumps({"hook_event_name": "SubagentStop", "agent_id": "abc", "agent_transcript_path": str(transcript)}))
+            self.assertEqual(extra["subagent"]["event"], "stop")
+            self.assertEqual(extra["subagent"]["model"], "claude-sonnet-5")
+
+    def test_subagent_trace_extra_resolves_codex_model_and_nickname_from_rollout(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            rollout = pathlib.Path(tmp) / "rollout-x.jsonl"
+            rollout.write_text(
+                json.dumps({"type": "session_meta", "payload": {"source": {"subagent": {"thread_spawn": {"agent_nickname": "Dirac", "agent_role": "worker"}}}}})
+                + "\n"
+                + json.dumps({"type": "turn_context", "payload": {"model": "gpt-6-astra"}})
+                + "\n"
+            )
+            extra = agent_bench.subagent_trace_extra("codex", "subagent-start", json.dumps({"agent_type": "worker", "agent_transcript_path": str(rollout)}))
+            self.assertEqual(extra["subagent"]["model"], "gpt-6-astra")
+            self.assertEqual(extra["subagent"]["nickname"], "Dirac")
+            self.assertIsNone(agent_bench.subagent_trace_extra("codex", "pre-tool-use", "{}"))
+
+    def test_subagent_payload_validation_explains_what_is_missing(self):
+        self.assertEqual(agent_bench.missing_subagent_payload_detail([]), "no SubagentStart hook payload was captured")
+        self.assertEqual(
+            agent_bench.missing_subagent_payload_detail([{"event": "start", "agent_type": "Explore"}]),
+            "SubagentStart captured but no SubagentStop followed",
+        )
+        self.assertEqual(
+            agent_bench.missing_subagent_payload_detail([{"event": "start"}, {"event": "stop"}]),
+            "subagent hooks captured but none named an agent type",
+        )
+        self.assertIsNone(
+            agent_bench.missing_subagent_payload_detail(
+                [{"event": "start", "agent_type": "Explore"}, {"event": "stop", "model": "claude-opus-5"}]
+            )
+        )
+        # Grok names the subagent type but has no transcript sidecar for the model.
+        without_model = [{"event": "start", "agent_type": "general-purpose"}, {"event": "stop"}]
+        self.assertIsNotNone(agent_bench.missing_subagent_payload_detail(without_model))
+        self.assertIsNone(agent_bench.missing_subagent_payload_detail(without_model, model_required=False))
+        self.assertFalse(agent_bench.load_profiles(ROOT / "profiles")["grok"].expectations["subagents"].subagent_model_required)
+
+    def test_claude_async_and_nested_subagent_profiles_pin_upstream_contract(self):
+        claude = agent_bench.load_profiles(ROOT / "profiles")["claude"]
+        base_flags = claude.launch_args_by_scenario["subagents"][:-1]
+        async_expectation = claude.expectations["subagents_async"]
+        self.assertEqual(async_expectation.event_order, [["Stop", "SubagentStop"]])
+        self.assertTrue(async_expectation.subagent_payload_required)
+        self.assertFalse(async_expectation.subagent_nested_required)
+        for event in ("SubagentStart", "Stop", "SubagentStop"):
+            self.assertIn(event, async_expectation.required_events)
+        self.assertEqual(claude.launch_args_by_scenario["subagents_async"][:-1], base_flags)
+        self.assertIn("run_in_background", claude.launch_args_by_scenario["subagents_async"][-1])
+
+        nested_expectation = claude.expectations["subagents_nested"]
+        self.assertTrue(nested_expectation.subagent_nested_required)
+        self.assertTrue(nested_expectation.subagent_payload_required)
+        self.assertEqual(nested_expectation.event_order, [])
+        # Two starts and two stops are required so the completion predicate
+        # keeps the process alive until the nested pair has reported.
+        self.assertEqual(nested_expectation.required_events.count("SubagentStart"), 2)
+        self.assertEqual(nested_expectation.required_events.count("SubagentStop"), 2)
+        self.assertEqual(claude.launch_args_by_scenario["subagents_nested"][:-1], base_flags)
+        # Defaults stay off for scenarios that do not opt in.
+        self.assertEqual(claude.expectations["subagents"].event_order, [])
+        self.assertFalse(claude.expectations["subagents"].subagent_nested_required)
+
+    def test_event_order_passes_when_stop_precedes_subagent_stop(self):
+        expectation = agent_bench.ScenarioExpectation(
+            name="subagents_async",
+            required_events=["SessionStart", "SubagentStart", "Stop", "SubagentStop"],
+            event_order=[["Stop", "SubagentStop"]],
+        )
+        records = [
+            agent_bench.TraceRecord(kind="hook", agent="claude", scenario="subagents_async", event_name=event)
+            for event in ("SessionStart", "UserPromptSubmit", "SubagentStart", "Stop", "SubagentStop", "Stop")
+        ]
+        self.assertIsNone(agent_bench.event_order_violation_detail("claude", "subagents_async", expectation, records))
+        result = agent_bench.classify_completed_result(
+            agent="claude",
+            scenario="subagents_async",
+            expectation=expectation,
+            records=records,
+            terminal_observations=[],
+            output="DONE",
+            skip_patterns=[],
+            exit_code=0,
+            completed_by_predicate=True,
+            strict=True,
+        )
+        self.assertTrue(result.passed)
+        self.assertEqual(result.result_kind, "hook-pass")
+
+    def test_event_order_fails_when_subagent_stops_before_parent_stop(self):
+        expectation = agent_bench.ScenarioExpectation(
+            name="subagents_async",
+            required_events=["SessionStart", "SubagentStart", "Stop", "SubagentStop"],
+            event_order=[["Stop", "SubagentStop"]],
+        )
+        records = [
+            agent_bench.TraceRecord(kind="hook", agent="claude", scenario="subagents_async", event_name=event)
+            for event in ("SessionStart", "SubagentStart", "SubagentStop", "Stop")
+        ]
+        detail = agent_bench.event_order_violation_detail("claude", "subagents_async", expectation, records)
+        self.assertEqual(detail, "expected Stop before SubagentStop but observed order was: SessionStart, SubagentStart, SubagentStop, Stop")
+        result = agent_bench.classify_completed_result(
+            agent="claude",
+            scenario="subagents_async",
+            expectation=expectation,
+            records=records,
+            terminal_observations=[],
+            output="DONE",
+            skip_patterns=[],
+            exit_code=0,
+            completed_by_predicate=True,
+            strict=True,
+        )
+        self.assertFalse(result.passed)
+        self.assertEqual(result.result_kind, "hook-order")
+        self.assertEqual(result.detail, detail)
+        # The timeout path applies the same contract.
+        timeout_result = agent_bench.classify_timeout_result(
+            agent="claude",
+            scenario="subagents_async",
+            expectation=expectation,
+            records=records,
+            terminal_observations=[],
+            output="",
+            skip_patterns=[],
+            timeout=30,
+            strict=True,
+        )
+        self.assertFalse(timeout_result.passed)
+        self.assertEqual(timeout_result.result_kind, "hook-order")
+
+    def test_event_order_ignores_records_from_other_scenarios_and_names_missing_events(self):
+        expectation = agent_bench.ScenarioExpectation(name="subagents_async", required_events=[], event_order=[["Stop", "SubagentStop"]])
+        records = [
+            agent_bench.TraceRecord(kind="hook", agent="claude", scenario="subagents", event_name="Stop"),
+            agent_bench.TraceRecord(kind="hook", agent="claude", scenario="subagents_async", event_name="SubagentStop"),
+        ]
+        self.assertEqual(
+            agent_bench.event_order_violation_detail("claude", "subagents_async", expectation, records),
+            "expected Stop before SubagentStop but Stop was never observed",
+        )
+
+    @staticmethod
+    def _load_profile_with_event_order(event_order):
+        with tempfile.TemporaryDirectory() as tmp:
+            profile_path = pathlib.Path(tmp) / "fake.json"
+            profile_path.write_text(
+                json.dumps(
+                    {
+                        "name": "fake",
+                        "command": "fake",
+                        "expectations": {"ordered": {"required_events": [], "event_order": event_order}},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            return agent_bench.load_profiles(pathlib.Path(tmp))["fake"]
+
+    def test_load_profiles_accepts_well_formed_event_order_pairs(self):
+        profile = self._load_profile_with_event_order([["Stop", "SubagentStop"]])
+        self.assertEqual(profile.expectations["ordered"].event_order, [["Stop", "SubagentStop"]])
+
+    def test_load_profiles_rejects_flat_event_order_list_naming_the_scenario(self):
+        with self.assertRaises(ValueError) as raised:
+            self._load_profile_with_event_order(["Stop", "SubagentStop"])
+        self.assertIn("fake.json scenario 'ordered'", str(raised.exception))
+        self.assertIn("'Stop'", str(raised.exception))
+
+    def test_load_profiles_rejects_event_order_entry_with_non_string_or_wrong_arity(self):
+        for bad_entry in (["Stop", 5], ["Stop"], ["Stop", ""], ["Stop", "SubagentStop", "Stop"]):
+            with self.subTest(entry=bad_entry), self.assertRaises(ValueError) as raised:
+                self._load_profile_with_event_order([bad_entry])
+            self.assertIn("scenario 'ordered'", str(raised.exception))
+            self.assertIn(repr(bad_entry), str(raised.exception))
+
+    def test_nested_subagent_validation_requires_two_distinct_matched_pairs(self):
+        self.assertEqual(
+            agent_bench.missing_nested_subagent_detail([{"event": "start", "agent_id": "a"}, {"event": "stop", "agent_id": "a"}]),
+            "nested subagents require at least 2 SubagentStart hooks but 1 were captured",
+        )
+        self.assertEqual(
+            agent_bench.missing_nested_subagent_detail(
+                [{"event": "start", "agent_id": "a"}, {"event": "start", "agent_id": "b"}, {"event": "stop", "agent_id": "b"}]
+            ),
+            "nested subagents require at least 2 SubagentStop hooks but 1 were captured",
+        )
+        self.assertEqual(
+            agent_bench.missing_nested_subagent_detail(
+                [{"event": "start", "agent_id": "a"}, {"event": "start"}, {"event": "stop", "agent_id": "a"}, {"event": "stop"}]
+            ),
+            "SubagentStart payload did not carry an agent_id",
+        )
+        self.assertEqual(
+            agent_bench.missing_nested_subagent_detail(
+                [{"event": "start", "agent_id": "a"}, {"event": "start", "agent_id": "a"}, {"event": "stop", "agent_id": "a"}, {"event": "stop", "agent_id": "a"}]
+            ),
+            "SubagentStart hooks did not carry distinct agent ids: a, a",
+        )
+        self.assertEqual(
+            agent_bench.missing_nested_subagent_detail(
+                [{"event": "start", "agent_id": "a"}, {"event": "start", "agent_id": "b"}, {"event": "stop", "agent_id": "b"}, {"event": "stop", "agent_id": "zzz"}]
+            ),
+            "SubagentStop agent_id did not match any SubagentStart: zzz",
+        )
+        self.assertEqual(
+            agent_bench.missing_nested_subagent_detail(
+                [{"event": "start", "agent_id": "a"}, {"event": "start", "agent_id": "b"}, {"event": "stop", "agent_id": "a"}, {"event": "stop", "agent_id": "a"}]
+            ),
+            "SubagentStart without a matching SubagentStop: b",
+        )
+        self.assertIsNone(
+            agent_bench.missing_nested_subagent_detail(
+                [{"event": "start", "agent_id": "a"}, {"event": "start", "agent_id": "b"}, {"event": "stop", "agent_id": "b"}, {"event": "stop", "agent_id": "a"}]
+            )
+        )
+
+    def test_nested_subagent_expectation_classifies_from_trace_records(self):
+        expectation = agent_bench.ScenarioExpectation(
+            name="subagents_nested",
+            required_events=["SubagentStart", "SubagentStart", "SubagentStop", "SubagentStop", "Stop"],
+            subagent_nested_required=True,
+        )
+
+        def record(event: str, agent_id: str) -> agent_bench.TraceRecord:
+            kind = "start" if event == "SubagentStart" else "stop"
+            return agent_bench.TraceRecord(
+                kind="hook",
+                agent="claude",
+                scenario="subagents_nested",
+                event_name=event,
+                extra={"subagent": {"event": kind, "agent_id": agent_id, "agent_type": "Explore", "model": "opus"}},
+            )
+
+        stop = agent_bench.TraceRecord(kind="hook", agent="claude", scenario="subagents_nested", event_name="Stop")
+        passing = [record("SubagentStart", "outer"), record("SubagentStart", "inner"), record("SubagentStop", "inner"), record("SubagentStop", "outer"), stop]
+        result = agent_bench.classify_completed_result(
+            agent="claude", scenario="subagents_nested", expectation=expectation, records=passing, terminal_observations=[],
+            output="DONE", skip_patterns=[], exit_code=0, completed_by_predicate=True, strict=True,
+        )
+        self.assertTrue(result.passed, result.detail)
+
+        failing = [record("SubagentStart", "outer"), record("SubagentStart", "outer"), record("SubagentStop", "outer"), record("SubagentStop", "outer"), stop]
+        result = agent_bench.classify_completed_result(
+            agent="claude", scenario="subagents_nested", expectation=expectation, records=failing, terminal_observations=[],
+            output="DONE", skip_patterns=[], exit_code=0, completed_by_predicate=True, strict=True,
+        )
+        self.assertFalse(result.passed)
+        self.assertEqual(result.result_kind, "missing-nested-subagent")
+        self.assertEqual(result.detail, "SubagentStart hooks did not carry distinct agent ids: outer, outer")
+
     def test_stop_race_fixture_contains_late_notification_after_stop(self):
         fixture_path = ROOT / "fixtures" / "claude_stop_then_late_notification.jsonl"
         events = []

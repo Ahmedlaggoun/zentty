@@ -204,7 +204,7 @@ final class WorklaneStoreShellExitTests: XCTestCase {
             activeWorklaneID: WorklaneID("main")
         )
 
-        XCTAssertEqual(store.paneCloseConfirmationReason(paneID), .runningProcess)
+        XCTAssertEqual(store.paneCloseConfirmationContext(paneID)?.reason, .runningProcess)
         XCTAssertTrue(store.anyPaneRequiresQuitConfirmation)
     }
 
@@ -268,7 +268,7 @@ final class WorklaneStoreShellExitTests: XCTestCase {
 
         XCTAssertFalse(store.anyPaneRequiresQuitConfirmation)
         XCTAssertFalse(store.anyPaneHasRunningProcessForQuitConfirmation)
-        XCTAssertNil(store.paneCloseConfirmationReason(store.activeWorklane!.paneStripState.focusedPaneID!))
+        XCTAssertNil(store.paneCloseConfirmationContext(store.activeWorklane!.paneStripState.focusedPaneID!))
     }
 
     func test_internal_shell_bootstrap_command_does_not_mark_history() throws {
@@ -292,7 +292,7 @@ final class WorklaneStoreShellExitTests: XCTestCase {
         XCTAssertNotEqual(auxiliary.shellActivityState, .commandRunning)
         XCTAssertFalse(auxiliary.hasCommandHistory)
         XCTAssertNil(auxiliary.raw.lastRunCommand)
-        XCTAssertNil(store.paneCloseConfirmationReason(paneID))
+        XCTAssertNil(store.paneCloseConfirmationContext(paneID))
         XCTAssertFalse(store.anyPaneRequiresQuitConfirmation)
     }
 
@@ -316,7 +316,7 @@ final class WorklaneStoreShellExitTests: XCTestCase {
         let auxiliary = try XCTUnwrap(store.activeWorklane?.auxiliaryStateByPaneID[paneID])
         XCTAssertTrue(auxiliary.hasCommandHistory)
         XCTAssertEqual(auxiliary.raw.lastRunCommand, "git status")
-        XCTAssertEqual(store.paneCloseConfirmationReason(paneID), .sessionHistory)
+        XCTAssertEqual(store.paneCloseConfirmationContext(paneID)?.reason, .sessionHistory)
         XCTAssertTrue(store.anyPaneRequiresQuitConfirmation)
         XCTAssertFalse(store.anyPaneHasRunningProcessForQuitConfirmation)
     }
@@ -343,7 +343,7 @@ final class WorklaneStoreShellExitTests: XCTestCase {
             activeWorklaneID: WorklaneID("main")
         )
 
-        XCTAssertEqual(store.paneCloseConfirmationReason(paneID), .runningProcess)
+        XCTAssertEqual(store.paneCloseConfirmationContext(paneID)?.reason, .runningProcess)
         XCTAssertTrue(store.anyPaneRequiresQuitConfirmation)
         XCTAssertTrue(store.anyPaneHasRunningProcessForQuitConfirmation)
     }

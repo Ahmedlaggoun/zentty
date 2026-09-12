@@ -43,9 +43,20 @@ hook, and terminal observations.
 
 `summary.json` keeps the original pass/fail fields and adds:
 
-- `result_kind`: `hook-pass`, `process-timeout`, `agent-refusal`,
-  `auth-skip`, `missing-hook`, `bootstrap-pass`, `missing-bootstrap`,
-  `missing-session-identity`, `scenario-skip`, or `binary-skip`.
+- `result_kind`, one of:
+  - passes: `hook-pass`, `bootstrap-pass`, `terminal-pass`, `resume-pass`.
+  - hook failures: `missing-hook`, `forbidden-hook`, `missing-bootstrap`,
+    `missing-session-identity`, `missing-task-hook`,
+    `missing-task-progress`, `missing-subagent-payload`, `hook-order`,
+    `missing-nested-subagent`.
+  - terminal failures: `missing-terminal-phase`, `forbidden-terminal-phase`,
+    `missing-terminal-needs-input`, `stale-terminal-needs-input`,
+    `missing-scripted-input`.
+  - resume failures: `resume-no-session`, `resume-no-marker`,
+    `resume-not-found`.
+  - process outcomes: `process-timeout`, `agent-refusal`.
+  - skips: `auth-skip`, `binary-skip`, `missing-wrapper`, `scenario-skip`
+    (each is a skip in normal mode and a failure under `--strict`).
 - `timeline`: relative-millisecond events for that scenario.
 - `terminal_observations`: advisory OSC title, OSC 9, and progress signals.
 - `session_identity_observations`: hook-provided session IDs and tracked PIDs
@@ -65,3 +76,46 @@ python3 scripts/agent-bench/agent_bench.py run --agents codex --scenarios approv
 Claude scenarios pass `--setting-sources project,local` so user-level hooks do
 not inject unrelated context into the live model run. The bench still supplies
 its own hook settings through the wrapper bootstrap path.
+
+Interactive Claude Code (2.1.261+) skips every hook while the workspace trust
+dialog has not been accepted, and it never shows that dialog inside the bench
+pty. The bench therefore marks each temporary Claude repo as trusted in
+`~/.claude.json` (`hasTrustDialogAccepted` only) before launching and prunes
+entries for bench repos that no longer exist. Print-mode scenarios (`smoke`,
+`session_capture`) are unaffected.
+
+`approval_then_work` is the regression scenario for the sidebar status: it
+approves a Write, then has Claude continue with Read and Grep before
+finishing. The trace must show `PostToolUse` events between
+`PermissionRequest` and `Stop`; those are the only hooks Claude emits while it
+works through tools outside the PreToolUse matcher, and without them the pane
+stays on "Needs input" after an approval typed as `1`/`y`.
+
+`subagents` is the regression scenario for the sidebar subagent badge. It asks
+the agent to spawn one subagent (Claude `Agent`, Codex `spawn_agent`, Grok
+`spawn_subagent`) and requires a `SubagentStart` / `SubagentStop` pair. With
+`subagent_payload_required` the bench also checks, before redaction, that the
+hook payload names an agent type and that the transcript sidecar next to it
+yields a model (`agent-<id>.meta.json` or the first assistant line for Claude,
+the sub-thread rollout's `turn_context` for Codex), because those two facts are
+what the badge and its expanded list are built from.
+
+`subagents_async` and `subagents_nested` (Claude only) pin the upstream
+contract that the badge logic depends on since Claude Code 2.1.261 launches
+every Agent tool call asynchronously:
+
+- `subagents_async` asks for one Explore agent with `run_in_background` and an
+  immediate `DONE`. Besides the usual required events it sets
+  `event_order: [["Stop", "SubagentStop"]]`: some `Stop` must be observed
+  before the last `SubagentStop`, proving the parent went idle while its
+  subagent was still alive. `Stop` therefore must not clear the badge. A
+  violation reports `hook-order` with the observed hook sequence.
+- `subagents_nested` asks for one general-purpose agent that itself spawns one
+  Explore agent. It requires two `SubagentStart` and two `SubagentStop` events
+  and sets `subagent_nested_required: true`: the starts must carry distinct
+  `agent_id`s and every stop must match a start. A violation reports
+  `missing-nested-subagent`.
+
+`event_order` is generic: each entry is a `[before, after]` pair of hook event
+names, checked against the scenario's own hook records after the required
+events pass.

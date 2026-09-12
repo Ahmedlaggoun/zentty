@@ -114,6 +114,23 @@ class ScenarioExpectation:
     synthetic: bool = False
     fixture: str | None = None
     post_stop_notification_required: bool = False
+    # The scenario must capture a SubagentStart/SubagentStop pair whose payload
+    # names the agent type and whose transcript sidecar yields the model —
+    # the two facts the sidebar badge and its expanded list are built from.
+    subagent_payload_required: bool = False
+    # Whether that payload check also demands a resolvable model. Grok exposes
+    # no per-subagent transcript, so its profile only proves count and type.
+    subagent_model_required: bool = True
+    # Ordered event pairs, e.g. [["Stop", "SubagentStop"]]: some occurrence of
+    # the first event must be observed before the last occurrence of the
+    # second. Pins the async Agent contract (Claude 2.1.261+): the parent's
+    # Stop fires while its subagent is still alive, so Stop must not clear
+    # the sidebar badge.
+    event_order: list[list[str]] = dataclasses.field(default_factory=list)
+    # The scenario must capture at least two SubagentStart/SubagentStop pairs
+    # with distinct agent ids, every stop matching a start — a subagent that
+    # itself spawned a subagent.
+    subagent_nested_required: bool = False
     # A true end-to-end resume round-trip (modern kimi-code only): phase 1
     # creates a real session through the wrapper bootstrap against a bench-owned
     # home, phase 2 simulates a restart and resumes it by id, asserting the
@@ -189,6 +206,7 @@ class ScenarioResult:
     terminal_phase_sequence: list[str] = dataclasses.field(default_factory=list)
     terminal_observations: list[dict[str, Any]] = dataclasses.field(default_factory=list)
     task_observations: list[dict[str, Any]] = dataclasses.field(default_factory=list)
+    subagent_observations: list[dict[str, Any]] = dataclasses.field(default_factory=list)
     session_identity_observations: list[dict[str, Any]] = dataclasses.field(default_factory=list)
     timeline: list[dict[str, Any]] = dataclasses.field(default_factory=list)
     rerun_command: str = ""
@@ -590,6 +608,12 @@ def classify_completed_result(
         result.detail = "required TodoWrite task progress was not captured"
         result.result_kind = "missing-task-progress"
         return result
+    subagent_failure = subagent_contract_failure(agent, scenario, expectation, records)
+    if subagent_failure:
+        result.passed = False
+        result.status = "fail"
+        result.result_kind, result.detail = subagent_failure
+        return result
     if scenario_requires_terminal_needs_input(scenario) and not terminal_needs_input_observed(terminal_observations):
         result.passed = False
         result.status = "fail"
@@ -672,6 +696,10 @@ def classify_timeout_result(
             partial.status = "fail"
             partial.detail = "required TodoWrite task progress was not captured"
             partial.result_kind = "missing-task-progress"
+        elif subagent_failure := subagent_contract_failure(agent, scenario, expectation, records):
+            partial.passed = False
+            partial.status = "fail"
+            partial.result_kind, partial.detail = subagent_failure
         elif scenario_requires_terminal_needs_input(scenario) and not terminal_needs_input_observed(terminal_observations):
             partial.passed = False
             partial.status = "fail"
@@ -797,6 +825,56 @@ def build_timeline(
 
 def source_sort_key(source: str) -> int:
     return {"process": 0, "hook": 1, "terminal": 2}.get(source, 3)
+
+
+
+CLAUDE_CONFIG_PATH = pathlib.Path.home() / ".claude.json"
+BENCH_REPO_MARKER = "/repos/claude-"
+
+
+def ensure_claude_workspace_trust(repo: pathlib.Path, config_path: pathlib.Path = CLAUDE_CONFIG_PATH) -> bool:
+    """Mark the bench's temporary repo as a trusted Claude Code workspace.
+
+    Interactive Claude Code (2.1.261+) skips *all* hook execution while the
+    workspace trust dialog has not been accepted, and it does not show that
+    dialog in the bench's pty. Without this every interactive Claude scenario
+    reports ``missing-hook`` even though the wrapper injected the hooks.
+
+    Only ``hasTrustDialogAccepted`` is written. Stale bench entries (repos
+    that no longer exist on disk) are pruned so ``~/.claude.json`` does not
+    accumulate one project per run. Returns True when the file changed.
+    """
+    try:
+        config = json.loads(config_path.read_text(encoding="utf-8")) if config_path.exists() else {}
+    except (OSError, json.JSONDecodeError):
+        return False
+    if not isinstance(config, dict):
+        return False
+    projects = config.setdefault("projects", {})
+    if not isinstance(projects, dict):
+        return False
+
+    changed = False
+    for key in list(projects):
+        if BENCH_REPO_MARKER in key and not pathlib.Path(key).exists():
+            del projects[key]
+            changed = True
+
+    for candidate in {str(repo), str(repo.resolve())}:
+        entry = projects.get(candidate)
+        if not isinstance(entry, dict):
+            entry = {}
+            projects[candidate] = entry
+        if entry.get("hasTrustDialogAccepted") is not True:
+            entry["hasTrustDialogAccepted"] = True
+            changed = True
+
+    if not changed:
+        return False
+    temporary = config_path.with_name(config_path.name + ".agent-bench.tmp")
+    temporary.write_text(json.dumps(config, indent=2), encoding="utf-8")
+    os.replace(temporary, config_path)
+    return True
 
 
 def scenario_requires_task_observation(agent: str, scenario: str) -> bool:
@@ -1007,6 +1085,190 @@ def task_observations_for_records(agent: str, scenario: str, records: list[Trace
                         }
                     )
     return observations
+
+
+SUBAGENT_START_EVENTS = {"subagentstart", "subagent_start", "subagent-start"}
+SUBAGENT_STOP_EVENTS = {"subagentstop", "subagent_stop", "subagent-stop", "subagentend", "subagent_end"}
+
+
+def subagent_trace_extra(agent: str | None, event_name: str | None, stdin_payload: str | None) -> dict[str, Any] | None:
+    """Capture, at record time, the facts Zentty's adapters derive from a
+    SubagentStart/SubagentStop hook: the agent type from the payload and the
+    model from the transcript sidecar next to it. Runs before redaction so the
+    real transcript path can still be read; only derived values are stored."""
+    lowered = (event_name or "").lower()
+    payload = parse_json_object(stdin_payload)
+    if lowered not in SUBAGENT_START_EVENTS | SUBAGENT_STOP_EVENTS:
+        payload_event = str(first_string(payload, ["hook_event_name", "hookEventName"]) or "").lower()
+        if payload_event not in SUBAGENT_START_EVENTS | SUBAGENT_STOP_EVENTS:
+            return None
+        lowered = payload_event
+    transcript_path = first_string(payload, ["agent_transcript_path", "agentTranscriptPath"])
+    resolved = resolve_subagent_model(agent, transcript_path, payload)
+    observation: dict[str, Any] = {
+        "event": "start" if lowered in SUBAGENT_START_EVENTS else "stop",
+        "agent_type": first_string(payload, ["agent_type", "agentType", "subagent_type", "subagentType", "agent_role", "agentRole"]),
+        "agent_id": first_string(payload, ["agent_id", "agentId", "turn_id", "turnId"]),
+        "transcript_path_present": bool(transcript_path),
+        "transcript_exists": bool(transcript_path) and pathlib.Path(transcript_path).exists(),
+        "model": resolved.get("model"),
+        "nickname": resolved.get("nickname"),
+    }
+    return {"subagent": observation}
+
+
+def resolve_subagent_model(agent: str | None, transcript_path: str | None, payload: dict[str, Any]) -> dict[str, Any]:
+    """Python mirror of AgentSubagentModelResolver so the bench proves the
+    sidecar files the app relies on actually carry a model."""
+    result: dict[str, Any] = {"model": first_string(payload, ["model", "model_id", "modelId"]), "nickname": None}
+    if not transcript_path:
+        return result
+    path = pathlib.Path(transcript_path)
+    if agent == "claude":
+        meta_path = path.with_name(path.name[: -len(".jsonl")] + ".meta.json") if path.name.endswith(".jsonl") else pathlib.Path(str(path) + ".meta.json")
+        meta = parse_json_object(_read_head(meta_path))
+        if isinstance(meta.get("model"), str) and meta["model"].strip():
+            result["model"] = meta["model"].strip()
+            return result
+        for line in (_read_head(path) or "").splitlines():
+            if '"model"' not in line:
+                continue
+            obj = parse_json_object(line)
+            message = obj.get("message")
+            model = message.get("model") if isinstance(message, dict) else obj.get("model")
+            if isinstance(model, str) and model.strip():
+                result["model"] = model.strip()
+                break
+        return result
+    if agent == "codex":
+        for line in (_read_head(path) or "").splitlines():
+            obj = parse_json_object(line)
+            record_type = obj.get("type")
+            record_payload = obj.get("payload") if isinstance(obj.get("payload"), dict) else {}
+            if record_type == "session_meta":
+                spawn = (((record_payload.get("source") or {}).get("subagent") or {}).get("thread_spawn") or {})
+                if isinstance(spawn, dict) and isinstance(spawn.get("agent_nickname"), str):
+                    result["nickname"] = spawn["agent_nickname"]
+            elif record_type == "turn_context" and result.get("model") is None:
+                model = record_payload.get("model")
+                if isinstance(model, str) and model.strip():
+                    result["model"] = model.strip()
+            if result.get("model") and result.get("nickname"):
+                break
+        return result
+    return result
+
+
+def _read_head(path: pathlib.Path, max_bytes: int = 256 * 1024) -> str | None:
+    try:
+        with path.open("rb") as handle:
+            return handle.read(max_bytes).decode("utf-8", errors="replace")
+    except OSError:
+        return None
+
+
+def subagent_observations_for_records(agent: str, scenario: str, records: list[TraceRecord]) -> list[dict[str, Any]]:
+    observations: list[dict[str, Any]] = []
+    for record in records:
+        if record.agent != agent or record.scenario != scenario or record.kind != "hook":
+            continue
+        if isinstance(record.extra, dict) and isinstance(record.extra.get("subagent"), dict):
+            observations.append(dict(record.extra["subagent"]))
+    return observations
+
+
+def missing_subagent_payload_detail(observations: list[dict[str, Any]], model_required: bool = True) -> str | None:
+    """None when the captured subagent hooks carry everything the sidebar
+    needs; otherwise a one-line explanation of what was missing."""
+    starts = [item for item in observations if item.get("event") == "start"]
+    stops = [item for item in observations if item.get("event") == "stop"]
+    if not starts:
+        return "no SubagentStart hook payload was captured"
+    if not stops:
+        return "SubagentStart captured but no SubagentStop followed"
+    if not any(item.get("agent_type") for item in observations):
+        return "subagent hooks captured but none named an agent type"
+    if not model_required:
+        return None
+    if not any(item.get("model") for item in observations):
+        if any(item.get("transcript_exists") for item in observations):
+            return "subagent transcript exists but no model could be resolved from it"
+        return "subagent hooks captured but no transcript sidecar was available to resolve the model"
+    return None
+
+
+def missing_nested_subagent_detail(observations: list[dict[str, Any]]) -> str | None:
+    """None when the captured subagent hooks prove a nested spawn: at least
+    two starts with distinct agent ids, at least two stops, and every stop id
+    matching a start id. Otherwise a one-line explanation."""
+    starts = [item for item in observations if item.get("event") == "start"]
+    stops = [item for item in observations if item.get("event") == "stop"]
+    if len(starts) < 2:
+        return f"nested subagents require at least 2 SubagentStart hooks but {len(starts)} were captured"
+    if len(stops) < 2:
+        return f"nested subagents require at least 2 SubagentStop hooks but {len(stops)} were captured"
+    start_ids = [item.get("agent_id") for item in starts]
+    if any(not agent_id for agent_id in start_ids):
+        return "SubagentStart payload did not carry an agent_id"
+    if len(set(start_ids)) < 2:
+        return f"SubagentStart hooks did not carry distinct agent ids: {', '.join(str(item) for item in start_ids)}"
+    unmatched = [str(item.get("agent_id")) for item in stops if item.get("agent_id") not in start_ids]
+    if unmatched:
+        return f"SubagentStop agent_id did not match any SubagentStart: {', '.join(unmatched)}"
+    # Compare with multiplicity: a duplicated outer stop must not stand in
+    # for the inner agent's missing completion.
+    stop_counts = Counter(str(item.get("agent_id")) for item in stops)
+    missing = sorted(agent_id for agent_id, count in Counter(str(a) for a in start_ids).items() if stop_counts[agent_id] < count)
+    if missing:
+        return f"SubagentStart without a matching SubagentStop: {', '.join(missing)}"
+    return None
+
+
+def event_order_violation_detail(agent: str, scenario: str, expectation: ScenarioExpectation, records: list[TraceRecord]) -> str | None:
+    """None when every `event_order` pair holds; otherwise which pair broke
+    and the observed hook sequence, so the report explains the failure."""
+    observed = [
+        record.event_name
+        for record in records
+        if record.kind == "hook" and record.agent == agent and record.scenario == scenario and record.event_name
+    ]
+    for pair in expectation.event_order:
+        if len(pair) != 2:
+            return f"event_order entry must be a [before, after] pair: {pair}"
+        before, after = pair
+        if before not in observed:
+            return f"expected {before} before {after} but {before} was never observed"
+        if after not in observed:
+            return f"expected {before} before {after} but {after} was never observed"
+        first_before = observed.index(before)
+        last_after = len(observed) - 1 - observed[::-1].index(after)
+        if first_before > last_after:
+            return f"expected {before} before {after} but observed order was: {', '.join(observed)}"
+    return None
+
+
+def subagent_contract_failure(
+    agent: str,
+    scenario: str,
+    expectation: ScenarioExpectation,
+    records: list[TraceRecord],
+) -> tuple[str, str] | None:
+    """(result_kind, detail) for the first subagent-contract expectation that
+    the trace fails — payload facts, hook ordering, nested spawn — or None."""
+    observations = subagent_observations_for_records(agent, scenario, records)
+    if expectation.subagent_payload_required:
+        detail = missing_subagent_payload_detail(observations, model_required=expectation.subagent_model_required)
+        if detail:
+            return "missing-subagent-payload", detail
+    if expectation.event_order:
+        detail = event_order_violation_detail(agent, scenario, expectation, records)
+        if detail:
+            return "hook-order", detail
+    if expectation.subagent_nested_required:
+        detail = missing_nested_subagent_detail(observations)
+        if detail:
+            return "missing-nested-subagent", detail
+    return None
 
 
 def todo_progress(tool_input: dict[str, Any] | None) -> tuple[int, int] | None:
@@ -1402,6 +1664,9 @@ class CaptureServer:
         if current_profile := self._current_profile_for_tool(agent):
             agent = current_profile.name
         extra = cursor_trace_extra(agent, stdin_payload if isinstance(stdin_payload, str) else None)
+        subagent_extra = subagent_trace_extra(agent, hook.event_name, stdin_payload if isinstance(stdin_payload, str) else None)
+        if subagent_extra:
+            extra = {**(extra or {}), **subagent_extra}
         self.recorder.append(
             TraceRecord(
                 kind="hook",
@@ -1538,18 +1803,24 @@ class LaunchPlanner:
     def _plan_claude(self, executable: str, arguments: list[str], environment: dict[str, Any], cli_path: str) -> dict[str, Any]:
         hook_command = f'"{shell_escape_double_quoted(cli_path)}" ipc agent-event --adapter=claude'
         settings = {"hooks": {}}
-        for event in (
-            "Stop",
-            "SessionEnd",
-            "Notification",
-            "PermissionRequest",
-            "UserPromptSubmit",
-            "PreCompact",
-            "PostCompact",
-            "TaskCreated",
-            "TaskCompleted",
+        # Mirror AgentLaunchBootstrap.claudePlan event-for-event, timeouts
+        # included: SessionEnd is short so a hung IPC cannot hold the exit,
+        # and the task/subagent hooks fire often enough that a slow one must
+        # not stall the agent. The Swift plan is the source of truth.
+        for event, timeout in (
+            ("Stop", 10),
+            ("SessionEnd", 1),
+            ("Notification", 10),
+            ("PermissionRequest", 10),
+            ("UserPromptSubmit", 10),
+            ("PreCompact", 10),
+            ("PostCompact", 10),
+            ("TaskCreated", 5),
+            ("TaskCompleted", 5),
+            ("SubagentStart", 5),
+            ("SubagentStop", 5),
         ):
-            settings["hooks"][event] = [{"matcher": "", "hooks": [{"type": "command", "command": hook_command, "timeout": 10}]}]
+            settings["hooks"][event] = [{"matcher": "", "hooks": [{"type": "command", "command": hook_command, "timeout": timeout}]}]
         settings["hooks"]["SessionStart"] = [
             {"matcher": matcher, "hooks": [{"type": "command", "command": hook_command, "timeout": 10}]}
             for matcher in ("startup", "resume", "clear", "compact")
@@ -1558,6 +1829,11 @@ class LaunchPlanner:
             {"matcher": matcher, "hooks": [{"type": "command", "command": hook_command, "timeout": 5}]}
             for matcher in ("AskUserQuestion", "Bash|Write|Edit|MultiEdit|NotebookEdit")
         ]
+        # Mirror AgentLaunchBootstrap.claudePlan: PostToolUse / PostToolUseFailure
+        # are the only signals between an approved tool and the next matched
+        # PreToolUse, so the sidebar can leave "Needs input" once work resumes.
+        for event in ("PostToolUse", "PostToolUseFailure"):
+            settings["hooks"][event] = [{"matcher": "", "hooks": [{"type": "command", "command": hook_command, "timeout": 5}]}]
         planned = ["--session-id", str(uuid.uuid4()).lower(), "--settings", compact_json(settings)] + arguments
         return self._launch_plan(executable, planned, {"ZENTTY_AGENT_TOOL": "claude"}, unset=["CLAUDECODE"])
 
@@ -1570,6 +1846,8 @@ class LaunchPlanner:
             ("UserPromptSubmit", "user_prompt_submit", "prompt-submit"),
             ("PreCompact", "pre_compact", "pre-compact"),
             ("PostCompact", "post_compact", "post-compact"),
+            ("SubagentStart", "subagent_start", "subagent-start"),
+            ("SubagentStop", "subagent_stop", "subagent-stop"),
             ("Stop", "stop", "stop"),
         ]
         hook_config_args = ["features.hooks=true"]
@@ -1859,7 +2137,7 @@ class LaunchPlanner:
         # the entry — that's exactly the bug this rewrite fixes.
         lifecycle_events = [
             "SessionStart", "SessionEnd", "UserPromptSubmit", "Stop", "Notification",
-            "BeforeAgent", "AfterAgent",
+            "SubagentStart", "SubagentStop", "BeforeAgent", "AfterAgent",
         ]
         tool_events = ["PreToolUse", "PostToolUse"]
         hooks_json: dict[str, Any] = {"hooks": {}}
@@ -2167,6 +2445,29 @@ def agent_from_adapter(adapter: str | None, environment: dict[str, Any], standar
     return adapter
 
 
+def parse_event_order(profile_name: str, scenario: str, raw: Any) -> list[list[str]]:
+    """Validate a profile's `event_order` at load time so a malformed pair
+    fails the whole run up front instead of surfacing as a confusing
+    per-scenario failure after the agent has already been driven."""
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise ValueError(f"{profile_name} scenario {scenario!r}: event_order must be a list of [before, after] pairs, got {raw!r}")
+    pairs: list[list[str]] = []
+    for entry in raw:
+        if (
+            not isinstance(entry, list)
+            or len(entry) != 2
+            or not all(isinstance(event, str) and event.strip() for event in entry)
+        ):
+            raise ValueError(
+                f"{profile_name} scenario {scenario!r}: each event_order entry must be a [before, after] pair "
+                f"of non-empty strings, got {entry!r}"
+            )
+        pairs.append([entry[0], entry[1]])
+    return pairs
+
+
 def load_profiles(path: pathlib.Path) -> dict[str, AgentProfile]:
     profiles: dict[str, AgentProfile] = {}
     for profile_path in sorted(path.glob("*.json")):
@@ -2199,6 +2500,10 @@ def load_profiles(path: pathlib.Path) -> dict[str, AgentProfile]:
                 synthetic=bool(value.get("synthetic", False)),
                 fixture=value.get("fixture"),
                 post_stop_notification_required=bool(value.get("post_stop_notification_required", False)),
+                subagent_payload_required=bool(value.get("subagent_payload_required", False)),
+                subagent_model_required=bool(value.get("subagent_model_required", True)),
+                event_order=parse_event_order(profile_path.name, name, value.get("event_order")),
+                subagent_nested_required=bool(value.get("subagent_nested_required", False)),
                 resume_roundtrip=bool(value.get("resume_roundtrip", False)),
             )
         profile = AgentProfile(
@@ -2387,12 +2692,23 @@ class BenchRunner:
         output_parts: list[str] = []
         completed = PtyResult(0, False, "", terminal_observations=[])
         repeat_count = max(1, profile.repeat_by_scenario.get(scenario, 1))
+        repo = self._make_repo(agent, scenario)
+        if profile.tool == "claude":
+            try:
+                if ensure_claude_workspace_trust(repo):
+                    self.recorder.append(
+                        TraceRecord(kind="note", agent=agent, scenario=scenario, extra={"claude_workspace_trust": str(repo)})
+                    )
+            except OSError as error:
+                self.recorder.append(
+                    TraceRecord(kind="note", agent=agent, scenario=scenario, extra={"claude_workspace_trust_error": str(error)})
+                )
         for iteration in range(repeat_count):
             iteration_transcript_path = transcript_path if repeat_count == 1 else self.run_dir / f"{agent}-{scenario}-{iteration + 1}.terminal.log"
             completed = run_pty(
                 argv,
                 env=env,
-                cwd=self._make_repo(agent, scenario),
+                cwd=repo,
                 inputs=profile.input_by_scenario.get(scenario, []),
                 timeout=self.args.timeout,
                 transcript_path=iteration_transcript_path,
@@ -2674,6 +2990,7 @@ class BenchRunner:
         result.terminal_phase_sequence = terminal_phase_sequence(observations)
         result.terminal_observations = [dataclasses.asdict(observation) for observation in observations]
         result.task_observations = task_observations_for_records(result.agent, result.scenario, records)
+        result.subagent_observations = subagent_observations_for_records(result.agent, result.scenario, records)
         result.timeline = build_timeline(result.agent, result.scenario, records, observations)
         result.rerun_command = self._rerun_command(result.agent, result.scenario)
         if observations and not any(warning.startswith("terminal observations") for warning in result.warnings):
@@ -2684,6 +3001,12 @@ class BenchRunner:
             result.warnings.append("terminal post-scripted-input phase: needs-input")
         if result.task_observations and not any(warning.startswith("task observations") for warning in result.warnings):
             result.warnings.append(f"task observations captured: {len(result.task_observations)}")
+        if result.subagent_observations and not any(warning.startswith("subagent observations") for warning in result.warnings):
+            models = sorted({str(item.get("model")) for item in result.subagent_observations if item.get("model")})
+            result.warnings.append(
+                f"subagent observations captured: {len(result.subagent_observations)}"
+                + (f" (models: {', '.join(models)})" if models else "")
+            )
         return result
 
     def _rerun_command(self, agent: str, scenario: str) -> str:

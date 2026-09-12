@@ -329,6 +329,21 @@ extension ShortcutPreset {
         .init(commandID: .nextWorklane, key: .tab, modifiers: [.control]),
         .init(commandID: .previousWorklane, key: .tab, modifiers: [.control, .shift]),
 
+        // Ghostty binds ⌘1–⌘8 to goto_tab and ⌘9 to last_tab; worklanes are Zentty's tabs.
+        // ⌘9 maps to worklane 9 (not "last") so every digit means the same thing.
+        // Physical key codes, like every other number-row preset entry: Ghostty binds
+        // `super+physical:one`, and logical "1" never matches on layouts whose unshifted
+        // number row is punctuation (AZERTY gives `&`, `é`, `"`, …).
+        .init(commandID: .selectWorklane1, keyCode: UInt16(kVK_ANSI_1), keyKind: .character, modifiers: [.command]),
+        .init(commandID: .selectWorklane2, keyCode: UInt16(kVK_ANSI_2), keyKind: .character, modifiers: [.command]),
+        .init(commandID: .selectWorklane3, keyCode: UInt16(kVK_ANSI_3), keyKind: .character, modifiers: [.command]),
+        .init(commandID: .selectWorklane4, keyCode: UInt16(kVK_ANSI_4), keyKind: .character, modifiers: [.command]),
+        .init(commandID: .selectWorklane5, keyCode: UInt16(kVK_ANSI_5), keyKind: .character, modifiers: [.command]),
+        .init(commandID: .selectWorklane6, keyCode: UInt16(kVK_ANSI_6), keyKind: .character, modifiers: [.command]),
+        .init(commandID: .selectWorklane7, keyCode: UInt16(kVK_ANSI_7), keyKind: .character, modifiers: [.command]),
+        .init(commandID: .selectWorklane8, keyCode: UInt16(kVK_ANSI_8), keyKind: .character, modifiers: [.command]),
+        .init(commandID: .selectWorklane9, keyCode: UInt16(kVK_ANSI_9), keyKind: .character, modifiers: [.command]),
+
         // Panes (Ghostty surfaces and splits)
         .init(commandID: .closeFocusedPane, key: .character("w"), modifiers: [.command]),
         .init(commandID: .restoreClosedPane, key: .character("t"), modifiers: [.command, .shift]),
@@ -359,10 +374,12 @@ extension ShortcutPreset {
         .init(commandID: .copyFocusedPanePath, key: .character("c"), modifiers: [.command, .shift]),
         .init(commandID: .cleanCopy, key: .character("c"), modifiers: [.command, .control]),
         .init(commandID: .jumpToLatestNotification, key: .character("u"), modifiers: [.command, .shift]),
-        .init(commandID: .arrangeHeightFull, key: .character("1"), modifiers: [.command, .option]),
-        .init(commandID: .arrangeHeightTwoPerColumn, key: .character("2"), modifiers: [.command, .option]),
-        .init(commandID: .arrangeHeightThreePerColumn, key: .character("3"), modifiers: [.command, .option]),
-        .init(commandID: .arrangeHeightFourPerColumn, key: .character("4"), modifiers: [.command, .option]),
+        // Number-row entries use physical key codes for the same reason the
+        // worklane digits above do.
+        .init(commandID: .arrangeHeightFull, keyCode: UInt16(kVK_ANSI_1), keyKind: .character, modifiers: [.command, .option]),
+        .init(commandID: .arrangeHeightTwoPerColumn, keyCode: UInt16(kVK_ANSI_2), keyKind: .character, modifiers: [.command, .option]),
+        .init(commandID: .arrangeHeightThreePerColumn, keyCode: UInt16(kVK_ANSI_3), keyKind: .character, modifiers: [.command, .option]),
+        .init(commandID: .arrangeHeightFourPerColumn, keyCode: UInt16(kVK_ANSI_4), keyKind: .character, modifiers: [.command, .option]),
         .init(commandID: .arrangeWidthGoldenFocusWide, key: .character("g"), modifiers: [.command, .control]),
         .init(commandID: .arrangeWidthGoldenFocusNarrow, key: .character("g"), modifiers: [.command, .control, .option]),
         .init(commandID: .arrangeHeightGoldenFocusTall, key: .character("g"), modifiers: [.command, .control, .shift]),
@@ -371,7 +388,7 @@ extension ShortcutPreset {
         .init(commandID: .movePaneRight, key: .rightArrow, modifiers: [.command, .control, .option]),
         .init(commandID: .movePaneUp, key: .upArrow, modifiers: [.command, .control, .option]),
         .init(commandID: .movePaneDown, key: .downArrow, modifiers: [.command, .control, .option]),
-        .init(commandID: .resetPaneLayout, key: .character("0"), modifiers: [.command, .control, .option]),
+        .init(commandID: .resetPaneLayout, keyCode: UInt16(kVK_ANSI_0), keyKind: .character, modifiers: [.command, .control, .option]),
         .init(commandID: .openBookmarksPopover, key: .character("b"), modifiers: [.command, .shift]),
     ]
 }

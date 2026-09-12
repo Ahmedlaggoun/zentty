@@ -2324,6 +2324,16 @@ final class AgentStatusSupportTests: XCTestCase {
         XCTAssertNotNil(hooks["PreCompact"])
         XCTAssertNotNil(hooks["PostCompact"])
         XCTAssertNotNil(hooks["TaskCompleted"])
+        XCTAssertNotNil(hooks["SubagentStart"])
+        XCTAssertNotNil(hooks["SubagentStop"])
+        // PostToolUse / PostToolUseFailure are the only hooks Claude Code emits
+        // between an approved tool and the next Bash/Write/Edit call; without
+        // them an approval prompt stays "Needs input" while Claude works
+        // through Read/Grep/Agent tools.
+        for event in ["PostToolUse", "PostToolUseFailure"] {
+            let entries = try XCTUnwrap(hooks[event] as? [[String: Any]], "missing \(event) hook")
+            XCTAssertEqual(entries.compactMap { $0["matcher"] as? String }, [""], "\(event) must match every tool")
+        }
     }
 
     func test_agent_launch_bootstrap_preserves_explicit_claude_color_environment() throws {
@@ -2453,7 +2463,11 @@ final class AgentStatusSupportTests: XCTestCase {
         XCTAssertTrue(hookStateArgument.contains(#""/<session-flags>/config.toml:pre_compact:0:0""#))
         XCTAssertTrue(hookStateArgument.contains(#""/<session-flags>/config.toml:post_compact:0:0""#))
         XCTAssertTrue(hookStateArgument.contains(#""/<session-flags>/config.toml:stop:0:0""#))
-        XCTAssertEqual(hookStateArgument.components(separatedBy: "trusted_hash=\"sha256:").count - 1, 8)
+        XCTAssertTrue(hookConfigArguments.contains { $0.hasPrefix("hooks.SubagentStart=") && $0.contains("subagent-start") })
+        XCTAssertTrue(hookConfigArguments.contains { $0.hasPrefix("hooks.SubagentStop=") && $0.contains("subagent-stop") })
+        XCTAssertTrue(hookStateArgument.contains(#""/<session-flags>/config.toml:subagent_start:0:0""#))
+        XCTAssertTrue(hookStateArgument.contains(#""/<session-flags>/config.toml:subagent_stop:0:0""#))
+        XCTAssertEqual(hookStateArgument.components(separatedBy: "trusted_hash=\"sha256:").count - 1, 10)
         let sourceConfig = try String(contentsOf: sourceConfigURL, encoding: .utf8)
         XCTAssertFalse(sourceConfig.contains("hooks.state"))
         XCTAssertTrue(plan.arguments.contains("features.hooks=true"))
@@ -4035,7 +4049,8 @@ final class AgentStatusSupportTests: XCTestCase {
                 environment: [
                     "ZENTTY_WORKLANE_ID": "worklane-main",
                     "ZENTTY_PANE_ID": "worklane-main-shell",
-                ]
+                ],
+                subagentStore: try makeSubagentRegistryStore()
             )
 
             XCTAssertTrue(payloads.isEmpty, "\(event) for AskUserQuestion must not overwrite canonical needs-input")
@@ -7281,7 +7296,8 @@ final class AgentStatusSupportTests: XCTestCase {
                 environment: [
                     "ZENTTY_WORKLANE_ID": "worklane-main",
                     "ZENTTY_PANE_ID": "worklane-main-shell",
-                ]
+                ],
+                subagentStore: try makeSubagentRegistryStore()
             ).first
         )
 
@@ -7302,7 +7318,8 @@ final class AgentStatusSupportTests: XCTestCase {
                 environment: [
                     "ZENTTY_WORKLANE_ID": "worklane-main",
                     "ZENTTY_PANE_ID": "worklane-main-shell",
-                ]
+                ],
+                subagentStore: try makeSubagentRegistryStore()
             ).first
         )
 
@@ -7323,7 +7340,8 @@ final class AgentStatusSupportTests: XCTestCase {
                 environment: [
                     "ZENTTY_WORKLANE_ID": "worklane-main",
                     "ZENTTY_PANE_ID": "worklane-main-shell",
-                ]
+                ],
+                subagentStore: try makeSubagentRegistryStore()
             ).first
         )
 
@@ -7344,7 +7362,8 @@ final class AgentStatusSupportTests: XCTestCase {
                 environment: [
                     "ZENTTY_WORKLANE_ID": "worklane-main",
                     "ZENTTY_PANE_ID": "worklane-main-shell",
-                ]
+                ],
+                subagentStore: try makeSubagentRegistryStore()
             ).first
         )
 
@@ -7366,7 +7385,8 @@ final class AgentStatusSupportTests: XCTestCase {
                 environment: [
                     "ZENTTY_WORKLANE_ID": "worklane-main",
                     "ZENTTY_PANE_ID": "worklane-main-shell",
-                ]
+                ],
+                subagentStore: try makeSubagentRegistryStore()
             ).first
         )
 
@@ -7385,7 +7405,8 @@ final class AgentStatusSupportTests: XCTestCase {
                 "ZENTTY_WORKLANE_ID": "worklane-main",
                 "ZENTTY_PANE_ID": "worklane-main-shell",
                 "ZENTTY_CODEX_PID": "4242",
-            ]
+            ],
+            subagentStore: try makeSubagentRegistryStore()
         )
 
         XCTAssertEqual(
@@ -7436,7 +7457,8 @@ final class AgentStatusSupportTests: XCTestCase {
                 environment: [
                     "ZENTTY_WORKLANE_ID": "worklane-main",
                     "ZENTTY_PANE_ID": "worklane-main-shell",
-                ]
+                ],
+                subagentStore: try makeSubagentRegistryStore()
             ).first
         )
 
@@ -8170,7 +8192,7 @@ final class AgentStatusSupportTests: XCTestCase {
     func test_claude_hook_ignores_unknown_events() throws {
         let input = try AgentEventBridge.claudeParseInput(
             Data("""
-            {"hook_event_name":"PostToolUse","session_id":"session-1","message":"tool finished"}
+            {"hook_event_name":"SomeFutureEvent","session_id":"session-1","message":"tool finished"}
             """.utf8)
         )
         let store = try makeClaudeHookSessionStore()
@@ -9995,6 +10017,15 @@ final class AgentStatusSupportTests: XCTestCase {
 
         XCTAssertEqual(store.notifications.count, 1)
         XCTAssertEqual(store.notifications.first?.statusText, "Agent ready")
+    }
+
+    private func makeSubagentRegistryStore() throws -> AgentSubagentRegistryStore {
+        // Keep adapter tests off the real ~/Library/Application Support registry file.
+        let directoryURL = try makeTemporaryDirectory(named: "agent-subagent-registry")
+        return AgentSubagentRegistryStore(
+            stateURL: directoryURL.appendingPathComponent("agent-subagent-sessions.json"),
+            transcriptModificationDate: { _ in nil }
+        )
     }
 
     private func makeClaudeHookSessionStore() throws -> ClaudeHookSessionStore {
