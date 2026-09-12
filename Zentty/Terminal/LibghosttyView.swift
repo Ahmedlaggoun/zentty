@@ -1837,7 +1837,8 @@ final class LibghosttyView: NSView, TerminalFocusReporting, TerminalViewportDiag
     private(set) var hasValidViewportSync = false
     private var viewportDiagnosticsContext = TerminalViewportDiagnostics.Context()
     private let inputBreadcrumbThrottler = TerminalInputBreadcrumbThrottler()
-    private var keyTextAccumulator = ""
+    // Only buffer commits while interpretKeyEvents is producing text for keyDown.
+    private var keyTextAccumulator: String?
     private var markedTextStorage = ""
     private var markedTextSelection = NSRange(location: NSNotFound, length: 0)
     private var selectedTextStorageRange = NSRange(location: NSNotFound, length: 0)
@@ -2285,7 +2286,8 @@ final class LibghosttyView: NSView, TerminalFocusReporting, TerminalViewportDiag
         let wasComposing = hasMarkedText()
         keyTextAccumulator = ""
         interpretKeyEvents([translatedEvent])
-        let committedText = keyTextAccumulator.isEmpty ? nil : keyTextAccumulator
+        let committedText = keyTextAccumulator.flatMap { $0.isEmpty ? nil : $0 }
+        keyTextAccumulator = nil
         let keyText = committedText ?? fallbackText(for: translatedEvent)
         _ = surfaceController.sendKey(
             event: event,
@@ -2306,7 +2308,6 @@ final class LibghosttyView: NSView, TerminalFocusReporting, TerminalViewportDiag
         if shouldEmitUserInterrupted {
             onLocalEventDidOccur?(.userInterrupted)
         }
-        keyTextAccumulator = ""
     }
 
     override func keyUp(with event: NSEvent) {
@@ -2337,7 +2338,9 @@ final class LibghosttyView: NSView, TerminalFocusReporting, TerminalViewportDiag
             // Terminal navigation/editing commands should be handled by Ghostty via keycode,
             // not converted into printable fallback text by AppKit.
             if Self.terminalCommandSelectors.contains(where: { $0 == selector }) {
-                self.keyTextAccumulator = ""
+                if self.keyTextAccumulator != nil {
+                    self.keyTextAccumulator = ""
+                }
             }
         }
     }
@@ -2884,12 +2887,13 @@ extension LibghosttyView: NSTextInputClient {
                 return
             }
 
-            if self.keyTextAccumulator.isEmpty, NSApp.currentEvent == nil {
+            // Modifier events and candidate clicks can commit outside keyDown.
+            if self.keyTextAccumulator == nil {
                 self.surfaceController?.sendText(text)
                 return
             }
 
-            self.keyTextAccumulator += text
+            self.keyTextAccumulator? += text
         }
     }
 
