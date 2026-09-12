@@ -27,16 +27,32 @@
 
 ## Features
 
-- **Worklanes, not just tabs.** Borrowed from niri and Hyprland: a horizontally-scrolling strip of columns, each column a vertical stack of panes. Rearrange (via mouse drag or keyboard shortcuts), resize, and navigate without losing your place.
-- **Keyboard-first, top to bottom.** Every action is a command. Every command is bindable. Rebind anything in settings, or fall back to the command palette when your muscle memory runs out.
-- **Resume your workspace** Zentty restores your worklanes on relaunch and can reopen agent sessions that were closed without finishing.
-- **Command palette** A fuzzy-searchable list of every action in the app, with your recent commands on top.
-- **Global search** Search inside the current pane or across every worklane with a single shortcut. Search without losing flow.
-- **Agent-aware.** Claude Code, Codex, Copilot CLI, Cursor, Droid CLI, Gemini CLI, Hermes Agent, Kimi CLI, OpenCode, and Pi report their status into the sidebar, so you see what they're doing, what they're asking, and when they need you, without switching panes.
-- **Native Ghostty themes.** Zentty reads Ghostty themes directly, with a built-in picker, live preview, opacity, and blur. And if you've never installed
-   Ghostty, the default experience is polished out of the box.
-- **Scriptable control** Interaction with worklanes or panes is scriptable via the embedded zentty CLI.
-- **Built on Ghostty.** GPU-accelerated rendering via `libghostty`, wrapped in a native Swift and AppKit shell. No Electron, no web views. It feels like a Mac app because it is one.
+**Layout**
+- **Worklanes, not tabs.** A horizontally scrolling strip of columns, each a vertical stack of panes, borrowed from niri and Hyprland. Drag, resize, and rearrange without losing your place.
+- **Keyboard-first.** Every action is a command, every command is bindable, and a fuzzy command palette catches whatever you forgot. Ghostty-compatible shortcuts out of the box.
+- **Visual pane switcher.** Hold Ctrl+Tab to zoom out and pick a pane. ⌘⇧T reopens the pane you just closed.
+- **Restore everything.** Worklanes, sidebar, and agent sessions come back on relaunch. Closed mid-task? Zentty resumes the agent, or reruns your last shell command.
+
+**Agents**
+- **Agent-aware sidebar.** Agents report status into the sidebar: working, waiting, asking for approval, compacting. You see who needs you without switching panes.
+- **Subagents and teams.** A badge shows how many subagents are running and which models they use. Parents stay visible while background work continues.
+- **Menu bar status.** Agent state lives in the macOS menu bar, so you know who needs you even when Zentty is hidden.
+- **1Password prompts point home.** When `op` or ssh-agent asks for approval, Zentty tells you which pane triggered it and can jump there.
+- **Stays awake.** Zentty caffeinates the Mac while an agent is running.
+
+Supported agents: Amp, Antigravity, Claude Code, Codex, Copilot CLI, Cursor, Devin, Droid, Gemini CLI, Grok Build, Hermes Agent, Kimi, Mistral Vibe, Oh My Pi, OpenCode, Pi, and Small Harness. Any other tool can join via the [Agent Status Protocol](docs/agent-status-protocol.md).
+
+**Projects**
+- **Dev servers and PRs in the sidebar.** Running localhost servers show as clickable ports. Panes on a branch with a PR show its checks and review state.
+- **Task runners.** Detects package.json scripts, Makefiles, justfiles, Taskfiles, and mise tasks, and runs them from the palette.
+- **Global search.** Search inside a pane or across every worklane from one shortcut.
+
+**Remote and terminal**
+- **Paste files into ssh sessions.** Drop an image, PDF, or archive on a remote pane and Zentty uploads it over the existing ssh connection and pastes the remote path.
+- **Clean copy.** Copy agent output without prompts, box drawing, and tracking params. Copy as Markdown keeps the structure.
+- **Native Ghostty themes.** Built-in picker with live preview, opacity, and blur. Fine without Ghostty installed too.
+- **Built on libghostty.** GPU rendering in a native Swift and AppKit shell. No Electron, no web views.
+- **Scriptable.** Drive worklanes and panes from the embedded `zentty` CLI.
 
 See [Zentty CLI](docs/cli.md) for command-line usage.
 
@@ -50,7 +66,13 @@ npx skills add dedene/zentty
 
 ## Install
 
-Download the latest `.dmg` from the [releases page](https://github.com/dedene/zentty/releases/latest), open it, and drag Zentty to your Applications folder.
+With [Homebrew](https://brew.sh):
+
+```bash
+brew install --cask zentty
+```
+
+Or download the latest `.dmg` from the [releases page](https://github.com/dedene/zentty/releases/latest), open it, and drag Zentty to your Applications folder.
 
 Zentty updates itself in place via [Sparkle](https://sparkle-project.org) once installed. No need to check back here for new versions.
 
