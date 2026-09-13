@@ -106,7 +106,12 @@ final class DroidTaskStore {
     }
 
     /// Replace progress with an exact to-do snapshot.
-    func updateProgress(sessionID: String, doneCount: Int, totalCount: Int) throws -> PaneAgentTaskProgress? {
+    func updateProgress(
+        sessionID: String,
+        doneCount: Int,
+        totalCount: Int,
+        items: [PaneAgentTaskItem] = []
+    ) throws -> PaneAgentTaskProgress? {
         try withLockedState { state in
             let key = normalized(sessionID)
             guard !key.isEmpty else { return nil }
@@ -121,6 +126,7 @@ final class DroidTaskStore {
             entry.source = .todo
             entry.totalCount = totalCount
             entry.doneCount = min(max(doneCount, 0), totalCount)
+            entry.items = items
             entry.updatedAt = Date().timeIntervalSince1970
             state.sessions[key] = entry
             return entry.progress
@@ -153,10 +159,14 @@ final class DroidTaskStore {
         var source: ProgressSource = .subagent
         var totalCount: Int = 0
         var doneCount: Int = 0
+        var items: [PaneAgentTaskItem] = []
         var updatedAt: TimeInterval = 0
 
         var progress: PaneAgentTaskProgress? {
-            PaneAgentTaskProgress(doneCount: doneCount, totalCount: totalCount)
+            if let progress = PaneAgentTaskProgress(items: items) {
+                return progress
+            }
+            return PaneAgentTaskProgress(doneCount: doneCount, totalCount: totalCount)
         }
 
         init() {}
@@ -166,6 +176,7 @@ final class DroidTaskStore {
             source = (try? container.decodeIfPresent(ProgressSource.self, forKey: .source)) ?? .subagent
             totalCount = try container.decodeIfPresent(Int.self, forKey: .totalCount) ?? 0
             doneCount = try container.decodeIfPresent(Int.self, forKey: .doneCount) ?? 0
+            items = (try? container.decodeIfPresent([PaneAgentTaskItem].self, forKey: .items)) ?? []
             updatedAt = try container.decodeIfPresent(TimeInterval.self, forKey: .updatedAt) ?? 0
         }
     }
@@ -274,7 +285,12 @@ final class CursorTaskStore {
         self.init(stateURL: stateURL, fileManager: fileManager)
     }
 
-    func updateProgress(sessionID: String, doneCount: Int, totalCount: Int) throws -> PaneAgentTaskProgress? {
+    func updateProgress(
+        sessionID: String,
+        doneCount: Int,
+        totalCount: Int,
+        items: [PaneAgentTaskItem] = []
+    ) throws -> PaneAgentTaskProgress? {
         try withLockedState { state in
             let key = normalized(sessionID)
             guard !key.isEmpty else { return nil }
@@ -282,7 +298,8 @@ final class CursorTaskStore {
                 if var entry = state.sessions[key] {
                     entry.totalCount = 0
                     entry.doneCount = 0
-                    entry.todos = [:]
+                    entry.todos = []
+                    entry.items = []
                     entry.updatedAt = Date().timeIntervalSince1970
                     if entry.isEmpty {
                         state.sessions.removeValue(forKey: key)
@@ -296,7 +313,8 @@ final class CursorTaskStore {
             var entry = state.sessions[key] ?? SessionEntry()
             entry.totalCount = totalCount
             entry.doneCount = min(max(doneCount, 0), totalCount)
-            entry.todos = [:]
+            entry.todos = []
+            entry.items = items
             entry.updatedAt = Date().timeIntervalSince1970
             state.sessions[key] = entry
             return entry.progress
@@ -310,13 +328,21 @@ final class CursorTaskStore {
 
             var entry = state.sessions[key] ?? SessionEntry()
             if !update.merge {
-                entry.todos = [:]
+                entry.todos = []
             }
+            entry.items = []
 
             for todo in update.todos {
                 let todoKey = normalized(todo.key)
                 guard !todoKey.isEmpty else { continue }
-                entry.todos[todoKey] = TodoEntry(content: todo.content, status: todo.status)
+                if let index = entry.todos.firstIndex(where: { $0.key == todoKey }) {
+                    entry.todos[index].status = todo.status
+                    if let content = todo.content {
+                        entry.todos[index].content = content
+                    }
+                } else {
+                    entry.todos.append(TodoEntry(key: todoKey, content: todo.content, status: todo.status))
+                }
             }
 
             guard !entry.todos.isEmpty else {
@@ -332,7 +358,7 @@ final class CursorTaskStore {
             }
 
             entry.totalCount = entry.todos.count
-            entry.doneCount = entry.todos.values.filter { cursorTodoStatusIsComplete($0.status) }.count
+            entry.doneCount = entry.todos.filter { cursorTodoStatusIsComplete($0.status) }.count
             entry.updatedAt = Date().timeIntervalSince1970
             state.sessions[key] = entry
             return entry.progress
@@ -418,22 +444,32 @@ final class CursorTaskStore {
     private struct SessionEntry: Codable {
         var totalCount: Int = 0
         var doneCount: Int = 0
-        var todos: [String: TodoEntry] = [:]
+        var todos: [TodoEntry] = []
+        var items: [PaneAgentTaskItem] = []
         var openSubagentCount: Int = 0
         var openSubagentIDs: Set<String> = []
         var updatedAt: TimeInterval = 0
 
         var progress: PaneAgentTaskProgress? {
             guard todos.isEmpty else {
-                let done = todos.values.filter { cursorTodoStatusIsComplete($0.status) }.count
-                return PaneAgentTaskProgress(doneCount: done, totalCount: todos.count)
+                let items = todos.map { todo in
+                    PaneAgentTaskItem(
+                        id: todo.key,
+                        title: todo.content.flatMap { $0.isEmpty ? nil : $0 } ?? todo.key,
+                        status: PaneAgentTaskItemStatus(rawHarnessStatus: todo.status)
+                    )
+                }
+                return PaneAgentTaskProgress(items: items)
+            }
+            if let progress = PaneAgentTaskProgress(items: items) {
+                return progress
             }
             guard totalCount > 0 || doneCount > 0 else { return nil }
             return PaneAgentTaskProgress(doneCount: doneCount, totalCount: totalCount)
         }
 
         var isEmpty: Bool {
-            todos.isEmpty && totalCount == 0 && doneCount == 0 && openSubagentCount == 0 && openSubagentIDs.isEmpty
+            todos.isEmpty && items.isEmpty && totalCount == 0 && doneCount == 0 && openSubagentCount == 0 && openSubagentIDs.isEmpty
         }
 
         init() {}
@@ -442,7 +478,18 @@ final class CursorTaskStore {
             let container = try decoder.container(keyedBy: CodingKeys.self)
             totalCount = try container.decodeIfPresent(Int.self, forKey: .totalCount) ?? 0
             doneCount = try container.decodeIfPresent(Int.self, forKey: .doneCount) ?? 0
-            todos = try container.decodeIfPresent([String: TodoEntry].self, forKey: .todos) ?? [:]
+            if let ordered = try? container.decodeIfPresent([TodoEntry].self, forKey: .todos) {
+                todos = ordered
+            } else if let legacy = try? container.decodeIfPresent([String: LegacyTodoEntry].self, forKey: .todos) {
+                // Pre-items state stored todos keyed by id; order is lost, so
+                // key order keeps the migration deterministic.
+                todos = legacy.sorted { $0.key < $1.key }.map {
+                    TodoEntry(key: $0.key, content: $0.value.content, status: $0.value.status)
+                }
+            } else {
+                todos = []
+            }
+            items = (try? container.decodeIfPresent([PaneAgentTaskItem].self, forKey: .items)) ?? []
             openSubagentCount = try container.decodeIfPresent(Int.self, forKey: .openSubagentCount) ?? 0
             openSubagentIDs = try container.decodeIfPresent(Set<String>.self, forKey: .openSubagentIDs) ?? []
             // Count is authoritative. Drop orphan ids left by older builds so a
@@ -457,6 +504,12 @@ final class CursorTaskStore {
     }
 
     private struct TodoEntry: Codable {
+        var key: String
+        var content: String?
+        var status: String
+    }
+
+    private struct LegacyTodoEntry: Codable {
         var content: String?
         var status: String
     }
@@ -510,10 +563,5 @@ final class CursorTaskStore {
 }
 
 private func cursorTodoStatusIsComplete(_ status: String) -> Bool {
-    switch status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
-    case "completed", "complete", "done":
-        return true
-    default:
-        return false
-    }
+    PaneAgentTaskItemStatus(rawHarnessStatus: status) == .done
 }

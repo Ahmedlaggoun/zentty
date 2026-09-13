@@ -31,6 +31,15 @@
       "--",
       "Run these two shell commands in order: printf ZENTTY_AGENT_BENCH_TOOLS_1 and then printf ZENTTY_AGENT_BENCH_TOOLS_2. Then reply with exactly DONE."
     ],
+    "tasks": [
+      "-p",
+      "--respect-workspace-trust",
+      "false",
+      "--permission-mode",
+      "dangerous",
+      "--",
+      "Use your task list tool (todo_write) to create a task list with these exact three tasks: Review directory, Identify main language, Suggest one improvement. Mark Review directory completed. Mark Identify main language in progress. Leave Suggest one improvement pending. Then run this exact shell command: printf ZENTTY_AGENT_BENCH_TASKS_OK"
+    ],
     "approval": [
       "--respect-workspace-trust",
       "false",
@@ -73,6 +82,15 @@
     },
     "tools": {
       "required_events": ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop", "SessionEnd"]
+    },
+    "tasks": {
+      "required_events": ["SessionStart", "UserPromptSubmit", "Stop", "SessionEnd"],
+      "expected_task_progress": {"done": 1, "total": 3},
+      "expected_task_items": [
+        {"title": "Review directory", "status": "completed"},
+        {"title": "Identify main language", "status": "in_progress"},
+        {"title": "Suggest one improvement", "status": "pending"}
+      ]
     },
     "approval": {
       "required_events": ["SessionStart", "UserPromptSubmit", "PermissionRequest"]

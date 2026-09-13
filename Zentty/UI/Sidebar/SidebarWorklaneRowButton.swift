@@ -43,12 +43,21 @@ final class SidebarWorklaneRowButton: NSButton {
     private var paneDetailLabels: [SidebarStaticLabel] { paneRowRenderer.paneDetailLabels }
     private var paneStatusRows: [SidebarPaneTextRowView] { paneRowRenderer.paneStatusRows }
     private var paneServerRows: [SidebarPaneServerRowView] { paneRowRenderer.paneServerRows }
+    private var paneTaskListRows: [SidebarPaneTaskListView] { paneRowRenderer.paneTaskListRows }
     private var paneSubagentRows: [SidebarPaneSubagentListView] { paneRowRenderer.paneSubagentRows }
-    /// Panes whose subagent list is unfolded under the status line. UI-only
-    /// state: it lives with the row, is keyed by pane id so a recycled row
-    /// cannot inherit another worklane's choice, and collapses on its own
-    /// once the pane has no running subagents left.
-    private var expandedSubagentPaneIDs: Set<PaneID> = []
+    /// Panes whose subagent list has been clicked under the status line.
+    /// UI-only state: it lives with the row, is keyed by pane id so a recycled
+    /// row cannot inherit another worklane's choice, and is pruned once the
+    /// pane has no running subagents left. With
+    /// `AppConfig.AgentLists.alwaysShowSubagentLists` the polarity flips: a
+    /// membership here means the pane is collapsed for the session.
+    private var toggledSubagentPaneIDs: Set<PaneID> = []
+    /// Same toggled-set semantics for the task list revealed from the pane's
+    /// progress ring; only meaningful for item-bearing task progress.
+    private var toggledTaskListPaneIDs: Set<PaneID> = []
+    /// Live read of the always-show list flags; set by the sidebar so the row
+    /// re-resolves them on every render.
+    var agentListsProvider: (() -> AppConfig.AgentLists)?
     private var paneRowButtons: [SidebarPaneRowButton] { paneRowRenderer.paneRowButtons }
     private var paneRowContainers: [SidebarInsetContainerView] { paneRowRenderer.paneRowContainers }
     private let chrome = SidebarWorklaneRowChrome()
@@ -57,6 +66,7 @@ final class SidebarWorklaneRowButton: NSButton {
     private var currentRenderPlan: SidebarWorklaneRowRenderPlan?
     private var currentTheme = ZenttyTheme.fallback(for: nil)
     private var lastAppliedBoundsWidth: CGFloat = -1
+    private var lastConfiguredAgentLists: AppConfig.AgentLists?
 #if DEBUG
     private(set) var configureApplyCountForTesting: Int = 0
 #endif
@@ -542,8 +552,10 @@ final class SidebarWorklaneRowButton: NSButton {
         theme: ZenttyTheme,
         animated: Bool
     ) {
+        let agentLists = agentListsProvider?() ?? .default
         if summary == currentSummary,
            theme == currentTheme,
+           agentLists == lastConfiguredAgentLists,
            bounds.width == lastAppliedBoundsWidth {
             return
         }
@@ -603,13 +615,32 @@ final class SidebarWorklaneRowButton: NSButton {
         isApplyingResolvedSummary = true
         defer { isApplyingResolvedSummary = false }
 
-        expandedSubagentPaneIDs = expandedSubagentPaneIDs.filter { paneID in
+        // A changed always-show flag flips the meaning of the toggled sets
+        // (shown = alwaysShow != toggled). Reset them so every pane snaps to
+        // the new default instead of inverting panes the user had toggled.
+        let agentLists = agentListsProvider?() ?? .default
+        if let previous = lastConfiguredAgentLists {
+            if previous.alwaysShowTaskLists != agentLists.alwaysShowTaskLists {
+                toggledTaskListPaneIDs.removeAll()
+            }
+            if previous.alwaysShowSubagentLists != agentLists.alwaysShowSubagentLists {
+                toggledSubagentPaneIDs.removeAll()
+            }
+        }
+        lastConfiguredAgentLists = agentLists
+
+        toggledSubagentPaneIDs = toggledSubagentPaneIDs.filter { paneID in
             summary.paneRows.contains { $0.paneID == paneID && $0.subagents?.isEmpty == false }
+        }
+        toggledTaskListPaneIDs = toggledTaskListPaneIDs.filter { paneID in
+            summary.paneRows.contains { $0.paneID == paneID && $0.taskProgress?.items.isEmpty == false }
         }
         let renderPlan = SidebarWorklaneRowRenderPlan(
             summary: summary,
             availableWidth: bounds.width,
-            expandedSubagentPaneIDs: expandedSubagentPaneIDs
+            toggledSubagentPaneIDs: toggledSubagentPaneIDs,
+            toggledTaskListPaneIDs: toggledTaskListPaneIDs,
+            agentLists: agentLists
         )
         currentRenderPlan = renderPlan
         applyTextStackVerticalInsets(renderPlan)
@@ -756,16 +787,29 @@ final class SidebarWorklaneRowButton: NSButton {
     }
 
     func toggleSubagentDetails(for paneID: PaneID) {
-        if expandedSubagentPaneIDs.contains(paneID) {
-            expandedSubagentPaneIDs.remove(paneID)
+        if toggledSubagentPaneIDs.contains(paneID) {
+            toggledSubagentPaneIDs.remove(paneID)
         } else {
-            expandedSubagentPaneIDs.insert(paneID)
+            toggledSubagentPaneIDs.insert(paneID)
         }
         applyResolvedSummary(animated: true)
     }
 
-    var expandedSubagentPaneIDsForTesting: Set<PaneID> {
-        expandedSubagentPaneIDs
+    func toggleTaskListDetails(for paneID: PaneID) {
+        if toggledTaskListPaneIDs.contains(paneID) {
+            toggledTaskListPaneIDs.remove(paneID)
+        } else {
+            toggledTaskListPaneIDs.insert(paneID)
+        }
+        applyResolvedSummary(animated: true)
+    }
+
+    var toggledSubagentPaneIDsForTesting: Set<PaneID> {
+        toggledSubagentPaneIDs
+    }
+
+    var toggledTaskListPaneIDsForTesting: Set<PaneID> {
+        toggledTaskListPaneIDs
     }
 
     private func configurePaneRows(
@@ -845,6 +889,9 @@ final class SidebarWorklaneRowButton: NSButton {
                 restoredRerunnableCommandProvider: restoredRerunnableCommandProvider,
                 onToggleSubagentDetails: { [weak self] paneID in
                     self?.toggleSubagentDetails(for: paneID)
+                },
+                onToggleTaskListDetails: { [weak self] paneID in
+                    self?.toggleTaskListDetails(for: paneID)
                 }
             )
         )
@@ -1042,6 +1089,7 @@ final class SidebarWorklaneRowButton: NSButton {
                 paneDetailLabels.indices.contains(index),
                 paneStatusRows.indices.contains(index),
                 paneServerRows.indices.contains(index),
+                paneTaskListRows.indices.contains(index),
                 paneSubagentRows.indices.contains(index)
             else {
                 continue
@@ -1094,6 +1142,11 @@ final class SidebarWorklaneRowButton: NSButton {
                 theme: currentTheme
             )
             paneDetailLabels[index].textColor = detailColor
+            paneTaskListRows[index].applyColors(
+                primary: primaryColor,
+                secondary: detailColor,
+                ruleColor: currentTheme.statusRunning
+            )
             paneSubagentRows[index].applyColors(primary: primaryColor, secondary: detailColor)
             paneStatusRows[index].applyColors(
                 textColor: SidebarWorklaneRowStyleResolver.statusTextColor(
@@ -1198,6 +1251,7 @@ final class SidebarWorklaneRowButton: NSButton {
             detailLabels: paneDetailLabels,
             statusRows: paneStatusRows,
             serverRows: paneServerRows,
+            taskListRows: paneTaskListRows,
             subagentRows: paneSubagentRows,
             buttons: paneRowButtons,
             containers: paneRowContainers
@@ -1254,6 +1308,7 @@ final class SidebarWorklaneRowButton: NSButton {
             paneDetailLabels: paneDetailLabels,
             paneStatusRows: paneStatusRows,
             paneServerRows: paneServerRows,
+            paneTaskListRows: paneTaskListRows,
             paneSubagentRows: paneSubagentRows,
             paneRowButtons: paneRowButtons,
             paneRowContainers: paneRowContainers,

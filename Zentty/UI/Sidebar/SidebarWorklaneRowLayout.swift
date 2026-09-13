@@ -16,6 +16,7 @@ enum WorklaneRowTextRow: Equatable {
     case paneDetail(Int)
     case paneStatus(Int)
     case paneServer(Int)
+    case paneTaskList(Int)
     case paneSubagents(Int)
     case context
     case detail(Int)
@@ -127,7 +128,7 @@ struct WorklaneRowLayoutMetrics: Equatable {
         var paneIndices = Set<Int>()
         for row in visibleRows {
             switch row {
-            case .panePrimary(let i), .paneDetail(let i), .paneStatus(let i), .paneServer(let i), .paneSubagents(let i):
+            case .panePrimary(let i), .paneDetail(let i), .paneStatus(let i), .paneServer(let i), .paneTaskList(let i), .paneSubagents(let i):
                 paneIndices.insert(i)
             default:
                 break
@@ -163,6 +164,8 @@ struct WorklaneRowLayoutMetrics: Equatable {
             return statusLineHeight
         case .paneServer:
             return statusLineHeight
+        case .paneTaskList:
+            return detailLineHeight
         case .paneSubagents:
             return detailLineHeight
         case .context:
@@ -185,12 +188,16 @@ struct SidebarWorklaneRowLayout: Equatable {
         summary: WorklaneSidebarSummary,
         availableWidth: CGFloat? = nil,
         metrics: WorklaneRowLayoutMetrics = .sidebar,
-        expandedSubagentPaneIDs: Set<PaneID> = []
+        toggledSubagentPaneIDs: Set<PaneID> = [],
+        toggledTaskListPaneIDs: Set<PaneID> = [],
+        agentLists: AppConfig.AgentLists = .default
     ) {
         let visibleTextRows = Self.visibleTextRows(
             for: summary,
             availableWidth: availableWidth,
-            expandedSubagentPaneIDs: expandedSubagentPaneIDs
+            toggledSubagentPaneIDs: toggledSubagentPaneIDs,
+            toggledTaskListPaneIDs: toggledTaskListPaneIDs,
+            agentLists: agentLists
         )
         let mode = Self.mode(for: summary, availableWidth: availableWidth)
 
@@ -241,19 +248,37 @@ struct SidebarWorklaneRowLayout: Equatable {
     }
 
     /// A pane shows its subagent list under the status line only while the
-    /// user has expanded it (badge click) and subagents are still running.
+    /// user has expanded it (badge click) and subagents are still running,
+    /// unless `alwaysShow` makes expanded the default — a click then toggles
+    /// the pane off for the session instead.
     static func paneRowShowsSubagentDetails(
         _ paneRow: WorklaneSidebarPaneRow,
-        expandedSubagentPaneIDs: Set<PaneID>
+        toggledSubagentPaneIDs: Set<PaneID>,
+        alwaysShow: Bool = false
     ) -> Bool {
         guard let subagents = paneRow.subagents, subagents.isEmpty == false else { return false }
-        return expandedSubagentPaneIDs.contains(paneRow.paneID)
+        return alwaysShow != toggledSubagentPaneIDs.contains(paneRow.paneID)
+    }
+
+    /// A pane shows its task list under the status line only while the user
+    /// has expanded it (progress-ring click) and the pane carries item-level
+    /// task data. Counts-only progress has no list to reveal; `alwaysShow`
+    /// flips the toggle's polarity like for subagent lists.
+    static func paneRowShowsTaskDetails(
+        _ paneRow: WorklaneSidebarPaneRow,
+        toggledTaskListPaneIDs: Set<PaneID>,
+        alwaysShow: Bool = false
+    ) -> Bool {
+        guard paneRow.taskProgress?.items.isEmpty == false else { return false }
+        return alwaysShow != toggledTaskListPaneIDs.contains(paneRow.paneID)
     }
 
     static func visibleTextRows(
         for summary: WorklaneSidebarSummary,
         availableWidth: CGFloat?,
-        expandedSubagentPaneIDs: Set<PaneID> = []
+        toggledSubagentPaneIDs: Set<PaneID> = [],
+        toggledTaskListPaneIDs: Set<PaneID> = [],
+        agentLists: AppConfig.AgentLists = .default
     ) -> [WorklaneRowTextRow] {
         if summary.paneRows.isEmpty == false {
             var rows: [WorklaneRowTextRow] = []
@@ -290,7 +315,19 @@ struct SidebarWorklaneRowLayout: Equatable {
                     rows.append(.paneServer(index))
                 }
 
-                if paneRowShowsSubagentDetails(paneRow, expandedSubagentPaneIDs: expandedSubagentPaneIDs) {
+                if paneRowShowsTaskDetails(
+                    paneRow,
+                    toggledTaskListPaneIDs: toggledTaskListPaneIDs,
+                    alwaysShow: agentLists.alwaysShowTaskLists
+                ) {
+                    rows.append(.paneTaskList(index))
+                }
+
+                if paneRowShowsSubagentDetails(
+                    paneRow,
+                    toggledSubagentPaneIDs: toggledSubagentPaneIDs,
+                    alwaysShow: agentLists.alwaysShowSubagentLists
+                ) {
                     rows.append(.paneSubagents(index))
                 }
             }
@@ -677,6 +714,8 @@ struct SidebarWorklaneRowLayout: Equatable {
                             paneRows.append(.paneStatus(i))
                         case .paneServer(let i) where i == index:
                             paneRows.append(.paneServer(i))
+                        case .paneTaskList(let i) where i == index:
+                            paneRows.append(.paneTaskList(i))
                         case .paneSubagents(let i) where i == index:
                             paneRows.append(.paneSubagents(i))
                         default:
@@ -685,7 +724,7 @@ struct SidebarWorklaneRowLayout: Equatable {
                     }
                     groups.append(.pane(index: index, rows: paneRows))
                 }
-            case .paneDetail, .paneStatus, .paneServer, .paneSubagents:
+            case .paneDetail, .paneStatus, .paneServer, .paneTaskList, .paneSubagents:
                 break
             case .contextPrefix:
                 if contextPrefixConsumed == false {
@@ -719,7 +758,7 @@ private extension WorklaneRowLayoutMetrics {
         var paneIndices = Set<Int>()
         for row in visibleRows {
             switch row {
-            case .panePrimary(let i), .paneDetail(let i), .paneStatus(let i), .paneServer(let i), .paneSubagents(let i):
+            case .panePrimary(let i), .paneDetail(let i), .paneStatus(let i), .paneServer(let i), .paneTaskList(let i), .paneSubagents(let i):
                 paneIndices.insert(i)
             default:
                 break
@@ -775,6 +814,13 @@ private extension WorklaneRowLayoutMetrics {
             )
         case .paneServer:
             return statusLineHeight
+        case .paneTaskList(let index):
+            guard summary.paneRows.indices.contains(index) else {
+                return detailLineHeight
+            }
+            return SidebarPaneTaskListView.height(
+                forItemCount: summary.paneRows[index].taskProgress?.items.count ?? 0
+            )
         case .paneSubagents(let index):
             guard summary.paneRows.indices.contains(index) else {
                 return detailLineHeight

@@ -15,6 +15,10 @@
       "Run this exact shell command: printf ZENTTY_AGENT_BENCH_OK"
     ],
     "approval": [],
+    "tasks": [
+      "-p",
+      "Use your task list tool (todo) to create a task list with these exact three tasks: Review directory, Identify main language, Suggest one improvement. Mark Review directory completed. Mark Identify main language in progress. Leave Suggest one improvement pending. Then run this exact shell command: printf ZENTTY_AGENT_BENCH_TASKS_OK"
+    ],
     "restore_launch": [
       "-S",
       "237d8c32-2a27-4850-8da8-3a110f13682c"
@@ -37,6 +41,15 @@
     },
     "approval": {
       "required_events": ["SessionStart", "UserPromptSubmit", "PreToolUse"]
+    },
+    "tasks": {
+      "required_events": ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop", "SessionEnd"],
+      "expected_task_progress": {"done": 1, "total": 3},
+      "expected_task_items": [
+        {"title": "Review directory", "status": "completed"},
+        {"title": "Identify main language", "status": "in_progress"},
+        {"title": "Suggest one improvement", "status": "pending"}
+      ]
     },
     "restore_launch": {
       "required_events": [],

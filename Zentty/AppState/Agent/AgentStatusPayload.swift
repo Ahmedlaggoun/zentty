@@ -139,6 +139,9 @@ struct AgentStatusPayload: Equatable, Sendable {
         if let taskProgress {
             userInfo["taskProgressDoneCount"] = NSNumber(value: taskProgress.doneCount)
             userInfo["taskProgressTotalCount"] = NSNumber(value: taskProgress.totalCount)
+            if let itemsJSON = taskProgress.itemsTransportJSON {
+                userInfo["taskProgressItems"] = itemsJSON
+            }
         }
         if let subagents, let json = subagents.transportJSON {
             userInfo["subagents"] = json
@@ -250,10 +253,12 @@ struct AgentStatusPayload: Equatable, Sendable {
                 )
             }
         let artifactURL = (userInfo["artifactURL"] as? String).flatMap(URL.init(string:))
-        let taskProgress = PaneAgentTaskProgress(
-            doneCount: (userInfo["taskProgressDoneCount"] as? NSNumber)?.intValue ?? 0,
-            totalCount: (userInfo["taskProgressTotalCount"] as? NSNumber)?.intValue ?? 0
-        )
+        let taskProgress = PaneAgentTaskItem.transportItems(fromJSON: userInfo["taskProgressItems"] as? String)
+            .flatMap { PaneAgentTaskProgress(items: $0) }
+            ?? PaneAgentTaskProgress(
+                doneCount: (userInfo["taskProgressDoneCount"] as? NSNumber)?.intValue ?? 0,
+                totalCount: (userInfo["taskProgressTotalCount"] as? NSNumber)?.intValue ?? 0
+            )
         let agentLaunchSnapshot = (userInfo["agentLaunchSnapshot"] as? String)
             .flatMap { $0.data(using: .utf8) }
             .flatMap { try? JSONDecoder().decode(AgentLaunchSnapshot.self, from: $0) }

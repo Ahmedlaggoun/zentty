@@ -23,6 +23,11 @@
       "--print",
       "Run this exact shell command: printf ZENTTY_AGENT_BENCH_AUTO_APPROVAL_OK"
     ],
+    "tasks": [
+      "--allow-tools",
+      "--print",
+      "Use your task list tool (todo) to create a task list with these exact three tasks: Review directory, Identify main language, Suggest one improvement. Mark Review directory completed. Mark Identify main language in progress. Leave Suggest one improvement pending. Then run this exact shell command: printf ZENTTY_AGENT_BENCH_TASKS_OK"
+    ],
     "restore_launch": [
       "--continue"
     ]
@@ -45,6 +50,15 @@
       "required_events": ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop"],
       "forbidden_events": ["PermissionRequest"],
       "forbidden_terminal_phases": ["needs-input"]
+    },
+    "tasks": {
+      "required_events": ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop"],
+      "expected_task_progress": {"done": 1, "total": 3},
+      "expected_task_items": [
+        {"title": "Review directory", "status": "completed"},
+        {"title": "Identify main language", "status": "in_progress"},
+        {"title": "Suggest one improvement", "status": "pending"}
+      ]
     },
     "restore_launch": {
       "required_events": [],

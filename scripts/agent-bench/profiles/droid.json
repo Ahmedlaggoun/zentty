@@ -16,6 +16,10 @@
       "exec",
       "Run this exact shell command: touch ZENTTY_AGENT_BENCH_APPROVAL_OK"
     ],
+    "tasks": [
+      "exec",
+      "Use your task list tool (TodoWrite) to create a task list with these exact three tasks: Review directory, Identify main language, Suggest one improvement. Mark Review directory completed. Mark Identify main language in progress. Leave Suggest one improvement pending. Then run this exact shell command: printf ZENTTY_AGENT_BENCH_TASKS_OK"
+    ],
     "restore_launch": [
       "exec",
       "-s",
@@ -35,6 +39,15 @@
     },
     "approval": {
       "required_events": ["SessionStart", "PreToolUse"]
+    },
+    "tasks": {
+      "required_events": ["SessionStart", "PreToolUse", "PostToolUse", "Stop", "SessionEnd"],
+      "expected_task_progress": {"done": 1, "total": 3},
+      "expected_task_items": [
+        {"title": "Review directory", "status": "completed"},
+        {"title": "Identify main language", "status": "in_progress"},
+        {"title": "Suggest one improvement", "status": "pending"}
+      ]
     },
     "restore_launch": {
       "required_events": [],

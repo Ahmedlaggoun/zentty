@@ -1822,7 +1822,21 @@ class TaskObservationTests(unittest.TestCase):
 
         self.assertEqual(
             observations,
-            [{"event": "preToolUse", "tool": "TodoWrite", "done": 1, "total": 3, "source": "raw_tool_call"}],
+            [
+                {
+                    "event": "preToolUse",
+                    "tool": "TodoWrite",
+                    "raw_tool_name": "TodoWrite",
+                    "done": 1,
+                    "total": 3,
+                    "source": "raw_tool_call",
+                    "items": [
+                        {"title": "Review logs", "status": "completed"},
+                        {"title": "Patch adapter", "status": "in_progress"},
+                        {"title": "Run tests", "status": "pending"},
+                    ],
+                }
+            ],
         )
 
     def test_extracts_cursor_todo_write_merge_progress_from_hook_payloads(self):
@@ -1894,9 +1908,19 @@ class TaskObservationTests(unittest.TestCase):
 
         observations = agent_bench.task_observations_for_records("cursor", "tasks", records)
 
+        self.assertEqual(observations[-1]["done"], 2)
+        self.assertEqual(observations[-1]["total"], 6)
+        self.assertEqual(observations[-1]["raw_tool_name"], "TodoWrite")
         self.assertEqual(
-            observations[-1],
-            {"event": "preToolUse", "tool": "TodoWrite", "done": 2, "total": 6, "source": "raw_tool_call"},
+            observations[-1]["items"],
+            [
+                {"title": "Review logs", "status": "completed"},
+                {"title": "Run tests", "status": "pending"},
+                {"title": "Verify profile", "status": "completed"},
+                {"title": "Check resume", "status": "pending"},
+                {"title": "Smoke test", "status": "pending"},
+                {"title": "Validate AgentEventBridge", "status": "pending"},
+            ],
         )
 
     def test_extracts_cursor_todo_write_progress_from_trace_extra(self):
@@ -1916,7 +1940,16 @@ class TaskObservationTests(unittest.TestCase):
 
         self.assertEqual(
             observations,
-            [{"event": "afterShellExecution", "tool": "TodoWrite", "done": 1, "total": 3, "source": "cursor_transcript"}],
+            [
+                {
+                    "event": "afterShellExecution",
+                    "tool": "TodoWrite",
+                    "raw_tool_name": "TodoWrite",
+                    "done": 1,
+                    "total": 3,
+                    "source": "cursor_transcript",
+                }
+            ],
         )
 
     def test_extracts_cursor_todo_write_progress_from_transcript_path(self):
@@ -1953,7 +1986,17 @@ class TaskObservationTests(unittest.TestCase):
 
         self.assertEqual(
             progress,
-            {"tool": "TodoWrite", "done": 1, "total": 3, "source": "cursor_transcript"},
+            {
+                "tool": "TodoWrite",
+                "done": 1,
+                "total": 3,
+                "source": "cursor_transcript",
+                "items": [
+                    {"title": "Review logs", "status": "completed"},
+                    {"title": "Patch adapter", "status": "in_progress"},
+                    {"title": "Run tests", "status": "pending"},
+                ],
+            },
         )
 
     def test_extracts_cursor_todo_write_merge_progress_from_transcript_path(self):
@@ -2034,9 +2077,19 @@ class TaskObservationTests(unittest.TestCase):
                 attempts=1,
             )
 
+        self.assertEqual(progress["done"], 2)
+        self.assertEqual(progress["total"], 6)
+        self.assertEqual(progress["source"], "cursor_transcript")
         self.assertEqual(
-            progress,
-            {"tool": "TodoWrite", "done": 2, "total": 6, "source": "cursor_transcript"},
+            progress["items"],
+            [
+                {"title": "Review logs", "status": "completed"},
+                {"title": "Run tests", "status": "pending"},
+                {"title": "Verify profile", "status": "completed"},
+                {"title": "Check resume", "status": "pending"},
+                {"title": "Smoke test", "status": "pending"},
+                {"title": "Validate AgentEventBridge", "status": "pending"},
+            ],
         )
 
     def test_extracts_canonical_task_progress_source(self):
@@ -2055,7 +2108,7 @@ class TaskObservationTests(unittest.TestCase):
 
         self.assertEqual(
             observations,
-            [{"event": "task.progress", "tool": "TodoWrite", "done": 2, "total": 4, "source": "canonical"}],
+            [{"event": "task.progress", "tool": "TodoWrite", "raw_tool_name": "TodoWrite", "done": 2, "total": 4, "source": "canonical"}],
         )
 
     def test_completed_tasks_scenario_without_todo_write_is_missing_task_hook(self):
@@ -2162,6 +2215,629 @@ class TaskObservationTests(unittest.TestCase):
 
         self.assertTrue(result.passed)
         self.assertEqual(result.result_kind, "hook-pass")
+
+    def test_normalize_task_status(self):
+        self.assertEqual(agent_bench.normalize_task_status("completed"), "done")
+        self.assertEqual(agent_bench.normalize_task_status("Complete"), "done")
+        self.assertEqual(agent_bench.normalize_task_status("done"), "done")
+        self.assertEqual(agent_bench.normalize_task_status("finished"), "done")
+        self.assertEqual(agent_bench.normalize_task_status("in_progress"), "in_progress")
+        self.assertEqual(agent_bench.normalize_task_status("in-progress"), "in_progress")
+        self.assertEqual(agent_bench.normalize_task_status("active"), "in_progress")
+        self.assertEqual(agent_bench.normalize_task_status("running"), "in_progress")
+        self.assertEqual(agent_bench.normalize_task_status("pending"), "pending")
+        self.assertEqual(agent_bench.normalize_task_status("cancelled"), "pending")
+        self.assertEqual(agent_bench.normalize_task_status(""), "pending")
+        self.assertEqual(agent_bench.normalize_task_status(None), "pending")
+
+    def test_extracts_items_from_todos_list(self):
+        records = [
+            agent_bench.TraceRecord(
+                kind="hook",
+                agent="droid",
+                scenario="tasks",
+                event_name="PreToolUse",
+                adapter="droid",
+                standard_input=json.dumps(
+                    {
+                        "hook_event_name": "PreToolUse",
+                        "tool_name": "TodoWrite",
+                        "tool_input": {
+                            "todos": [
+                                {"content": "Review directory", "status": "completed"},
+                                {"content": "Identify main language", "status": "in_progress"},
+                                {"content": "Suggest one improvement", "status": "pending"},
+                            ]
+                        },
+                    }
+                ),
+            )
+        ]
+
+        observations = agent_bench.task_observations_for_records("droid", "tasks", records)
+
+        self.assertEqual(len(observations), 1)
+        self.assertEqual(observations[0]["raw_tool_name"], "TodoWrite")
+        self.assertEqual(
+            observations[0]["items"],
+            [
+                {"title": "Review directory", "status": "completed"},
+                {"title": "Identify main language", "status": "in_progress"},
+                {"title": "Suggest one improvement", "status": "pending"},
+            ],
+        )
+
+    def test_extracts_items_from_update_plan(self):
+        records = [
+            agent_bench.TraceRecord(
+                kind="hook",
+                agent="codex",
+                scenario="tasks",
+                event_name="pre-tool-use",
+                adapter="codex",
+                standard_input=json.dumps(
+                    {
+                        "hook_event_name": "PreToolUse",
+                        "tool_name": "update_plan",
+                        "tool_input": {
+                            "plan": [
+                                {"step": "Review directory", "status": "completed"},
+                                {"step": "Identify main language", "status": "in_progress"},
+                                {"step": "Suggest one improvement", "status": "pending"},
+                            ]
+                        },
+                    }
+                ),
+            )
+        ]
+
+        observations = agent_bench.task_observations_for_records("codex", "tasks", records)
+
+        self.assertEqual(len(observations), 1)
+        self.assertEqual(observations[0]["raw_tool_name"], "update_plan")
+        self.assertEqual(observations[0]["done"], 1)
+        self.assertEqual(observations[0]["total"], 3)
+        self.assertEqual(
+            observations[0]["items"],
+            [
+                {"title": "Review directory", "status": "completed"},
+                {"title": "Identify main language", "status": "in_progress"},
+                {"title": "Suggest one improvement", "status": "pending"},
+            ],
+        )
+
+    def test_aggregates_claude_task_created_and_completed_hooks(self):
+        records = [
+            agent_bench.TraceRecord(
+                kind="hook",
+                agent="claude",
+                scenario="tasks",
+                event_name="TaskCreated",
+                adapter="claude",
+                standard_input=json.dumps(
+                    {
+                        "hook_event_name": "TaskCreated",
+                        "session_id": "claude-session",
+                        "task_id": "1",
+                        "task_subject": "Review directory",
+                    }
+                ),
+            ),
+            agent_bench.TraceRecord(
+                kind="hook",
+                agent="claude",
+                scenario="tasks",
+                event_name="TaskCreated",
+                adapter="claude",
+                standard_input=json.dumps(
+                    {
+                        "hook_event_name": "TaskCreated",
+                        "session_id": "claude-session",
+                        "task_id": "2",
+                        "task_subject": "Identify main language",
+                    }
+                ),
+            ),
+            agent_bench.TraceRecord(
+                kind="hook",
+                agent="claude",
+                scenario="tasks",
+                event_name="TaskCreated",
+                adapter="claude",
+                standard_input=json.dumps(
+                    {
+                        "hook_event_name": "TaskCreated",
+                        "session_id": "claude-session",
+                        "task_id": "3",
+                        "task_subject": "Suggest one improvement",
+                    }
+                ),
+            ),
+            agent_bench.TraceRecord(
+                kind="hook",
+                agent="claude",
+                scenario="tasks",
+                event_name="TaskCompleted",
+                adapter="claude",
+                standard_input=json.dumps(
+                    {
+                        "hook_event_name": "TaskCompleted",
+                        "session_id": "claude-session",
+                        "task_id": "1",
+                        "task_subject": "Review directory",
+                    }
+                ),
+            ),
+            agent_bench.TraceRecord(
+                kind="hook",
+                agent="claude",
+                scenario="tasks",
+                event_name="PreToolUse",
+                adapter="claude",
+                standard_input=json.dumps(
+                    {
+                        "hook_event_name": "PreToolUse",
+                        "session_id": "claude-session",
+                        "tool_name": "TaskUpdate",
+                        "tool_input": {"task_id": "2", "status": "in_progress"},
+                    }
+                ),
+            ),
+        ]
+
+        observations = agent_bench.task_observations_for_records("claude", "tasks", records)
+
+        self.assertEqual(len(observations), 5)
+        final = observations[-1]
+        self.assertEqual(final["raw_tool_name"], "TaskUpdate")
+        self.assertEqual(final["done"], 1)
+        self.assertEqual(final["total"], 3)
+        self.assertEqual(
+            final["items"],
+            [
+                {"title": "Review directory", "status": "done"},
+                {"title": "Identify main language", "status": "in_progress"},
+                {"title": "Suggest one improvement", "status": "pending"},
+            ],
+        )
+
+    def test_task_update_post_tool_use_joins_task_created_by_id(self):
+        # Claude interactive flow: TaskCreated lifecycle hook carries
+        # task_id + task_subject; the TaskUpdate tool call only carries
+        # tool_input.{taskId,status} and must update the existing item.
+        records = [
+            agent_bench.TraceRecord(
+                kind="hook",
+                agent="claude",
+                scenario="tasks",
+                event_name="TaskCreated",
+                adapter="claude",
+                standard_input=json.dumps(
+                    {
+                        "hook_event_name": "TaskCreated",
+                        "session_id": "s1",
+                        "task_id": "2",
+                        "task_subject": "Identify main language",
+                    }
+                ),
+            ),
+            agent_bench.TraceRecord(
+                kind="hook",
+                agent="claude",
+                scenario="tasks",
+                event_name="PostToolUse",
+                adapter="claude",
+                standard_input=json.dumps(
+                    {
+                        "hook_event_name": "PostToolUse",
+                        "session_id": "s1",
+                        "tool_name": "TaskUpdate",
+                        "tool_input": {"taskId": "2", "status": "in_progress"},
+                    }
+                ),
+            ),
+        ]
+
+        observations = agent_bench.task_observations_for_records("claude", "tasks", records)
+
+        final = observations[-1]
+        self.assertEqual(final["raw_tool_name"], "TaskUpdate")
+        self.assertEqual(final["items"], [{"title": "Identify main language", "status": "in_progress"}])
+
+    def test_task_create_tool_call_joins_task_created_by_title(self):
+        # The TaskCreate tool_input has no task id; join on the shared
+        # title so the session list does not double-count the task.
+        records = [
+            agent_bench.TraceRecord(
+                kind="hook",
+                agent="claude",
+                scenario="tasks",
+                event_name="TaskCreated",
+                adapter="claude",
+                standard_input=json.dumps(
+                    {
+                        "hook_event_name": "TaskCreated",
+                        "session_id": "s1",
+                        "task_id": "1",
+                        "task_subject": "Review directory",
+                    }
+                ),
+            ),
+            agent_bench.TraceRecord(
+                kind="hook",
+                agent="claude",
+                scenario="tasks",
+                event_name="PostToolUse",
+                adapter="claude",
+                standard_input=json.dumps(
+                    {
+                        "hook_event_name": "PostToolUse",
+                        "session_id": "s1",
+                        "tool_name": "TaskCreate",
+                        "tool_input": {"subject": "Review directory", "description": "Inspect the repo"},
+                        "tool_response": {"task": {"id": "1", "subject": "Review directory", "status": "pending"}},
+                    }
+                ),
+            ),
+        ]
+
+        observations = agent_bench.task_observations_for_records("claude", "tasks", records)
+
+        final = observations[-1]
+        self.assertEqual(final["total"], 1)
+        self.assertEqual(final["items"], [{"title": "Review directory", "status": "pending"}])
+
+    def test_task_update_post_tool_use_reads_tool_response_task_object(self):
+        # When TaskUpdate's tool_input carries only the id, the task object in
+        # tool_response still supplies title + status.
+        records = [
+            agent_bench.TraceRecord(
+                kind="hook",
+                agent="claude",
+                scenario="tasks",
+                event_name="TaskCreated",
+                adapter="claude",
+                standard_input=json.dumps(
+                    {
+                        "hook_event_name": "TaskCreated",
+                        "session_id": "s1",
+                        "task_id": "1",
+                        "task_subject": "Review directory",
+                    }
+                ),
+            ),
+            agent_bench.TraceRecord(
+                kind="hook",
+                agent="claude",
+                scenario="tasks",
+                event_name="PostToolUse",
+                adapter="claude",
+                standard_input=json.dumps(
+                    {
+                        "hook_event_name": "PostToolUse",
+                        "session_id": "s1",
+                        "tool_name": "TaskUpdate",
+                        "tool_input": {"taskId": "1"},
+                        "tool_response": {"task": {"id": "1", "subject": "Review directory", "status": "completed"}},
+                    }
+                ),
+            ),
+        ]
+
+        observations = agent_bench.task_observations_for_records("claude", "tasks", records)
+
+        final = observations[-1]
+        self.assertEqual(final["items"], [{"title": "Review directory", "status": "completed"}])
+        self.assertEqual(final["done"], 1)
+        self.assertEqual(final["total"], 1)
+
+    def test_expected_task_items_passes_when_titles_and_statuses_match(self):
+        expectation = agent_bench.ScenarioExpectation(
+            "tasks",
+            ["SessionStart", "Stop"],
+            expected_task_items=[
+                {"title": "Review directory", "status": "completed"},
+                {"title": "Identify main language", "status": "in_progress"},
+                {"title": "Suggest one improvement", "status": "pending"},
+            ],
+        )
+        result = agent_bench.classify_completed_result(
+            agent="droid",
+            scenario="tasks",
+            expectation=expectation,
+            records=[
+                agent_bench.TraceRecord(kind="hook", agent="droid", scenario="tasks", event_name="SessionStart"),
+                agent_bench.TraceRecord(
+                    kind="hook",
+                    agent="droid",
+                    scenario="tasks",
+                    event_name="PreToolUse",
+                    standard_input=json.dumps(
+                        {
+                            "hook_event_name": "PreToolUse",
+                            "tool_name": "TodoWrite",
+                            "tool_input": {
+                                "todos": [
+                                    {"content": "Review directory", "status": "completed"},
+                                    {"content": "Identify main language", "status": "in_progress"},
+                                    {"content": "Suggest one improvement", "status": "pending"},
+                                ]
+                            },
+                        }
+                    ),
+                ),
+                agent_bench.TraceRecord(kind="hook", agent="droid", scenario="tasks", event_name="Stop"),
+            ],
+            terminal_observations=[],
+            output="ZENTTY_AGENT_BENCH_TASKS_OK",
+            skip_patterns=[],
+            exit_code=0,
+            completed_by_predicate=False,
+            strict=False,
+        )
+
+        self.assertTrue(result.passed)
+        self.assertEqual(result.result_kind, "hook-pass")
+
+    def test_expected_task_items_fails_when_items_not_captured(self):
+        expectation = agent_bench.ScenarioExpectation(
+            "tasks",
+            ["SessionStart", "Stop"],
+            expected_task_items=[
+                {"title": "Review directory", "status": "completed"},
+            ],
+        )
+        result = agent_bench.classify_completed_result(
+            agent="droid",
+            scenario="tasks",
+            expectation=expectation,
+            records=[
+                agent_bench.TraceRecord(kind="hook", agent="droid", scenario="tasks", event_name="SessionStart"),
+                agent_bench.TraceRecord(
+                    kind="hook",
+                    agent="droid",
+                    scenario="tasks",
+                    event_name="PreToolUse",
+                    standard_input=json.dumps(
+                        {
+                            "hook_event_name": "PreToolUse",
+                            "tool_name": "TodoWrite",
+                            "tool_input": {
+                                "todos": [
+                                    {"content": "Review directory", "status": "pending"},
+                                    {"content": "Other task", "status": "pending"},
+                                    {"content": "Third task", "status": "pending"},
+                                ]
+                            },
+                        }
+                    ),
+                ),
+                agent_bench.TraceRecord(kind="hook", agent="droid", scenario="tasks", event_name="Stop"),
+            ],
+            terminal_observations=[],
+            output="ZENTTY_AGENT_BENCH_TASKS_OK",
+            skip_patterns=[],
+            exit_code=0,
+            completed_by_predicate=False,
+            strict=False,
+        )
+
+        self.assertFalse(result.passed)
+        self.assertEqual(result.status, "fail")
+        self.assertEqual(result.result_kind, "missing-task-items")
+        self.assertEqual(result.detail, "required task items were not captured")
+
+    def test_expected_task_items_fails_when_no_items_on_observation(self):
+        expectation = agent_bench.ScenarioExpectation(
+            "tasks",
+            ["sessionStart", "sessionEnd"],
+            expected_task_items=[{"title": "Review directory", "status": "completed"}],
+        )
+        result = agent_bench.classify_completed_result(
+            agent="cursor",
+            scenario="tasks",
+            expectation=expectation,
+            records=[
+                agent_bench.TraceRecord(kind="hook", agent="cursor", scenario="tasks", event_name="sessionStart"),
+                agent_bench.TraceRecord(
+                    kind="hook",
+                    agent="cursor",
+                    scenario="tasks",
+                    event_name="afterShellExecution",
+                    extra={"task_progress": {"tool": "TodoWrite", "done": 1, "total": 3, "source": "cursor_transcript"}},
+                ),
+                agent_bench.TraceRecord(kind="hook", agent="cursor", scenario="tasks", event_name="sessionEnd"),
+            ],
+            terminal_observations=[],
+            output="ZENTTY_AGENT_BENCH_TASKS_OK",
+            skip_patterns=[],
+            exit_code=0,
+            completed_by_predicate=False,
+            strict=False,
+        )
+
+        self.assertFalse(result.passed)
+        self.assertEqual(result.result_kind, "missing-task-items")
+
+    def test_extracts_items_from_canonical_task_progress(self):
+        records = [
+            agent_bench.TraceRecord(
+                kind="hook",
+                agent="grok",
+                scenario="tasks",
+                event_name="task.progress",
+                adapter="grok",
+                standard_input=json.dumps(
+                    {
+                        "event": "task.progress",
+                        "progress": {
+                            "done": 1,
+                            "total": 3,
+                            "items": [
+                                {"title": "Review directory", "status": "done"},
+                                {"title": "Identify main language", "status": "in_progress"},
+                                {"title": "Suggest one improvement", "status": "pending"},
+                            ],
+                        },
+                    }
+                ),
+            )
+        ]
+
+        observations = agent_bench.task_observations_for_records("grok", "tasks", records)
+
+        self.assertEqual(len(observations), 1)
+        self.assertEqual(observations[0]["done"], 1)
+        self.assertEqual(observations[0]["total"], 3)
+        self.assertEqual(observations[0]["source"], "canonical")
+        self.assertEqual(
+            observations[0]["items"],
+            [
+                {"title": "Review directory", "status": "done"},
+                {"title": "Identify main language", "status": "in_progress"},
+                {"title": "Suggest one improvement", "status": "pending"},
+            ],
+        )
+
+    def test_extracts_items_from_trace_extra_task_progress(self):
+        records = [
+            agent_bench.TraceRecord(
+                kind="hook",
+                agent="cursor",
+                scenario="tasks",
+                event_name="afterShellExecution",
+                adapter="cursor",
+                standard_input=json.dumps({"hook_event_name": "afterShellExecution"}),
+                extra={
+                    "task_progress": {
+                        "tool": "TodoWrite",
+                        "done": 1,
+                        "total": 3,
+                        "source": "cursor_transcript",
+                        "items": [
+                            {"title": "Review directory", "status": "completed"},
+                            {"title": "Identify main language", "status": "in_progress"},
+                            {"title": "Suggest one improvement", "status": "pending"},
+                        ],
+                    }
+                },
+            )
+        ]
+
+        observations = agent_bench.task_observations_for_records("cursor", "tasks", records)
+
+        self.assertEqual(len(observations), 1)
+        self.assertEqual(observations[0]["source"], "cursor_transcript")
+        self.assertEqual(
+            observations[0]["items"],
+            [
+                {"title": "Review directory", "status": "completed"},
+                {"title": "Identify main language", "status": "in_progress"},
+                {"title": "Suggest one improvement", "status": "pending"},
+            ],
+        )
+
+    def test_load_profiles_parses_expected_task_items(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            profile_path = pathlib.Path(tmp) / "demo.json"
+            profile_path.write_text(
+                json.dumps(
+                    {
+                        "name": "demo",
+                        "command": "demo",
+                        "expectations": {
+                            "tasks": {
+                                "required_events": ["sessionStart"],
+                                "expected_task_items": [
+                                    {"title": "Review directory", "status": "completed"},
+                                    {"title": "Identify main language", "status": "in_progress"},
+                                ],
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            profiles = agent_bench.load_profiles(pathlib.Path(tmp))
+
+        self.assertEqual(
+            profiles["demo"].expectations["tasks"].expected_task_items,
+            [
+                {"title": "Review directory", "status": "completed"},
+                {"title": "Identify main language", "status": "in_progress"},
+            ],
+        )
+
+    def test_load_profiles_rejects_malformed_expected_task_items(self):
+        for bad_value in (
+            "not-a-list",
+            {"title": "Review directory"},
+            [],
+            [{"title": "Review directory"}],
+            [{"status": "completed"}],
+            [{"title": "", "status": "pending"}],
+            [{"title": "Review directory", "status": 1}],
+        ):
+            with tempfile.TemporaryDirectory() as tmp:
+                profile_path = pathlib.Path(tmp) / "demo.json"
+                profile_path.write_text(
+                    json.dumps(
+                        {
+                            "name": "demo",
+                            "command": "demo",
+                            "expectations": {"tasks": {"expected_task_items": bad_value}},
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+
+                with self.assertRaises(ValueError, msg=f"expected_task_items={bad_value!r}"):
+                    agent_bench.load_profiles(pathlib.Path(tmp))
+
+    def test_load_profiles_parses_environment_by_scenario(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            profile_path = pathlib.Path(tmp) / "demo.json"
+            profile_path.write_text(
+                json.dumps(
+                    {
+                        "name": "demo",
+                        "command": "demo",
+                        "environment_by_scenario": {"tasks": {"CLAUDE_CODE_ENABLE_TODO_TOOLS": "1"}},
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            profiles = agent_bench.load_profiles(pathlib.Path(tmp))
+
+        self.assertEqual(
+            profiles["demo"].environment_by_scenario,
+            {"tasks": {"CLAUDE_CODE_ENABLE_TODO_TOOLS": "1"}},
+        )
+
+    def test_load_profiles_rejects_malformed_environment_by_scenario(self):
+        for bad_value in (
+            "not-an-object",
+            {"tasks": "not-an-object"},
+            {"tasks": {"FLAG": 1}},
+            {"tasks": {"": "1"}},
+        ):
+            with tempfile.TemporaryDirectory() as tmp:
+                profile_path = pathlib.Path(tmp) / "demo.json"
+                profile_path.write_text(
+                    json.dumps(
+                        {
+                            "name": "demo",
+                            "command": "demo",
+                            "environment_by_scenario": bad_value,
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+
+                with self.assertRaises(ValueError, msg=f"environment_by_scenario={bad_value!r}"):
+                    agent_bench.load_profiles(pathlib.Path(tmp))
 
 
 class IPCServerTests(unittest.TestCase):
@@ -2407,7 +3083,7 @@ class ProfileTests(unittest.TestCase):
             profile.expectations["tasks"].required_events,
             ["sessionStart", "afterShellExecution", "sessionEnd"],
         )
-        self.assertEqual(profile.expectations["tasks"].expected_task_progress, {"done": 2, "total": 6})
+        self.assertEqual(profile.expectations["tasks"].expected_task_progress, {"done": 1, "total": 3})
 
     def test_copilot_approval_profile_drives_interactive_prompt_like_a_person(self):
         profile = agent_bench.load_profiles(ROOT / "profiles")["copilot"]

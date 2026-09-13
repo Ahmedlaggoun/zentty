@@ -367,10 +367,7 @@ extension AgentEventBridge {
         guard let todos = toolInput["todos"] as? [[String: Any]] else {
             return nil
         }
-        let statuses = todos.compactMap { JSONKeyAccess.firstString(in: $0, keys: ["status", "state"])?.lowercased() }
-        guard !statuses.isEmpty else { return nil }
-        let doneCount = statuses.filter { ["completed", "complete", "done"].contains($0) }.count
-        return PaneAgentTaskProgress(doneCount: doneCount, totalCount: statuses.count)
+        return PaneAgentTaskProgress(items: taskItems(fromTodoObjects: todos))
     }
 
     private static func devinInteractionPayload(

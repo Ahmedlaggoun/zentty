@@ -201,7 +201,14 @@ final class DevinEventAdapterTests: XCTestCase {
 
         XCTAssertEqual(payloads.count, 1)
         XCTAssertEqual(payloads[0].state, .running)
-        XCTAssertEqual(payloads[0].taskProgress, PaneAgentTaskProgress(doneCount: 1, totalCount: 3))
+        XCTAssertEqual(
+            payloads[0].taskProgress,
+            PaneAgentTaskProgress(items: [
+                PaneAgentTaskItem(title: "First", status: .done),
+                PaneAgentTaskItem(title: "Second", status: .inProgress),
+                PaneAgentTaskItem(title: "Third", status: .pending),
+            ])
+        )
     }
 
     // MARK: - Subagents

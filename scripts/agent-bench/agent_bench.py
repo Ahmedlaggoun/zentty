@@ -111,6 +111,7 @@ class ScenarioExpectation:
     forbidden_events: list[str] = dataclasses.field(default_factory=list)
     forbidden_terminal_phases: list[str] = dataclasses.field(default_factory=list)
     expected_task_progress: dict[str, int] | None = None
+    expected_task_items: list[dict[str, str]] | None = None
     session_identity: SessionIdentityExpectation | None = None
     synthetic: bool = False
     fixture: str | None = None
@@ -148,6 +149,7 @@ class AgentProfile:
     launch_args_by_scenario: dict[str, list[str]]
     expectations: dict[str, ScenarioExpectation]
     input_by_scenario: dict[str, list[dict[str, Any]]] = dataclasses.field(default_factory=dict)
+    environment_by_scenario: dict[str, dict[str, str]] = dataclasses.field(default_factory=dict)
     repeat_by_scenario: dict[str, int] = dataclasses.field(default_factory=dict)
     skip_patterns: list[str] = dataclasses.field(default_factory=list)
     tool: str = ""
@@ -207,6 +209,7 @@ class ScenarioResult:
     terminal_phase_sequence: list[str] = dataclasses.field(default_factory=list)
     terminal_observations: list[dict[str, Any]] = dataclasses.field(default_factory=list)
     task_observations: list[dict[str, Any]] = dataclasses.field(default_factory=list)
+    task_item_observations: list[dict[str, Any]] = dataclasses.field(default_factory=list)
     subagent_observations: list[dict[str, Any]] = dataclasses.field(default_factory=list)
     session_identity_observations: list[dict[str, Any]] = dataclasses.field(default_factory=list)
     timeline: list[dict[str, Any]] = dataclasses.field(default_factory=list)
@@ -632,6 +635,12 @@ def classify_completed_result(
         result.detail = "required TodoWrite task progress was not captured"
         result.result_kind = "missing-task-progress"
         return result
+    if expectation.expected_task_items and not expected_task_items_observed(expectation, task_observations):
+        result.passed = False
+        result.status = "fail"
+        result.detail = "required task items were not captured"
+        result.result_kind = "missing-task-items"
+        return result
     subagent_failure = subagent_contract_failure(agent, scenario, expectation, records)
     if subagent_failure:
         result.passed = False
@@ -720,6 +729,14 @@ def classify_timeout_result(
             partial.status = "fail"
             partial.detail = "required TodoWrite task progress was not captured"
             partial.result_kind = "missing-task-progress"
+        elif expectation.expected_task_items and not expected_task_items_observed(
+            expectation,
+            task_observations_for_records(agent, scenario, records),
+        ):
+            partial.passed = False
+            partial.status = "fail"
+            partial.detail = "required task items were not captured"
+            partial.result_kind = "missing-task-items"
         elif subagent_failure := subagent_contract_failure(agent, scenario, expectation, records):
             partial.passed = False
             partial.status = "fail"
@@ -1020,9 +1037,151 @@ def expected_task_progress_observed(
     )
 
 
+TASK_TITLE_KEYS = ["content", "title", "subject", "text", "description", "step"]
+TASK_STATUS_KEYS = ["status", "state"]
+TASK_LIST_KEYS = ["todos", "plan", "items", "tasks"]
+TASK_LIFECYCLE_EVENTS = {"taskcreated", "taskcompleted", "taskupdated"}
+
+
+def normalize_task_status(status: str | None) -> str:
+    text = (status or "").strip().lower()
+    if text in {"completed", "complete", "done", "finished"}:
+        return "done"
+    if text in {"in_progress", "in-progress", "inprogress", "active", "doing", "running"}:
+        return "in_progress"
+    return "pending"
+
+
+def is_task_tool_name(tool_name: str) -> bool:
+    lowered = tool_name.strip().lower()
+    if not lowered:
+        return False
+    if "todo" in lowered or "writetodos" in lowered:
+        return True
+    squashed = re.sub(r"[^a-z]", "", lowered)
+    return squashed in {
+        "plan",
+        "updateplan",
+        "task",
+        "taskadd",
+        "taskcreate",
+        "taskupdate",
+        "taskcomplete",
+        "taskcompleted",
+        "tasklist",
+    }
+
+
+def task_items_from_entries(entries: Any) -> list[dict[str, str]] | None:
+    if not isinstance(entries, list):
+        return None
+    items: list[dict[str, str]] = []
+    for entry in entries:
+        if isinstance(entry, dict):
+            title = first_string(entry, TASK_TITLE_KEYS)
+            if not title:
+                continue
+            items.append({"title": title, "status": first_string(entry, TASK_STATUS_KEYS) or "pending"})
+        elif isinstance(entry, str) and entry.strip():
+            items.append({"title": entry.strip(), "status": "pending"})
+    return items or None
+
+
+def task_items_done_total(items: list[dict[str, str]]) -> tuple[int, int]:
+    return (sum(1 for item in items if normalize_task_status(item.get("status")) == "done"), len(items))
+
+
+def task_item_from_mapping(mapping: dict[str, Any]) -> dict[str, str] | None:
+    """Single-item tool_input shapes (Claude TaskCreate/TaskUpdate style):
+    {"subject": ..., "status": ...}."""
+    title = first_string(mapping, TASK_TITLE_KEYS)
+    if not title:
+        return None
+    return {"title": title, "status": first_string(mapping, TASK_STATUS_KEYS) or "pending"}
+
+
+def task_items_from_tool_input(tool_input: dict[str, Any] | None) -> list[dict[str, str]] | None:
+    if not isinstance(tool_input, dict):
+        return None
+    for key in TASK_LIST_KEYS:
+        items = task_items_from_entries(tool_input.get(key))
+        if items:
+            return items
+    todos = tool_input.get("todos")
+    if isinstance(todos, str):
+        return todo_items_from_text(todos)
+    return None
+
+
+def todo_items_from_text(text: str) -> list[dict[str, str]] | None:
+    items: list[dict[str, str]] = []
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        match = re.match(r"^(?:[-*•]\s*)?(?:\d+[.)]\s*)?\[(?P<mark>[^\]]*)\]\s*(?P<title>.+)$", line)
+        if not match:
+            continue
+        mark = match.group("mark").strip().lower()
+        status = "done" if mark in {"x", "completed", "complete", "done"} else ("in_progress" if mark in {"in_progress", "in-progress"} else "pending")
+        items.append({"title": match.group("title").strip(), "status": status})
+    return items or None
+
+
+def expected_task_items_observed(
+    expectation: ScenarioExpectation,
+    observations: list[dict[str, Any]],
+) -> bool:
+    """Every expected item must have been observed with its expected status.
+    Titles match case-insensitively by substring containment (agents
+    paraphrase slightly); latest observation wins per title."""
+    expected = expectation.expected_task_items
+    if not expected:
+        return True
+    latest_status_by_title: list[tuple[str, str]] = []
+    for observation in observations:
+        for item in observation.get("items") or []:
+            if not isinstance(item, dict):
+                continue
+            title = str(item.get("title") or "")
+            if not title:
+                continue
+            latest_status_by_title.append((title, normalize_task_status(str(item.get("status") or ""))))
+    for wanted in expected:
+        needle = wanted["title"].lower()
+        wanted_status = normalize_task_status(wanted["status"])
+        latest: str | None = None
+        for title, status in latest_status_by_title:
+            if needle in title.lower():
+                latest = status
+        if latest != wanted_status:
+            return False
+    return True
+
+
 def task_observations_for_records(agent: str, scenario: str, records: list[TraceRecord]) -> list[dict[str, Any]]:
     observations: list[dict[str, Any]] = []
     cursor_updates_by_session: dict[str, list[dict[str, Any]]] = {}
+    # Single-item task hooks (Claude TaskCreated/TaskCompleted events,
+    # TaskCreate/TaskUpdate tool calls) are aggregated per session so an
+    # item-level assertion sees the whole list: latest status per task id
+    # wins, insertion order is preserved.
+    task_items_by_session: dict[str, dict[str, dict[str, str]]] = {}
+
+    def aggregate_task_item(session_id: str, task_key: str, item: dict[str, str]) -> list[dict[str, str]]:
+        bucket = task_items_by_session.setdefault(session_id, {})
+        # Join items that name the same task under different keys — e.g. a
+        # TaskCreated hook keys by task_id while the TaskCreate tool call only
+        # carries the subject.
+        title = (item.get("title") or "").lower()
+        if title:
+            for existing_key, existing in bucket.items():
+                if existing_key != task_key and (existing.get("title") or "").lower() == title:
+                    task_key = existing_key
+                    break
+        bucket[task_key] = item
+        return [dict(entry) for entry in bucket.values()]
+
     for record in records:
         if record.agent != agent or record.scenario != scenario or record.kind != "hook":
             continue
@@ -1033,21 +1192,65 @@ def task_observations_for_records(agent: str, scenario: str, records: list[Trace
                 total = progress.get("total")
                 tool = progress.get("tool")
                 source = progress.get("source")
-                if isinstance(done, int) and isinstance(total, int) and total > 0:
-                    observations.append(
-                        {
-                            "event": record.event_name or "",
-                            "tool": tool if isinstance(tool, str) and tool else "TodoWrite",
-                            "done": done,
-                            "total": total,
-                            "source": source if isinstance(source, str) and source else "trace_extra",
-                        }
-                    )
+                items = task_items_from_entries(progress.get("items"))
+                if items and not (isinstance(done, int) and isinstance(total, int) and total > 0):
+                    done, total = task_items_done_total(items)
+                if (isinstance(done, int) and isinstance(total, int) and total > 0) or items:
+                    observation: dict[str, Any] = {
+                        "event": record.event_name or "",
+                        "tool": tool if isinstance(tool, str) and tool else "TodoWrite",
+                        "raw_tool_name": tool if isinstance(tool, str) and tool else "TodoWrite",
+                        "source": source if isinstance(source, str) and source else "trace_extra",
+                    }
+                    if isinstance(done, int) and isinstance(total, int):
+                        observation["done"] = done
+                        observation["total"] = total
+                    if items:
+                        observation["items"] = items
+                    observations.append(observation)
                     continue
         payload = parse_json_object(record.standard_input)
+        session_id = first_string(payload, ["session_id", "sessionId", "conversation_id", "conversationId"]) or "__default__"
 
-        # Case 1: Raw PreToolUse / tool call with TodoWrite (traditional path, now grok-flexible)
-        # Support top-level and nested (e.g. grok may use tool_use.name / tool_use.input or input.*)
+        # Case 0: single-item task lifecycle hooks (Claude TaskCreated /
+        # TaskCompleted carry task_subject + task_id, no tool_input list).
+        hook_event = re.sub(
+            r"[^a-z]",
+            "",
+            str(record.event_name or first_string(payload, ["hook_event_name", "hookEventName"]) or "").lower(),
+        )
+        if hook_event in TASK_LIFECYCLE_EVENTS:
+            title = first_string(payload, ["task_subject", "taskSubject", "subject", "title", "content", "text", "description"])
+            if hook_event == "taskcompleted":
+                status = "done"
+            elif hook_event == "taskupdated":
+                status = first_string(payload, ["status", "state"]) or "pending"
+            else:
+                status = "pending"
+            task_key = (
+                first_string(payload, ["task_id", "taskId", "id"])
+                or title
+                or f"task-{len(task_items_by_session.get(session_id, {}))}"
+            )
+            items = aggregate_task_item(session_id, task_key, {"title": title or task_key, "status": status})
+            raw_tool_name = first_string(payload, ["tool_name", "toolName", "tool"]) or record.event_name or "TaskHook"
+            done, total = task_items_done_total(items)
+            observations.append(
+                {
+                    "event": record.event_name or "",
+                    "tool": raw_tool_name,
+                    "raw_tool_name": raw_tool_name,
+                    "done": done,
+                    "total": total,
+                    "items": items,
+                    "source": "task_hook",
+                }
+            )
+            continue
+
+        # Case 1: Raw PreToolUse / tool call with a task tool (TodoWrite,
+        # update_plan, write_todos, TaskCreate/TaskUpdate, ...). Supports
+        # top-level and nested payloads (tool_use.name / tool_use.input ...).
         tool_name = first_string(payload, ["tool_name", "toolName", "tool"])
         if not tool_name:
             for nest_key in ("tool_use", "toolUse", "tool_use_input", "input"):
@@ -1056,58 +1259,115 @@ def task_observations_for_records(agent: str, scenario: str, records: list[Trace
                     tool_name = first_string(nested, ["name", "tool_name", "toolName", "tool"])
                     if tool_name:
                         break
-        if tool_name:
-            ln = tool_name.lower()
-            if any(x in ln for x in ("todowrite", "todo_write", "writetodos", "todo")):
-                tool_input = first_object(payload, ["tool_input", "toolInput", "input"])
-                if not tool_input:
-                    for nest_key in ("tool_use", "toolUse", "tool_use_input"):
-                        nested = payload.get(nest_key)
-                        if isinstance(nested, dict):
-                            tool_input = first_object(nested, ["input", "tool_input", "toolInput"]) or nested
-                            if tool_input:
-                                break
-                progress = None
-                if agent == "cursor" and isinstance(tool_input, dict) and isinstance(tool_input.get("todos"), list):
-                    session_id = first_string(payload, ["conversation_id", "conversationId", "session_id", "sessionId"]) or "__default__"
-                    cursor_updates_by_session.setdefault(session_id, []).append(
-                        {
-                            "merge": bool(tool_input.get("merge", False)),
-                            "todos": tool_input.get("todos", []),
-                            "tool_input": tool_input,
-                        }
-                    )
-                    progress = cursor_progress_from_updates(cursor_updates_by_session[session_id])
-                if progress is None:
-                    progress = todo_progress(tool_input)
+        if tool_name and is_task_tool_name(tool_name):
+            tool_input = first_object(payload, ["tool_input", "toolInput", "input"])
+            if not tool_input:
+                for nest_key in ("tool_use", "toolUse", "tool_use_input"):
+                    nested = payload.get(nest_key)
+                    if isinstance(nested, dict):
+                        tool_input = first_object(nested, ["input", "tool_input", "toolInput"]) or nested
+                        if tool_input:
+                            break
+            items = task_items_from_tool_input(tool_input)
+            progress = None
+            if agent == "cursor" and isinstance(tool_input, dict) and isinstance(tool_input.get("todos"), list):
+                cursor_updates_by_session.setdefault(session_id, []).append(
+                    {
+                        "merge": bool(tool_input.get("merge", False)),
+                        "todos": tool_input.get("todos", []),
+                        "tool_input": tool_input,
+                    }
+                )
+                progress = cursor_progress_from_updates(cursor_updates_by_session[session_id])
+                items = cursor_items_from_updates(cursor_updates_by_session[session_id]) or items
+            if items is None and isinstance(tool_input, dict):
+                single = task_item_from_mapping(tool_input)
+                task_key = first_string(tool_input, ["task_id", "taskId", "id"])
+                if single is None and task_key:
+                    # TaskUpdate-style call that only flips a status on an
+                    # already-known task id.
+                    existing = task_items_by_session.get(session_id, {}).get(task_key)
+                    new_status = first_string(tool_input, TASK_STATUS_KEYS)
+                    if existing and new_status:
+                        single = {"title": existing["title"], "status": new_status}
+                if single is not None:
+                    items = aggregate_task_item(session_id, task_key or single["title"], single)
+            if progress is None:
+                progress = todo_progress(tool_input)
+            if items is None or progress is None:
+                # Some harnesses (Vibe) report the todo list in the tool
+                # *output* rather than the input.
+                tool_output = first_object(
+                    payload,
+                    ["tool_output", "toolOutput", "tool_response", "toolResponse", "output", "result"],
+                )
+                if isinstance(tool_output, dict):
+                    items = items or task_items_from_tool_input(tool_output)
+                    if items is None:
+                        # Claude PostToolUse(TaskCreate/TaskUpdate) responses
+                        # carry the mutated task object itself, nested under
+                        # "task" or at top level.
+                        task_object = tool_output.get("task")
+                        if not isinstance(task_object, dict):
+                            task_object = tool_output
+                        single_output = task_item_from_mapping(task_object)
+                        if single_output is not None:
+                            out_key = (
+                                first_string(task_object, ["task_id", "taskId", "id"])
+                                or first_string(tool_input if isinstance(tool_input, dict) else {}, ["task_id", "taskId", "id"])
+                                or single_output["title"]
+                            )
+                            items = aggregate_task_item(session_id, out_key, single_output)
+                    if progress is None:
+                        progress = todo_progress(tool_output)
+            if progress is None and items:
+                progress = task_items_done_total(items)
+            if progress or items:
+                observation = {
+                    "event": record.event_name or "",
+                    "tool": tool_name,
+                    "raw_tool_name": tool_name,
+                    "source": "raw_tool_call",
+                }
                 if progress:
-                    observations.append(
-                        {
-                            "event": record.event_name or "",
-                            "tool": tool_name,
-                            "done": progress[0],
-                            "total": progress[1],
-                            "source": "raw_tool_call",
-                        }
-                    )
-                continue
+                    observation["done"] = progress[0]
+                    observation["total"] = progress[1]
+                if items:
+                    observation["items"] = items
+                observations.append(observation)
+            continue
 
-        # Case 2: Canonical task.progress emitted by smart hook scripts (Grok, future agents)
-        if record.event_name == "task.progress" or payload.get("event") == "task.progress":
-            progress = payload.get("progress") or payload
-            if isinstance(progress, dict):
-                done = progress.get("done")
-                total = progress.get("total")
-                if isinstance(done, int) and isinstance(total, int) and total > 0:
-                    observations.append(
-                        {
-                            "event": "task.progress",
-                            "tool": "TodoWrite",
-                            "done": done,
-                            "total": total,
-                            "source": "canonical",
-                        }
-                    )
+        # Case 2: Canonical task.progress emitted by smart hook scripts
+        # (Grok, future agents), or any hook payload carrying a `progress`
+        # object — e.g. small-harness `PlanUpdated` reports
+        # {"progress": {"done": n, "total": m, "items": [...]}}.
+        progress_value = payload.get("progress")
+        if record.event_name == "task.progress" or payload.get("event") == "task.progress" or isinstance(progress_value, dict):
+            progress = progress_value if isinstance(progress_value, dict) else payload
+            done = progress.get("done")
+            total = progress.get("total")
+            items = task_items_from_entries(progress.get("items")) or task_items_from_tool_input(progress) or task_items_from_tool_input(payload)
+            if items and not (isinstance(done, int) and isinstance(total, int) and total > 0):
+                done, total = task_items_done_total(items)
+            if (isinstance(done, int) and isinstance(total, int) and total > 0) or items:
+                event_label = record.event_name or str(payload.get("event") or payload.get("hook_event_name") or "task.progress")
+                raw_tool_name = (
+                    first_string(payload, ["tool_name", "toolName", "tool"])
+                    or first_string(progress, ["tool"])
+                    or ("TodoWrite" if event_label == "task.progress" else event_label)
+                )
+                observation = {
+                    "event": event_label,
+                    "tool": raw_tool_name,
+                    "raw_tool_name": raw_tool_name,
+                    "source": "canonical",
+                }
+                if isinstance(done, int) and isinstance(total, int):
+                    observation["done"] = done
+                    observation["total"] = total
+                if items:
+                    observation["items"] = items
+                observations.append(observation)
     return observations
 
 
@@ -1391,23 +1651,31 @@ def cursor_transcript_task_progress(payload: dict[str, Any], attempts: int = 5) 
                 if not isinstance(record, dict):
                     continue
                 updates.extend(cursor_todo_updates_in_object(record))
+            items = cursor_items_from_updates(updates)
             progress = cursor_progress_from_updates(updates)
             if progress:
-                return {
+                result: dict[str, Any] = {
                     "tool": "TodoWrite",
                     "done": progress[0],
                     "total": progress[1],
                     "source": "cursor_transcript",
                 }
+                if items:
+                    result["items"] = items
+                return result
             for record_update in reversed(updates):
                 progress = todo_progress(record_update.get("tool_input"))
                 if progress:
-                    return {
+                    result = {
                         "tool": "TodoWrite",
                         "done": progress[0],
                         "total": progress[1],
                         "source": "cursor_transcript",
                     }
+                    update_items = items or task_items_from_tool_input(record_update.get("tool_input"))
+                    if update_items:
+                        result["items"] = update_items
+                    return result
         if attempt < attempt_count - 1:
             time.sleep(0.05)
     return None
@@ -1428,6 +1696,25 @@ def cursor_progress_from_updates(updates: list[dict[str, Any]]) -> tuple[int, in
     if not todos:
         return None
     return (sum(1 for status in todos.values() if todo_status_is_complete(status)), len(todos))
+
+
+def cursor_items_from_updates(updates: list[dict[str, Any]]) -> list[dict[str, str]] | None:
+    """Same merge semantics as cursor_progress_from_updates, but keeps the
+    per-item title/status pairs for item-level assertions and reporting."""
+    todos: dict[str, dict[str, str]] = {}
+    for update in updates:
+        if not update.get("merge", False):
+            todos = {}
+        for todo in update.get("todos", []):
+            if not isinstance(todo, dict):
+                continue
+            key = first_string(todo, ["id", "content", "text", "title"])
+            if key:
+                todos[key] = {
+                    "title": first_string(todo, ["content", "text", "title", "subject", "description"]) or key,
+                    "status": first_string(todo, ["status", "state"]) or "pending",
+                }
+    return list(todos.values()) or None
 
 
 def cursor_todo_updates_in_object(value: dict[str, Any], depth: int = 0) -> list[dict[str, Any]]:
@@ -2558,6 +2845,53 @@ def parse_event_order(profile_name: str, scenario: str, raw: Any) -> list[list[s
     return pairs
 
 
+def parse_expected_task_items(profile_name: str, scenario: str, raw: Any) -> list[dict[str, str]] | None:
+    """Validate the `expected_task_items` expectation shape up front so a typo
+    fails the run before the agent is driven:
+    [{"title": str, "status": str}, ...]."""
+    if raw is None:
+        return None
+    prefix = f"{profile_name} scenario {scenario!r}: expected_task_items"
+    if not isinstance(raw, list) or not raw:
+        raise ValueError(f"{prefix} must be a non-empty list, got {raw!r}")
+    items: list[dict[str, str]] = []
+    for entry in raw:
+        if (
+            not isinstance(entry, dict)
+            or not isinstance(entry.get("title"), str)
+            or not entry["title"].strip()
+            or not isinstance(entry.get("status"), str)
+            or not entry["status"].strip()
+        ):
+            raise ValueError(
+                f"{prefix} entries must be objects with non-empty string "
+                f"'title' and 'status', got {entry!r}"
+            )
+        items.append({"title": entry["title"].strip(), "status": entry["status"].strip()})
+    return items
+
+
+def parse_environment_by_scenario(profile_name: str, raw: Any) -> dict[str, dict[str, str]]:
+    """Validate a profile's `environment_by_scenario` at load time:
+    {"<scenario>": {"VAR": "value"}}."""
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise ValueError(f"{profile_name}: environment_by_scenario must be an object, got {raw!r}")
+    parsed: dict[str, dict[str, str]] = {}
+    for scenario, value in raw.items():
+        if not isinstance(scenario, str) or not isinstance(value, dict) or not all(
+            isinstance(key, str) and key.strip() and isinstance(item, str)
+            for key, item in value.items()
+        ):
+            raise ValueError(
+                f"{profile_name}: environment_by_scenario entries must map a scenario name "
+                f"to an object of string values, got {scenario!r}: {value!r}"
+            )
+        parsed[scenario] = dict(value)
+    return parsed
+
+
 def load_profiles(path: pathlib.Path) -> dict[str, AgentProfile]:
     profiles: dict[str, AgentProfile] = {}
     for profile_path in sorted(path.glob("*.json")):
@@ -2582,6 +2916,11 @@ def load_profiles(path: pathlib.Path) -> dict[str, AgentProfile]:
                 expected_task_progress=value.get("expected_task_progress")
                 if isinstance(value.get("expected_task_progress"), dict)
                 else None,
+                expected_task_items=parse_expected_task_items(
+                    profile_path.name,
+                    name,
+                    value.get("expected_task_items"),
+                ),
                 required_bootstrap_arguments=[
                     [str(argument) for argument in arguments]
                     for arguments in value.get("required_bootstrap_arguments", [])
@@ -2604,6 +2943,7 @@ def load_profiles(path: pathlib.Path) -> dict[str, AgentProfile]:
             launch_args_by_scenario={name: list(args) for name, args in raw.get("launch_args_by_scenario", {}).items()},
             expectations=expectations,
             input_by_scenario={name: list(values) for name, values in raw.get("input_by_scenario", {}).items()},
+            environment_by_scenario=parse_environment_by_scenario(profile_path.name, raw.get("environment_by_scenario")),
             repeat_by_scenario={name: int(count) for name, count in raw.get("repeat_by_scenario", {}).items()},
             skip_patterns=list(raw.get("skip_patterns", [])),
             tool=str(raw.get("tool") or raw["name"]),
@@ -2741,6 +3081,7 @@ class BenchRunner:
     def _run_agent_scenario(self, agent: str, scenario: str, env: dict[str, str]) -> ScenarioResult:
         env = dict(env)
         profile = self.profiles[agent]
+        env.update(profile.environment_by_scenario.get(scenario, {}))
         if scenario not in profile.expectations:
             return self._finalize_result(
                 ScenarioResult(agent, scenario, True, [], [], status="skip", detail="scenario not defined", result_kind="scenario-skip"),
@@ -3080,6 +3421,15 @@ class BenchRunner:
         result.terminal_phase_sequence = terminal_phase_sequence(observations)
         result.terminal_observations = [dataclasses.asdict(observation) for observation in observations]
         result.task_observations = task_observations_for_records(result.agent, result.scenario, records)
+        result.task_item_observations = [
+            {
+                "event": item.get("event"),
+                "tool": item.get("raw_tool_name") or item.get("tool"),
+                "items": item["items"],
+            }
+            for item in result.task_observations
+            if isinstance(item.get("items"), list) and item["items"]
+        ]
         result.subagent_observations = subagent_observations_for_records(result.agent, result.scenario, records)
         result.timeline = build_timeline(result.agent, result.scenario, records, observations)
         result.rerun_command = self._rerun_command(result.agent, result.scenario)
@@ -3236,11 +3586,38 @@ class BenchRunner:
                 lines.append(f"  Terminal: {observations}{suffix}")
             if result.task_observations:
                 tasks = ", ".join(
-                    f"{item['event']}:{item['done']}/{item['total']}"
+                    f"{item.get('event', '?')}:{item.get('done', '-')}/{item.get('total', '-')}"
                     for item in result.task_observations[:3]
                 )
                 suffix = "..." if len(result.task_observations) > 3 else ""
                 lines.append(f"  Tasks: {tasks}{suffix}")
+            if result.scenario == "tasks":
+                tools = sorted(
+                    {
+                        str(item.get("raw_tool_name") or item.get("tool") or "?")
+                        for item in result.task_observations
+                    }
+                )
+                item_events: list[str] = []
+                richest: dict[str, Any] | None = None
+                for item in result.task_observations:
+                    captured = item.get("items")
+                    if not isinstance(captured, list) or not captured:
+                        continue
+                    event = str(item.get("event") or "?")
+                    if event not in item_events:
+                        item_events.append(event)
+                    if richest is None or len(captured) >= len(richest.get("items") or []):
+                        richest = item
+                lines.append(f"  Task tools: {', '.join(tools) if tools else '-'}")
+                lines.append(f"  Task item events: {', '.join(item_events) if item_events else '-'}")
+                if richest:
+                    captured = richest["items"]
+                    lines.append(f"  Task items ({len(captured)}):")
+                    for entry in captured[:3]:
+                        lines.append(f"    - [{entry.get('status', '?')}] {entry.get('title', '?')}")
+                    if len(captured) > 3:
+                        lines.append(f"    ... +{len(captured) - 3} more")
             if result.session_identity_observations:
                 identities = ", ".join(
                     f"{item.get('event', 'hook')} session={item.get('session_id', '-')} pid={item.get('tracked_pid', '-')}"

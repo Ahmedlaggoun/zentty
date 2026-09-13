@@ -10,7 +10,7 @@
     ],
     "tasks": [
       "-p",
-      "Use your todo_write tool to create a todo list with these exact tasks: 1. Review directory, 2. Identify main language, 3. Suggest one improvement. Mark task 1 done. Then run: printf ZENTTY_AGENT_BENCH_TASKS_OK"
+      "Use your task list tool (todo_write) to create a task list with these exact three tasks: Review directory, Identify main language, Suggest one improvement. Mark Review directory completed. Mark Identify main language in progress. Leave Suggest one improvement pending. Then run this exact shell command: printf ZENTTY_AGENT_BENCH_TASKS_OK"
     ],
     "approval": [
       "-p",
@@ -31,7 +31,13 @@
       }
     },
     "tasks": {
-      "required_events": ["session_start", "pre_tool_use", "task.progress", "stop"],
+      "required_events": ["SessionStart", "PreToolUse", "task.progress", "Stop"],
+      "expected_task_progress": {"done": 1, "total": 3},
+      "expected_task_items": [
+        {"title": "Review directory", "status": "completed"},
+        {"title": "Identify main language", "status": "in_progress"},
+        {"title": "Suggest one improvement", "status": "pending"}
+      ],
       "session_identity": {
         "session_id_pattern": "uuid",
         "tracked_pid": false

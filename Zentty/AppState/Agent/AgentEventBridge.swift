@@ -15,6 +15,7 @@ struct AgentEventInput {
     let interactionText: String?
     let progressDone: Int?
     let progressTotal: Int?
+    let progressItems: [PaneAgentTaskItem]?
     let artifactKind: String?
     let artifactLabel: String?
     let artifactURL: String?
@@ -128,12 +129,35 @@ enum AgentEventBridge {
             interactionText: JSONKeyAccess.firstString(in: interaction, keys: ["text"]),
             progressDone: JSONKeyAccess.firstInt(in: progress, keys: ["done"]),
             progressTotal: JSONKeyAccess.firstInt(in: progress, keys: ["total"]),
+            progressItems: taskProgressItems(from: progress?["items"]),
             artifactKind: JSONKeyAccess.firstString(in: artifact, keys: ["kind"]),
             artifactLabel: JSONKeyAccess.firstString(in: artifact, keys: ["label"]),
             artifactURL: JSONKeyAccess.firstString(in: artifact, keys: ["url"]),
             workingDirectory: JSONKeyAccess.firstString(in: context, keys: ["workingDirectory"]),
             agentLaunchSnapshot: launchSnapshot(from: launch)
         )
+    }
+
+    /// `progress.items[]` entries carry `title` (or `content`/`subject`/`text`),
+    /// an optional `id`, and a harness status string that gets normalized.
+    static func taskProgressItems(from rawItems: Any?) -> [PaneAgentTaskItem]? {
+        guard let objects = rawItems as? [[String: Any]] else {
+            return nil
+        }
+        let items = objects.enumerated().compactMap { index, object -> PaneAgentTaskItem? in
+            let id = JSONKeyAccess.firstString(in: object, keys: ["id", "taskId", "task_id"])
+            let title = JSONKeyAccess.firstString(in: object, keys: ["title", "content", "subject", "text"])
+                ?? id
+                ?? "Task \(index + 1)"
+            return PaneAgentTaskItem(
+                id: id,
+                title: title,
+                status: PaneAgentTaskItemStatus(
+                    rawHarnessStatus: JSONKeyAccess.firstString(in: object, keys: ["status", "state"])
+                )
+            )
+        }
+        return items.isEmpty ? nil : items
     }
 
     private static func launchSnapshot(from launch: [String: Any]?) -> AgentLaunchSnapshot? {
@@ -154,10 +178,11 @@ enum AgentEventBridge {
     ) throws -> [AgentStatusPayload] {
         let target = try currentTarget(from: environment)
         let toolName = input.agentName
-        let taskProgress = PaneAgentTaskProgress(
-            doneCount: input.progressDone ?? 0,
-            totalCount: input.progressTotal ?? 0
-        )
+        let taskProgress = input.progressItems.flatMap { PaneAgentTaskProgress(items: $0) }
+            ?? PaneAgentTaskProgress(
+                doneCount: input.progressDone ?? 0,
+                totalCount: input.progressTotal ?? 0
+            )
         let artifactURL = try input.artifactURL.flatMap { urlString -> URL? in
             guard let url = URL(string: urlString) else {
                 throw AgentStatusPayloadError.invalidArtifactURL(urlString)

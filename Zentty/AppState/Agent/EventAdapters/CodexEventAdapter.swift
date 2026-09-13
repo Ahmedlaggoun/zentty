@@ -354,7 +354,8 @@ extension AgentEventBridge {
                 _ = try taskStore.updateProgress(
                     sessionID: sessionID,
                     doneCount: progress.doneCount,
-                    totalCount: progress.totalCount
+                    totalCount: progress.totalCount,
+                    items: progress.items
                 )
             }
             return [lifecyclePayload(
@@ -483,6 +484,10 @@ extension AgentEventBridge {
             return nil
         }
 
+        if let items = taskProgressItems(from: progress["items"]),
+           let progress = PaneAgentTaskProgress(items: items) {
+            return progress
+        }
         return PaneAgentTaskProgress(doneCount: done, totalCount: total)
     }
 

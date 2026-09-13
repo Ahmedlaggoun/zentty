@@ -47,8 +47,8 @@ hook, and terminal observations.
   - passes: `hook-pass`, `bootstrap-pass`, `terminal-pass`, `resume-pass`.
   - hook failures: `missing-hook`, `forbidden-hook`, `missing-bootstrap`,
     `missing-session-identity`, `missing-task-hook`,
-    `missing-task-progress`, `missing-subagent-payload`, `hook-order`,
-    `missing-nested-subagent`.
+    `missing-task-progress`, `missing-task-items`, `missing-subagent-payload`,
+    `hook-order`, `missing-nested-subagent`.
   - terminal failures: `missing-terminal-phase`, `forbidden-terminal-phase`,
     `missing-terminal-needs-input`, `stale-terminal-needs-input`,
     `missing-scripted-input`.
@@ -119,3 +119,8 @@ every Agent tool call asynchronously:
 `event_order` is generic: each entry is a `[before, after]` pair of hook event
 names, checked against the scenario's own hook records after the required
 events pass.
+
+`environment_by_scenario` injects environment variables for one scenario only,
+e.g. Claude's `tasks` sets `CLAUDE_CODE_ENABLE_TODO_TOOLS=1` because the
+TaskCreate/TaskUpdate tools are gated on it and `--setting-sources
+project,local` skips user-level settings that would otherwise enable them.

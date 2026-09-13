@@ -374,8 +374,15 @@ final class AgentEventBridgeTests: XCTestCase {
 
         XCTAssertEqual(payloads.count, 1)
         XCTAssertEqual(payloads[0].state, .running)
-        XCTAssertEqual(payloads[0].taskProgress, PaneAgentTaskProgress(doneCount: 1, totalCount: 3))
-        XCTAssertEqual(try store.taskProgress(sessionID: "cursor-session"), PaneAgentTaskProgress(doneCount: 1, totalCount: 3))
+        XCTAssertEqual(
+            payloads[0].taskProgress,
+            PaneAgentTaskProgress(items: [
+                PaneAgentTaskItem(id: "1", title: "Review logs", status: .done),
+                PaneAgentTaskItem(id: "2", title: "Patch adapter", status: .inProgress),
+                PaneAgentTaskItem(id: "3", title: "Run tests", status: .pending),
+            ])
+        )
+        XCTAssertEqual(try store.taskProgress(sessionID: "cursor-session"), payloads[0].taskProgress)
     }
 
     func test_cursor_after_shell_execution_stays_running_past_grace_until_stop() throws {
@@ -639,7 +646,14 @@ final class AgentEventBridgeTests: XCTestCase {
         XCTAssertEqual(payload.state, .running)
         XCTAssertEqual(payload.toolName, "Cursor")
         XCTAssertEqual(payload.sessionID, "cursor-session")
-        XCTAssertEqual(payload.taskProgress, PaneAgentTaskProgress(doneCount: 1, totalCount: 3))
+        XCTAssertEqual(
+            payload.taskProgress,
+            PaneAgentTaskProgress(items: [
+                PaneAgentTaskItem(title: "Review logs", status: .done),
+                PaneAgentTaskItem(title: "Patch adapter", status: .inProgress),
+                PaneAgentTaskItem(title: "Run tests", status: .pending),
+            ])
+        )
     }
 
     func test_cursor_adapter_post_tool_use_todo_write_checklist_reports_progress() throws {
@@ -685,8 +699,18 @@ final class AgentEventBridgeTests: XCTestCase {
         )
 
         XCTAssertEqual(payload.state, .running)
-        XCTAssertEqual(payload.taskProgress, PaneAgentTaskProgress(doneCount: 2, totalCount: 6))
-        XCTAssertEqual(try store.taskProgress(sessionID: "cursor-session"), PaneAgentTaskProgress(doneCount: 2, totalCount: 6))
+        XCTAssertEqual(
+            payload.taskProgress,
+            PaneAgentTaskProgress(items: [
+                PaneAgentTaskItem(id: "dummy-1", title: "Review agent event adapter changes", status: .done),
+                PaneAgentTaskItem(id: "dummy-2", title: "Run SessionRestoreStore unit tests", status: .pending),
+                PaneAgentTaskItem(id: "dummy-3", title: "Verify cursor agent-bench profile config", status: .done),
+                PaneAgentTaskItem(id: "dummy-4", title: "Check resume command builder output", status: .pending),
+                PaneAgentTaskItem(id: "dummy-5", title: "Smoke test Zentty todo sync integration", status: .pending),
+                PaneAgentTaskItem(id: "dummy-6", title: "Validate AgentEventBridge resume flow", status: .pending),
+            ])
+        )
+        XCTAssertEqual(try store.taskProgress(sessionID: "cursor-session"), payload.taskProgress)
     }
 
     func test_cursor_adapter_stop_carries_unfinished_todo_progress() throws {
@@ -708,7 +732,13 @@ final class AgentEventBridgeTests: XCTestCase {
         )
 
         XCTAssertEqual(payload.state, .idle)
-        XCTAssertEqual(payload.taskProgress, PaneAgentTaskProgress(doneCount: 1, totalCount: 2))
+        XCTAssertEqual(
+            payload.taskProgress,
+            PaneAgentTaskProgress(items: [
+                PaneAgentTaskItem(title: "Review logs", status: .done),
+                PaneAgentTaskItem(title: "Run tests", status: .pending),
+            ])
+        )
     }
 
     func test_cursor_adapter_stop_reads_todo_progress_from_transcript() throws {
@@ -728,7 +758,14 @@ final class AgentEventBridgeTests: XCTestCase {
         )
 
         XCTAssertEqual(payload.state, .idle)
-        XCTAssertEqual(payload.taskProgress, PaneAgentTaskProgress(doneCount: 1, totalCount: 3))
+        XCTAssertEqual(
+            payload.taskProgress,
+            PaneAgentTaskProgress(items: [
+                PaneAgentTaskItem(title: "Review logs", status: .done),
+                PaneAgentTaskItem(title: "Patch adapter", status: .inProgress),
+                PaneAgentTaskItem(title: "Run tests", status: .pending),
+            ])
+        )
     }
 
     func test_cursor_adapter_after_shell_execution_merges_todo_progress_from_transcript() throws {
@@ -749,8 +786,14 @@ final class AgentEventBridgeTests: XCTestCase {
 
         XCTAssertEqual(payloads.count, 1)
         XCTAssertEqual(payloads[0].state, .running)
-        XCTAssertEqual(payloads[0].taskProgress, PaneAgentTaskProgress(doneCount: 2, totalCount: 6))
-        XCTAssertEqual(try store.taskProgress(sessionID: "cursor-session"), PaneAgentTaskProgress(doneCount: 2, totalCount: 6))
+        XCTAssertEqual(payloads[0].taskProgress?.doneCount, 2)
+        XCTAssertEqual(payloads[0].taskProgress?.totalCount, 6)
+        XCTAssertEqual(
+            payloads[0].taskProgress?.items.map(\.id),
+            ["dummy-1", "dummy-2", "dummy-3", "dummy-4", "dummy-5", "dummy-6"]
+        )
+        XCTAssertEqual(payloads[0].taskProgress?.items.map(\.status), [.done, .pending, .done, .pending, .pending, .pending])
+        XCTAssertEqual(try store.taskProgress(sessionID: "cursor-session"), payloads[0].taskProgress)
     }
 
     func test_cursor_adapter_session_end_clears_task_progress() throws {
@@ -991,6 +1034,41 @@ final class AgentEventBridgeTests: XCTestCase {
         XCTAssertEqual(payloads[0].state, .running)
         XCTAssertEqual(payloads[0].taskProgress?.doneCount, 2)
         XCTAssertEqual(payloads[0].taskProgress?.totalCount, 5)
+    }
+
+    func test_task_progress_with_items() throws {
+        let json = #"""
+        {"version": 1, "event": "task.progress", "progress": {"done": 1, "total": 3, "items": [{"id": "1", "title": "Review directory", "status": "done"}, {"id": "2", "title": "Identify main language", "status": "in_progress"}, {"id": "3", "title": "Suggest one improvement", "status": "pending"}]}}
+        """#
+        let input = try AgentEventBridge.parseInput(json.data(using: .utf8)!)
+        let payloads = try AgentEventBridge.makePayloads(from: input, environment: defaultEnvironment)
+
+        XCTAssertEqual(
+            payloads[0].taskProgress,
+            PaneAgentTaskProgress(items: [
+                PaneAgentTaskItem(id: "1", title: "Review directory", status: .done),
+                PaneAgentTaskItem(id: "2", title: "Identify main language", status: .inProgress),
+                PaneAgentTaskItem(id: "3", title: "Suggest one improvement", status: .pending),
+            ])
+        )
+    }
+
+    // Canonical items also accept content/subject/text title spellings and
+    // harness status strings; counts still derive from the parsed items.
+    func test_task_progress_items_accept_alternate_keys() throws {
+        let json = #"""
+        {"version": 1, "event": "task.progress", "progress": {"done": 0, "total": 2, "items": [{"content": "Write code", "status": "running"}, {"subject": "Ship it", "status": "todo"}]}}
+        """#
+        let input = try AgentEventBridge.parseInput(json.data(using: .utf8)!)
+        let payloads = try AgentEventBridge.makePayloads(from: input, environment: defaultEnvironment)
+
+        XCTAssertEqual(
+            payloads[0].taskProgress,
+            PaneAgentTaskProgress(items: [
+                PaneAgentTaskItem(title: "Write code", status: .inProgress),
+                PaneAgentTaskItem(title: "Ship it", status: .pending),
+            ])
+        )
     }
 
     // MARK: - Pi bridge
@@ -1453,6 +1531,36 @@ final class AgentEventBridgeTests: XCTestCase {
         XCTAssertEqual(payloads[0].state, .running)
         XCTAssertNil(payloads[0].text)
         XCTAssertEqual(payloads[0].taskProgress, PaneAgentTaskProgress(doneCount: 2, totalCount: 5))
+    }
+
+    func test_small_harness_plan_updated_with_items() throws {
+        let json = """
+        {
+          "hook_event_name": "PlanUpdated",
+          "session_id": "s1",
+          "progress": {
+            "done": 1,
+            "total": 3,
+            "items": [
+              {"id": "1", "title": "Review directory", "status": "done"},
+              {"id": "2", "title": "Identify main language", "status": "in_progress"},
+              {"id": "3", "title": "Suggest one improvement", "status": "pending"}
+            ]
+          }
+        }
+        """
+
+        let payloads = try AgentEventBridge.smallHarnessAdapter(data: Data(json.utf8), defaultEventName: nil, environment: smallHarnessEnvironment(), taskStore: try makeSmallHarnessTaskStore())
+
+        XCTAssertEqual(payloads.count, 1)
+        XCTAssertEqual(
+            payloads[0].taskProgress,
+            PaneAgentTaskProgress(items: [
+                PaneAgentTaskItem(id: "1", title: "Review directory", status: .done),
+                PaneAgentTaskItem(id: "2", title: "Identify main language", status: .inProgress),
+                PaneAgentTaskItem(id: "3", title: "Suggest one improvement", status: .pending),
+            ])
+        )
     }
 
     func test_small_harness_subagent_events_update_progress() throws {
@@ -2468,7 +2576,14 @@ final class AgentEventBridgeTests: XCTestCase {
         let payloads = try AgentEventBridge.droidAdapter(data: Data(json.utf8), environment: droidEnvironment(), taskStore: store)
         let payload = try XCTUnwrap(payloads.first)
         XCTAssertEqual(payload.state, .running)
-        XCTAssertEqual(payload.taskProgress, PaneAgentTaskProgress(doneCount: 1, totalCount: 3))
+        XCTAssertEqual(
+            payload.taskProgress,
+            PaneAgentTaskProgress(items: [
+                PaneAgentTaskItem(title: "Review logs", status: .done),
+                PaneAgentTaskItem(title: "Patch adapter", status: .inProgress),
+                PaneAgentTaskItem(title: "Run tests", status: .pending),
+            ])
+        )
     }
 
     func test_droid_preToolUse_todoWrite_accepts_camel_case_tool_input() throws {
@@ -2684,6 +2799,55 @@ final class AgentEventBridgeTests: XCTestCase {
 
         let store = DroidTaskStore(stateURL: stateURL)
         XCTAssertEqual(try store.taskProgress(sessionID: "sess-1"), PaneAgentTaskProgress(doneCount: 1, totalCount: 3))
+    }
+
+    func test_cursor_task_store_preserves_todo_order_across_reload() throws {
+        let directoryURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: directoryURL) }
+
+        let stateURL = directoryURL.appendingPathComponent("cursor-task-sessions.json")
+        let store = CursorTaskStore(stateURL: stateURL)
+        _ = try store.applyTodoWrite(sessionID: "sess-1", update: CursorTodoWriteUpdate(
+            merge: false,
+            todos: [
+                CursorTodoWriteTodo(key: "z-last", content: "Suggest one improvement", status: "pending"),
+                CursorTodoWriteTodo(key: "a-first", content: "Review directory", status: "completed"),
+                CursorTodoWriteTodo(key: "m-mid", content: "Identify main language", status: "in_progress"),
+            ]
+        ))
+
+        let reloaded = CursorTaskStore(stateURL: stateURL)
+        XCTAssertEqual(
+            try reloaded.taskProgress(sessionID: "sess-1")?.items.map(\.title),
+            ["Suggest one improvement", "Review directory", "Identify main language"]
+        )
+        XCTAssertEqual(
+            try reloaded.taskProgress(sessionID: "sess-1")?.items.map(\.status),
+            [.pending, .done, .inProgress]
+        )
+    }
+
+    func test_cursor_task_store_reads_legacy_todos_dictionary() throws {
+        let directoryURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: directoryURL) }
+
+        let stateURL = directoryURL.appendingPathComponent("cursor-task-sessions.json")
+        try """
+        {"sessions":{"sess-1":{"todos":{"t2":{"content":"Run tests","status":"pending"},"t1":{"content":"Review logs","status":"completed"}},"totalCount":2,"doneCount":1,"updatedAt":123}}}
+        """.write(to: stateURL, atomically: true, encoding: .utf8)
+
+        let store = CursorTaskStore(stateURL: stateURL)
+        XCTAssertEqual(
+            try store.taskProgress(sessionID: "sess-1"),
+            PaneAgentTaskProgress(items: [
+                PaneAgentTaskItem(id: "t1", title: "Review logs", status: .done),
+                PaneAgentTaskItem(id: "t2", title: "Run tests", status: .pending),
+            ])
+        )
     }
 
     func test_droid_stop_carries_progress() throws {
