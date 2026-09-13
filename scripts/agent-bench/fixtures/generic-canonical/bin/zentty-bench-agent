@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+# zentty-bench-agent — canonical-family fixture for scripts/agent-bench.
+#
+# Proves the generic manifest seam end to end without model auth: the bench
+# materializes a wrapper for `binaries`, `zentty launch generic-canonical`
+# bootstraps a plan from agents/generic-canonical.json, and this script speaks
+# the Agent Status Protocol through $BENCH_AGENT_EVENT_COMMAND (the manifest's
+# canonical.env expands {cliBin} to "<cli> ipc agent-event").
+#
+# Usage:
+#   zentty-bench-agent --version
+#   zentty-bench-agent --resume <session-id>
+#   zentty-bench-agent [--approval] <shell command string>
+set -u
+
+SESSION_ID="bench_$(LC_ALL=C tr -dc 'a-z0-9' </dev/urandom | head -c 12)"
+AGENT_NAME="Bench Canonical Agent"
+
+emit() {
+    # $1: event name; $2: optional extra JSON fragment injected at top level.
+    local event="$1" extra="${2:-}"
+    if [ -z "${BENCH_AGENT_EVENT_COMMAND:-}" ]; then
+        return 0
+    fi
+    local payload
+    payload=$(printf '{"version":1,"event":"%s","agent":{"name":"%s","pid":%s},"session":{"id":"%s"}%s}' \
+        "$event" "$AGENT_NAME" "$$" "$SESSION_ID" "$extra")
+    # The manifest value is "<cli> ipc agent-event" — word-splitting is
+    # intentional; fixture paths contain no spaces.
+    printf '%s\n' "$payload" | $BENCH_AGENT_EVENT_COMMAND
+}
+
+case "${1:-}" in
+    --version|-v)
+        echo "1.0.0"
+        exit 0
+        ;;
+    --resume)
+        echo "resumed ${2:-}"
+        exit 0
+        ;;
+esac
+
+APPROVAL=0
+if [ "${1:-}" = "--approval" ]; then
+    APPROVAL=1
+    shift
+fi
+
+emit "agent.running"
+
+if [ "$APPROVAL" -eq 1 ]; then
+    emit "agent.needs-input" ',"state":{"interaction":{"kind":"approval","text":"Bench Canonical Agent needs your approval"}}'
+    # Wait for the scripted answer; an EOF/timeout still resolves the turn.
+    read -r -t 60 _answer || true
+    emit "agent.input-resolved"
+fi
+
+if [ "$#" -gt 0 ]; then
+    bash -c "$*"
+fi
+
+emit "agent.idle"
+exit 0

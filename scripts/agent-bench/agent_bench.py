@@ -27,7 +27,7 @@ from collections import Counter
 from typing import Any
 
 
-SUPPORTED_AGENTS = ("agy", "amp", "claude", "codex", "copilot", "cursor", "devin", "droid", "gemini", "grok", "hermes", "kimi", "kimi-code", "omp", "opencode", "pi", "small-harness", "vibe")
+SUPPORTED_AGENTS = ("agy", "amp", "claude", "codex", "copilot", "cursor", "devin", "droid", "gemini", "generic-canonical", "grok", "hermes", "kilo", "kimi", "kimi-code", "omp", "opencode", "pi", "small-harness", "vibe")
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 BENCH_ROOT = pathlib.Path(__file__).resolve().parent
 DEFAULT_RUNS_DIR = REPO_ROOT / ".agent-bench-runs"
@@ -66,6 +66,13 @@ ROUTING_ENV_KEYS = {
     "OPENCODE_CONFIG",
     "OPENCODE_CONFIG_DIR",
     "ZENTTY_OPENCODE_BASE_CONFIG_DIR",
+    "KILO_CONFIG",
+    "KILO_CONFIG_DIR",
+    "KILO_TUI_CONFIG",
+    "ZENTTY_KILO_BASE_CONFIG_DIR",
+    "ZENTTY_AGENT_CANONICAL_NAME",
+    "ZENTTY_AGENT_MANIFEST_DIRS",
+    "BENCH_AGENT_EVENT_COMMAND",
     "HOME",
 }
 SMALL_HARNESS_HOOK_ENV_VARS = [
@@ -526,6 +533,10 @@ def session_id_matches_pattern(session_id: str, pattern: str) -> bool:
     if pattern == "devin":
         # Devin session ids are human-readable word slugs (`thorn-angora`).
         return re.fullmatch(r"[a-z0-9][a-z0-9-]*", session_id) is not None
+    if pattern.startswith("regex:"):
+        # Manifest agents declare their own session id shape, e.g.
+        # "regex:^ses_[A-Za-z0-9]+$" for kilo.
+        return re.fullmatch(pattern[len("regex:"):], session_id) is not None
     return False
 
 
@@ -1528,6 +1539,7 @@ class CaptureServer:
         scenario: str,
         resources_dir: pathlib.Path | None = None,
         run_dir: pathlib.Path | None = None,
+        manifests: dict[str, dict[str, Any]] | None = None,
     ) -> None:
         self.socket_path = socket_path
         self.recorder = recorder
@@ -1535,6 +1547,7 @@ class CaptureServer:
         self.scenario = scenario
         self.resources_dir = resources_dir
         self.run_dir = run_dir or socket_path.parent
+        self.manifests = manifests or {}
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._active = 0
@@ -1648,6 +1661,7 @@ class CaptureServer:
             scenario=self.scenario,
             run_dir=self.run_dir,
             resources_dir=self.resources_dir,
+            manifests=self.manifests,
         ).plan(request)
         arguments = request.get("arguments") if isinstance(request.get("arguments"), list) else []
         self.recorder.append(
@@ -1708,7 +1722,12 @@ class CaptureServer:
         subcommand = request.get("subcommand")
         environment = request.get("environment") if isinstance(request.get("environment"), dict) else {}
         hook = infer_hook_event(subcommand, [str(arg) for arg in args], stdin_payload if isinstance(stdin_payload, str) else None)
-        agent = agent_from_adapter(hook.adapter, environment, stdin_payload if isinstance(stdin_payload, str) else None)
+        agent = agent_from_adapter(
+            hook.adapter,
+            environment,
+            stdin_payload if isinstance(stdin_payload, str) else None,
+            manifests=self.manifests,
+        )
         if current_profile := self._current_profile_for_tool(agent):
             agent = current_profile.name
         extra = cursor_trace_extra(agent, stdin_payload if isinstance(stdin_payload, str) else None)
@@ -1738,11 +1757,13 @@ class LaunchPlanner:
         scenario: str,
         run_dir: pathlib.Path,
         resources_dir: pathlib.Path | None,
+        manifests: dict[str, dict[str, Any]] | None = None,
     ) -> None:
         self.profile = profile
         self.scenario = scenario
         self.run_dir = run_dir
         self.resources_dir = resources_dir
+        self.manifests = manifests
 
     def plan(self, request: dict[str, Any]) -> dict[str, Any]:
         environment = request.get("environment") if isinstance(request.get("environment"), dict) else {}
@@ -1759,8 +1780,100 @@ class LaunchPlanner:
                 env["ZENTTY_KIMI_VARIANT"] = self.profile.kimi_variant
             return self._launch_plan("/usr/bin/true", [], env)
         method_name = f"_plan_{self.profile.tool.replace('-', '_')}"
-        method = getattr(self, method_name, self._direct_plan)
-        return method(executable, arguments, environment, cli_path)
+        method = getattr(self, method_name, None)
+        if method is not None:
+            return method(executable, arguments, environment, cli_path)
+        manifest = self._manifest_for_tool(environment)
+        if manifest is not None:
+            return self._plan_manifest(manifest, executable, arguments, environment, cli_path)
+        return self._direct_plan(executable, arguments, environment, cli_path)
+
+    def _manifest_for_tool(self, environment: dict[str, Any]) -> dict[str, Any] | None:
+        manifests = self.manifests
+        if manifests is None:
+            manifests = load_agent_manifests(
+                self.resources_dir,
+                manifest_dirs_from_environment(environment),
+            )
+        return manifests.get(self.profile.tool)
+
+    def _plan_manifest(
+        self,
+        manifest: dict[str, Any],
+        executable: str,
+        arguments: list[str],
+        environment: dict[str, Any],
+        cli_path: str,
+    ) -> dict[str, Any]:
+        """Mirror AgentLaunchBootstrap's `.manifest` branch: the launch plan is
+        driven by the manifest's family rather than a hand-written per-tool
+        method."""
+        tool_id = str(manifest.get("id") or self.profile.tool)
+        display_name = str(manifest.get("displayName") or tool_id)
+        family = manifest.get("family")
+        if family == "opencode-plugin":
+            options = manifest.get("opencodePlugin")
+            options = options if isinstance(options, dict) else {}
+            return self._plan_opencode_family(
+                tool_id=tool_id,
+                display_name=display_name,
+                env_prefix=str(options.get("envPrefix") or tool_id.upper().replace("-", "_")),
+                config_dir_name=str(options.get("configDirName") or tool_id),
+                executable=executable,
+                arguments=arguments,
+                environment=environment,
+                cli_path=cli_path,
+            )
+        if family == "canonical":
+            return self._plan_canonical_manifest(
+                manifest,
+                tool_id,
+                display_name,
+                executable,
+                arguments,
+                environment,
+                cli_path,
+            )
+        return self._direct_plan(executable, arguments, environment, cli_path)
+
+    def _plan_canonical_manifest(
+        self,
+        manifest: dict[str, Any],
+        tool_id: str,
+        display_name: str,
+        executable: str,
+        arguments: list[str],
+        environment: dict[str, Any],
+        cli_path: str,
+    ) -> dict[str, Any]:
+        # Mirror canonicalManifestPlan: without a CLI binary there is nothing
+        # to expand {cliBin} against and no prelaunch event to send, so the
+        # plan degrades to a direct exec.
+        if not cli_path:
+            return self._direct_plan(executable, arguments, environment, cli_path)
+        canonical = manifest.get("canonical")
+        canonical = canonical if isinstance(canonical, dict) else {}
+        set_env = {
+            "ZENTTY_AGENT_TOOL": tool_id,
+            "ZENTTY_AGENT_CANONICAL_NAME": display_name,
+        }
+        env_overrides = canonical.get("env")
+        if isinstance(env_overrides, dict):
+            for key, value in env_overrides.items():
+                set_env[str(key)] = str(value).replace("{cliBin}", cli_path)
+        prepend = canonical.get("prependArguments")
+        planned = [str(arg).replace("{cliBin}", cli_path) for arg in (prepend if isinstance(prepend, list) else [])] + arguments
+        session_start = compact_json({
+            "version": 1,
+            "event": "session.start",
+            "agent": {"name": display_name, "pid": "__ZENTTY_SELF_PID__"},
+        })
+        return self._launch_plan(
+            executable,
+            planned,
+            set_env,
+            prelaunch=[{"subcommand": "agent-event", "arguments": [], "standardInput": session_start}],
+        )
 
     def _direct_plan(self, executable: str, arguments: list[str], environment: dict[str, Any], cli_path: str) -> dict[str, Any]:
         return self._launch_plan(executable, arguments, {"ZENTTY_AGENT_TOOL": self.profile.tool})
@@ -2126,8 +2239,37 @@ class LaunchPlanner:
         return probe_kimi_variant(executable) or "legacy"
 
     def _plan_opencode(self, executable: str, arguments: list[str], environment: dict[str, Any], cli_path: str) -> dict[str, Any]:
-        overlay = self._overlay_dir("opencode") / "config"
-        source_path = str(environment.get("OPENCODE_CONFIG_DIR") or "").strip()
+        return self._plan_opencode_family(
+            tool_id="opencode",
+            display_name="OpenCode",
+            env_prefix="OPENCODE",
+            config_dir_name="opencode",
+            executable=executable,
+            arguments=arguments,
+            environment=environment,
+            cli_path=cli_path,
+        )
+
+    def _plan_opencode_family(
+        self,
+        tool_id: str,
+        display_name: str,
+        env_prefix: str,
+        config_dir_name: str,
+        executable: str,
+        arguments: list[str],
+        environment: dict[str, Any],
+        cli_path: str,
+    ) -> dict[str, Any]:
+        """Shared plan for every `opencode-plugin` family manifest (opencode,
+        kilo, …). Mirrors AgentLaunchBootstrap.openCodeFamilyPlan: the overlay
+        dir is named by tool id, the shared zentty plugin is dropped into
+        `plugins/`, and the agent's `<PREFIX>_CONFIG_DIR` points at the
+        overlay. The approval scenario forces `permission.bash = "ask"` in the
+        overlay's `<configDirName>.json` so the run blocks on a real
+        permission prompt."""
+        overlay = self._overlay_dir(tool_id) / "config"
+        source_path = str(environment.get(f"{env_prefix}_CONFIG_DIR") or "").strip()
         source = pathlib.Path(source_path) if source_path else None
         if source:
             copy_directory_contents(source, overlay)
@@ -2136,22 +2278,27 @@ class LaunchPlanner:
             plugins = overlay / "plugins"
             plugins.mkdir(parents=True, exist_ok=True)
             shutil.copy2(plugin, plugins / plugin.name)
-        config_file = overlay / "opencode.json"
+        config_file = overlay / f"{config_dir_name}.json"
         if self.scenario == "approval":
             config = read_json_object(config_file)
             permission = config.get("permission") if isinstance(config.get("permission"), dict) else {}
             permission["bash"] = "ask"
             config["permission"] = permission
             write_json(config_file, config)
-        prelaunch = '{"version":1,"event":"session.start","agent":{"name":"OpenCode","pid":"__ZENTTY_SELF_PID__"}}'
+        prelaunch = compact_json({
+            "version": 1,
+            "event": "session.start",
+            "agent": {"name": display_name, "pid": "__ZENTTY_SELF_PID__"},
+        })
         return self._launch_plan(
             executable,
             arguments,
             {
-                "ZENTTY_AGENT_TOOL": "opencode",
-                "OPENCODE_CONFIG": str(config_file),
-                "OPENCODE_CONFIG_DIR": str(overlay),
-                "ZENTTY_OPENCODE_BASE_CONFIG_DIR": str(source or ""),
+                "ZENTTY_AGENT_TOOL": tool_id,
+                "ZENTTY_AGENT_CANONICAL_NAME": display_name,
+                f"{env_prefix}_CONFIG": str(config_file),
+                f"{env_prefix}_CONFIG_DIR": str(overlay),
+                f"ZENTTY_{env_prefix}_BASE_CONFIG_DIR": str(source or ""),
             },
             prelaunch=[{"subcommand": "agent-event", "arguments": [], "standardInput": prelaunch}],
         )
@@ -2511,7 +2658,12 @@ class LaunchPlanner:
         return home
 
 
-def agent_from_adapter(adapter: str | None, environment: dict[str, Any], standard_input: str | None = None) -> str | None:
+def agent_from_adapter(
+    adapter: str | None,
+    environment: dict[str, Any],
+    standard_input: str | None = None,
+    manifests: dict[str, dict[str, Any]] | None = None,
+) -> str | None:
     if adapter == "codex-notify":
         return "codex"
     if adapter in SUPPORTED_AGENTS:
@@ -2532,6 +2684,13 @@ def agent_from_adapter(adapter: str | None, environment: dict[str, Any], standar
             return "grok"
         if normalized in SUPPORTED_AGENTS:
             return normalized
+        # Manifest agents self-report their displayName in the payload; the
+        # fixed forwarded-environment whitelist does not carry
+        # ZENTTY_AGENT_TOOL, so the displayName is the only identity hint.
+        for manifest_id, manifest in (manifests or {}).items():
+            display = str(manifest.get("displayName") or "").strip().lower().replace(" ", "")
+            if display and display == normalized:
+                return manifest_id
     return adapter
 
 
@@ -2613,6 +2772,96 @@ def load_profiles(path: pathlib.Path) -> dict[str, AgentProfile]:
     return profiles
 
 
+def manifest_dirs_from_environment(environment: dict[str, Any]) -> list[pathlib.Path]:
+    raw = str(environment.get("ZENTTY_AGENT_MANIFEST_DIRS") or "").strip()
+    if not raw:
+        return []
+    return [pathlib.Path(entry) for entry in raw.split(os.pathsep) if entry.strip()]
+
+
+def load_agent_manifests(
+    resources_dir: pathlib.Path | None,
+    manifest_dirs: list[pathlib.Path] | tuple[pathlib.Path, ...] = (),
+) -> dict[str, dict[str, Any]]:
+    """Load agent manifests the way AgentManifestRegistry does: bundled
+    `<resources>/agents/*.json` first, then each `ZENTTY_AGENT_MANIFEST_DIRS`
+    entry — later sources win by id. Malformed files are skipped, mirroring
+    the Swift log-and-continue behaviour. The bench intentionally does not
+    read `~/.config/zentty/agents` so runs stay hermetic."""
+    manifests: dict[str, dict[str, Any]] = {}
+    roots: list[pathlib.Path] = []
+    if resources_dir:
+        roots.append(pathlib.Path(resources_dir) / "agents")
+    roots.extend(manifest_dirs)
+    for root in roots:
+        if not root.is_dir():
+            continue
+        for path in sorted(root.glob("*.json")):
+            try:
+                raw = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            manifest_id = raw.get("id") if isinstance(raw, dict) else None
+            if isinstance(manifest_id, str) and manifest_id:
+                manifests[manifest_id] = raw
+    return manifests
+
+
+def manifest_wrapper_script(tool_id: str, binaries: list[str], support_dir: str) -> str:
+    """Byte-for-byte mirror of the script written by
+    AgentManifestWrapperMaterializer.wrapperScript — a test pins the two
+    templates together."""
+    return (
+        "#!/usr/bin/env bash\n"
+        f'export ZENTTY_AGENT_TOOL="{tool_id}"\n'
+        f'export ZENTTY_AGENT_REAL_BINARIES="{":".join(str(binary) for binary in binaries)}"\n'
+        'export ZENTTY_AGENT_WRAPPER_DIR="$(cd "$(dirname "$0")" && pwd)"\n'
+        f'exec "${{ZENTTY_WRAPPER_SUPPORT_DIR:-{support_dir}}}/zentty-agent-wrapper" "$@"\n'
+    )
+
+
+def materialize_manifest_wrappers(
+    manifests: dict[str, dict[str, Any]],
+    root: pathlib.Path,
+    shared_wrapper_path: pathlib.Path,
+) -> dict[str, pathlib.Path]:
+    """Mirror AgentManifestWrapperMaterializer: one thin wrapper per manifest
+    binary under `<root>/<id>/<binary>`. The bench owns the run-dir root, so
+    wrappers live next to the captured traces instead of the app runtime dir."""
+    support_dir = str(shared_wrapper_path.parent)
+    directories: dict[str, pathlib.Path] = {}
+    for manifest in manifests.values():
+        tool_id = manifest.get("id")
+        binaries = manifest.get("binaries")
+        if not isinstance(tool_id, str) or not isinstance(binaries, list) or not binaries:
+            continue
+        directory = root / tool_id
+        directory.mkdir(parents=True, exist_ok=True)
+        for binary in binaries:
+            script_path = directory / str(binary)
+            script_path.write_text(
+                manifest_wrapper_script(tool_id, [str(binary) for binary in binaries], support_dir),
+                encoding="utf-8",
+            )
+            script_path.chmod(0o755)
+        directories[tool_id] = directory
+    return directories
+
+
+def missing_manifest_wrapper(wrapper_dir: pathlib.Path | None, profile: AgentProfile) -> str | None:
+    if wrapper_dir is None or not wrapper_dir.is_dir():
+        return f"no materialized wrapper directory for manifest agent {profile.tool}"
+    candidate_names = list(dict.fromkeys([profile.command] + profile.real_binary_names))
+    candidates = [wrapper_dir / name for name in candidate_names]
+    if not any(path.exists() for path in candidates):
+        names = ", ".join(path.name for path in candidates)
+        return f"materialized wrapper dir {wrapper_dir} is missing a wrapper executable: expected one of {names}"
+    if not any(os.access(path, os.X_OK) for path in candidates):
+        names = ", ".join(path.name for path in candidates)
+        return f"materialized wrapper dir {wrapper_dir} has non-executable wrapper: expected one of {names}"
+    return None
+
+
 class BenchRunner:
     def __init__(self, args: argparse.Namespace) -> None:
         self.args = args
@@ -2621,6 +2870,8 @@ class BenchRunner:
         self.run_dir.mkdir(parents=True, exist_ok=True)
         self.socket_dir = pathlib.Path(tempfile.mkdtemp(prefix="zab-", dir="/tmp"))
         self.recorder = TraceRecorder(self.run_dir)
+        self.manifests: dict[str, dict[str, Any]] = {}
+        self.manifest_wrapper_dirs: dict[str, pathlib.Path] = {}
 
     def run(self) -> int:
         try:
@@ -2641,6 +2892,7 @@ class BenchRunner:
                     scenario=scenario,
                     resources_dir=resources_dir,
                     run_dir=self.run_dir,
+                    manifests=self.manifests,
                 )
                 server.start()
                 try:
@@ -2751,7 +3003,11 @@ class BenchRunner:
             return self._run_synthetic_scenario(agent, scenario, env)
         if profile.expectations[scenario].resume_roundtrip:
             return self._run_resume_roundtrip_scenario(agent, scenario, env)
-        if missing := missing_agent_wrapper_resource(self._resolved_app_path, profile):
+        if profile.tool in self.manifests:
+            missing = missing_manifest_wrapper(self.manifest_wrapper_dirs.get(profile.tool), profile)
+        else:
+            missing = missing_agent_wrapper_resource(self._resolved_app_path, profile)
+        if missing:
             return self._finalize_result(
                 self._skip_or_fail(agent, scenario, missing, "missing-wrapper"),
                 [],
@@ -3153,7 +3409,9 @@ class BenchRunner:
             candidate = REPO_ROOT / "build" / "Debug" / "Zentty.app"
             if app_has_agent_bench_resources(candidate):
                 return candidate
-            derived_data_candidate = latest_derived_data_zentty_app()
+            # Prefer this repo's DerivedData app: the global latest-mtime
+            # fallback can pick a different worktree's (stale) build.
+            derived_data_candidate = repo_derived_data_app() or latest_derived_data_zentty_app()
             if derived_data_candidate is not None:
                 return derived_data_candidate
             if candidate.exists():
@@ -3178,9 +3436,39 @@ class BenchRunner:
         wrapper_dirs = [resources_dir / "bin" / agent for agent in SUPPORTED_AGENTS]
         wrapper_dirs = [path for path in wrapper_dirs if path.exists()]
         shared = resources_dir / "bin" / "shared"
+        # Manifest agents have no bundled wrapper; materialize the same thin
+        # scripts the app's AgentManifestWrapperMaterializer writes, under the
+        # run dir. Manifest sources mirror AgentManifestRegistry: bundled
+        # agents/ plus ZENTTY_AGENT_MANIFEST_DIRS (which the bench seeds with
+        # the in-repo fixtures so `zentty launch <manifest-id>` resolves).
+        manifest_dirs = manifest_dirs_from_environment(env)
+        fixture_agents = BENCH_ROOT / "fixtures" / "generic-canonical" / "agents"
+        if fixture_agents.is_dir():
+            manifest_dirs.append(fixture_agents)
+        if manifest_dirs:
+            env["ZENTTY_AGENT_MANIFEST_DIRS"] = os.pathsep.join(str(path) for path in manifest_dirs)
+        self.manifests = load_agent_manifests(resources_dir, manifest_dirs)
+        self.manifest_wrapper_dirs = materialize_manifest_wrappers(
+            self.manifests,
+            self.run_dir / "agent-wrappers",
+            shared / "zentty-agent-wrapper",
+        )
+        wrapper_dirs += [
+            self.manifest_wrapper_dirs[agent]
+            for agent in SUPPORTED_AGENTS
+            if agent in self.manifest_wrapper_dirs
+        ]
+        # Fixture binaries sit between the wrapper dirs and the inherited PATH:
+        # `which <binary>` resolves the wrapper while the launcher's real-binary
+        # lookup (which skips wrapper dirs) finds the fixture script.
+        fixture_bins = [BENCH_ROOT / "fixtures" / agent / "bin" for agent in SUPPORTED_AGENTS]
+        fixture_bins = [path for path in fixture_bins if path.is_dir()]
         inherited_path = filtered_inherited_path(env.get("PATH", ""))
-        env["PATH"] = os.pathsep.join([*(str(path) for path in wrapper_dirs), str(shared), inherited_path])
+        env["PATH"] = os.pathsep.join(
+            [*(str(path) for path in wrapper_dirs), str(shared), *(str(path) for path in fixture_bins), inherited_path]
+        )
         env["ZENTTY_CLI_BIN"] = str(shared / "zentty")
+        env["ZENTTY_WRAPPER_SUPPORT_DIR"] = str(shared)
         env["ZENTTY_ALL_WRAPPER_BIN_DIRS"] = os.pathsep.join(str(path) for path in wrapper_dirs)
         env["ZENTTY_WRAPPER_BIN_DIRS"] = env["ZENTTY_ALL_WRAPPER_BIN_DIRS"]
         env["ZENTTY_WINDOW_ID"] = "bench-window"
@@ -3528,6 +3816,27 @@ def missing_agent_wrapper_resource(app_path: pathlib.Path, profile: AgentProfile
         return f"app has non-executable {profile.tool} wrapper in {wrapper_dir}: expected one of {names}"
 
     return None
+
+
+def repo_derived_data_app() -> pathlib.Path | None:
+    """This repo's DerivedData Debug app, resolved without building."""
+    try:
+        settings = subprocess.run(
+            ["xcodebuild", "-project", "Zentty.xcodeproj", "-scheme", "Zentty", "-showBuildSettings"],
+            cwd=REPO_ROOT,
+            check=True,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        ).stdout
+    except (subprocess.CalledProcessError, OSError):
+        return None
+    values = parse_build_settings(settings)
+    products_dir = values.get("BUILT_PRODUCTS_DIR")
+    if not products_dir:
+        return None
+    candidate = pathlib.Path(products_dir) / values.get("FULL_PRODUCT_NAME", "Zentty.app")
+    return candidate if app_has_agent_bench_resources(candidate) else None
 
 
 def latest_derived_data_zentty_app(home: pathlib.Path | None = None) -> pathlib.Path | None:

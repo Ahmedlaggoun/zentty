@@ -1,0 +1,89 @@
+{
+  "name": "kilo",
+  "tool": "kilo",
+  "command": "kilo",
+  "real_binary_names": ["kilo"],
+  "version_args": ["--version"],
+  "launch_args_by_scenario": {
+    "smoke": [
+      "run",
+      "-m",
+      "xai/grok-4.6",
+      "Run this exact shell command: printf ZENTTY_AGENT_BENCH_OK"
+    ],
+    "session_capture": [
+      "run",
+      "-m",
+      "xai/grok-4.6",
+      "Run this exact shell command: printf ZENTTY_AGENT_BENCH_OK"
+    ],
+    "approval": [
+      "run",
+      "-m",
+      "xai/grok-4.6",
+      "Run this exact shell command: printf ZENTTY_AGENT_BENCH_APPROVAL_OK"
+    ],
+    "manual_compact": [
+      "-m",
+      "xai/grok-4.6"
+    ],
+    "restore_launch": [
+      "--session",
+      "ses_ZenttyBenchRestore"
+    ]
+  },
+  "expectations": {
+    "smoke": {
+      "required_events": ["session.start", "agent.running", "agent.idle"]
+    },
+    "session_capture": {
+      "required_events": ["session.start", "agent.running", "agent.idle"],
+      "session_identity": {
+        "session_id_pattern": "regex:^ses_[A-Za-z0-9]+$",
+        "tracked_pid": true
+      }
+    },
+    "approval": {
+      "required_events": ["session.start", "agent.needs-input"]
+    },
+    "manual_compact": {
+      "required_events": ["session.start", "agent.compacting"]
+    },
+    "restore_launch": {
+      "required_events": [],
+      "required_bootstrap_arguments": [["--session", "ses_ZenttyBenchRestore"]]
+    }
+  },
+  "input_by_scenario": {
+    "approval": [
+      {
+        "after": 10,
+        "text": "y\n"
+      },
+      {
+        "after": 45,
+        "text": "\u0003"
+      }
+    ],
+    "manual_compact": [
+      {
+        "after": 10,
+        "text": "\u001b"
+      },
+      {
+        "after": 13,
+        "text": "say the word ok\r"
+      },
+      {
+        "after": 45,
+        "text": "/compact\r"
+      },
+      {
+        "after": 48,
+        "text": "\r",
+        "label": "manual-compact"
+      }
+    ]
+  },
+  "skip_patterns": ["login", "auth", "not authenticated", "api key", "sign in", "provider"]
+}

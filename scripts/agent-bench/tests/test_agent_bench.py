@@ -2354,8 +2354,10 @@ class ProfileTests(unittest.TestCase):
                 "devin",
                 "droid",
                 "gemini",
+                "generic-canonical",
                 "grok",
                 "hermes",
+                "kilo",
                 "kimi",
                 "kimi-code",
                 "omp",
@@ -3913,6 +3915,265 @@ class LaunchPlannerTests(unittest.TestCase):
 
         self.assertEqual(result.status, "skip")
         self.assertEqual(result.detail, "auth or provider prerequisite not available")
+
+
+class ManifestAgentTests(unittest.TestCase):
+    def _kilo_manifest(self) -> dict:
+        return json.loads(
+            (agent_bench.REPO_ROOT / "ZenttyResources" / "agents" / "kilo.json").read_text(encoding="utf-8")
+        )
+
+    def _generic_canonical_manifest(self) -> dict:
+        return json.loads(
+            (ROOT / "fixtures" / "generic-canonical" / "agents" / "generic-canonical.json").read_text(encoding="utf-8")
+        )
+
+    def _profile(self, name: str, tool: str, command: str) -> agent_bench.AgentProfile:
+        return agent_bench.AgentProfile(
+            name=name,
+            tool=tool,
+            command=command,
+            real_binary_names=[command],
+            version_args=["--version"],
+            launch_args_by_scenario={},
+            expectations={},
+        )
+
+    def test_manifest_wrapper_script_matches_swift_template(self):
+        swift = (agent_bench.REPO_ROOT / "Zentty" / "AppState" / "Agent" / "AgentManifestWrapperMaterializer.swift").read_text(
+            encoding="utf-8"
+        )
+        marker = swift.index("wrapperScript")
+        start = swift.index('"""', marker) + 3
+        end = swift.index('"""', start)
+        lines = swift[start:end].split("\n")
+        # Swift strips the closing delimiter's indentation from every line.
+        closing_indent = lines[-1]
+        body = [line[len(closing_indent):] for line in lines[1:-1]]
+        template = "\n".join(body)
+
+        tool_id, binaries, support_dir = "kilo", ["kilo", "kilo-cli"], "/support/dir"
+        expected = (
+            template
+            .replace("\\(toolID)", tool_id)
+            .replace('\\(binaries.joined(separator: ":"))', ":".join(binaries))
+            .replace("\\(supportDirectory)", support_dir)
+        )
+        self.assertEqual(
+            agent_bench.manifest_wrapper_script(tool_id, binaries, support_dir),
+            expected,
+        )
+
+    def test_load_agent_manifests_later_dirs_override_bundled(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            resources = root / "resources"
+            (resources / "agents").mkdir(parents=True)
+            (resources / "agents" / "kilo.json").write_text(
+                json.dumps({"id": "kilo", "displayName": "Bundled Kilo"}), encoding="utf-8"
+            )
+            override = root / "override"
+            override.mkdir()
+            (override / "kilo.json").write_text(
+                json.dumps({"id": "kilo", "displayName": "Override Kilo"}), encoding="utf-8"
+            )
+            (override / "broken.json").write_text("not json{", encoding="utf-8")
+
+            manifests = agent_bench.load_agent_manifests(resources, [override])
+
+            self.assertEqual(sorted(manifests), ["kilo"])
+            self.assertEqual(manifests["kilo"]["displayName"], "Override Kilo")
+
+    def test_manifest_dirs_from_environment_splits_colon_list(self):
+        dirs = agent_bench.manifest_dirs_from_environment(
+            {"ZENTTY_AGENT_MANIFEST_DIRS": "/a/b:/c/d"}
+        )
+        self.assertEqual(dirs, [pathlib.Path("/a/b"), pathlib.Path("/c/d")])
+        self.assertEqual(agent_bench.manifest_dirs_from_environment({}), [])
+
+    def test_materialize_manifest_wrappers_writes_executable_per_binary(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp) / "agent-wrappers"
+            manifests = {
+                "kilo": {"id": "kilo", "binaries": ["kilo", "kilo-cli"]},
+            }
+            directories = agent_bench.materialize_manifest_wrappers(
+                manifests, root, pathlib.Path("/support/zentty-agent-wrapper")
+            )
+
+            self.assertEqual(directories, {"kilo": root / "kilo"})
+            for binary in ("kilo", "kilo-cli"):
+                script = root / "kilo" / binary
+                self.assertTrue(os.access(script, os.X_OK))
+                contents = script.read_text(encoding="utf-8")
+                self.assertIn('export ZENTTY_AGENT_TOOL="kilo"', contents)
+                self.assertIn('export ZENTTY_AGENT_REAL_BINARIES="kilo:kilo-cli"', contents)
+                self.assertIn("zentty-agent-wrapper", contents)
+
+    def test_missing_manifest_wrapper_reports_absent_and_present(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            profile = self._profile("kilo", "kilo", "kilo")
+
+            self.assertIsNotNone(agent_bench.missing_manifest_wrapper(None, profile))
+            self.assertIsNotNone(
+                agent_bench.missing_manifest_wrapper(root / "nope", profile)
+            )
+
+            wrapper_dir = root / "kilo"
+            wrapper_dir.mkdir()
+            self.assertIsNotNone(
+                agent_bench.missing_manifest_wrapper(wrapper_dir, profile)
+            )
+
+            script = wrapper_dir / "kilo"
+            script.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+            script.chmod(0o755)
+            self.assertIsNone(agent_bench.missing_manifest_wrapper(wrapper_dir, profile))
+
+    def test_agent_from_adapter_maps_manifest_display_name(self):
+        manifests = {
+            "kilo": {"id": "kilo", "displayName": "Kilo Code"},
+            "generic-canonical": {"id": "generic-canonical", "displayName": "Bench Canonical Agent"},
+        }
+        agent = agent_bench.agent_from_adapter(
+            adapter=None,
+            environment={},
+            standard_input='{"version":1,"event":"agent.running","agent":{"name":"Kilo Code"}}',
+            manifests=manifests,
+        )
+        self.assertEqual(agent, "kilo")
+
+        agent = agent_bench.agent_from_adapter(
+            adapter=None,
+            environment={},
+            standard_input='{"version":1,"event":"agent.running","agent":{"name":"Bench Canonical Agent"}}',
+            manifests=manifests,
+        )
+        self.assertEqual(agent, "generic-canonical")
+
+    def test_plan_manifest_opencode_family_mirrors_kilo_overlay(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            resources = root / "resources"
+            plugin = resources / "opencode" / "plugins" / "zentty-opencode-zentty.js"
+            plugin.parent.mkdir(parents=True)
+            plugin.write_text("// plugin\n", encoding="utf-8")
+
+            source = root / "source-config"
+            source.mkdir()
+
+            plan = agent_bench.LaunchPlanner(
+                profile=self._profile("kilo", "kilo", "kilo"),
+                scenario="smoke",
+                run_dir=root / "run",
+                resources_dir=resources,
+                manifests={"kilo": self._kilo_manifest()},
+            ).plan(
+                {
+                    "arguments": ["run", "hi"],
+                    "environment": {
+                        "ZENTTY_REAL_BINARY": "/usr/local/bin/kilo",
+                        "ZENTTY_CLI_BIN": "/tmp/zentty",
+                        "KILO_CONFIG_DIR": str(source),
+                    },
+                }
+            )
+
+            set_env = plan["setEnvironment"]
+            overlay = pathlib.Path(set_env["KILO_CONFIG_DIR"])
+            self.assertEqual(overlay, root / "run" / "overlays" / "smoke" / "kilo" / "config")
+            self.assertTrue((overlay / "plugins" / "zentty-opencode-zentty.js").exists())
+            self.assertEqual(set_env["KILO_CONFIG"], str(overlay / "kilo.json"))
+            self.assertEqual(set_env["ZENTTY_KILO_BASE_CONFIG_DIR"], str(source))
+            self.assertEqual(set_env["ZENTTY_AGENT_TOOL"], "kilo")
+            self.assertEqual(set_env["ZENTTY_AGENT_CANONICAL_NAME"], "Kilo Code")
+            session_start = json.loads(plan["preLaunchActions"][0]["standardInput"])
+            self.assertEqual(session_start["event"], "session.start")
+            self.assertEqual(session_start["agent"]["name"], "Kilo Code")
+
+    def test_plan_manifest_opencode_family_approval_writes_kilo_permission(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            resources = root / "resources"
+            plugin = resources / "opencode" / "plugins" / "zentty-opencode-zentty.js"
+            plugin.parent.mkdir(parents=True)
+            plugin.write_text("// plugin\n", encoding="utf-8")
+
+            source = root / "source-config"
+            source.mkdir()
+            (source / "kilo.json").write_text('{"autoupdate":true}\n', encoding="utf-8")
+
+            plan = agent_bench.LaunchPlanner(
+                profile=self._profile("kilo", "kilo", "kilo"),
+                scenario="approval",
+                run_dir=root / "run",
+                resources_dir=resources,
+                manifests={"kilo": self._kilo_manifest()},
+            ).plan(
+                {
+                    "arguments": [],
+                    "environment": {
+                        "ZENTTY_CLI_BIN": "/tmp/zentty",
+                        "KILO_CONFIG_DIR": str(source),
+                    },
+                }
+            )
+
+            overlay = pathlib.Path(plan["setEnvironment"]["KILO_CONFIG_DIR"])
+            merged = json.loads((overlay / "kilo.json").read_text(encoding="utf-8"))
+            self.assertTrue(merged["autoupdate"])
+            self.assertEqual(merged["permission"]["bash"], "ask")
+
+    def test_plan_manifest_canonical_expands_clibin_and_prelaunches(self):
+        plan = agent_bench.LaunchPlanner(
+            profile=self._profile("generic-canonical", "generic-canonical", "zentty-bench-agent"),
+            scenario="smoke",
+            run_dir=pathlib.Path(tempfile.mkdtemp()),
+            resources_dir=None,
+            manifests={"generic-canonical": self._generic_canonical_manifest()},
+        ).plan(
+            {
+                "arguments": ["printf", "hi"],
+                "environment": {"ZENTTY_CLI_BIN": "/app/bin/zentty"},
+            }
+        )
+
+        self.assertEqual(plan["arguments"], ["printf", "hi"])
+        self.assertEqual(plan["setEnvironment"]["ZENTTY_AGENT_TOOL"], "generic-canonical")
+        self.assertEqual(
+            plan["setEnvironment"]["ZENTTY_AGENT_CANONICAL_NAME"], "Bench Canonical Agent"
+        )
+        self.assertEqual(
+            plan["setEnvironment"]["BENCH_AGENT_EVENT_COMMAND"],
+            "/app/bin/zentty ipc agent-event",
+        )
+        session_start = json.loads(plan["preLaunchActions"][0]["standardInput"])
+        self.assertEqual(session_start["agent"]["name"], "Bench Canonical Agent")
+
+    def test_plan_manifest_canonical_without_cli_bin_degrades_to_direct(self):
+        plan = agent_bench.LaunchPlanner(
+            profile=self._profile("generic-canonical", "generic-canonical", "zentty-bench-agent"),
+            scenario="smoke",
+            run_dir=pathlib.Path(tempfile.mkdtemp()),
+            resources_dir=None,
+            manifests={"generic-canonical": self._generic_canonical_manifest()},
+        ).plan({"arguments": ["--version"], "environment": {}})
+
+        self.assertEqual(plan["arguments"], ["--version"])
+        self.assertEqual(plan["preLaunchActions"], [])
+        self.assertNotIn("BENCH_AGENT_EVENT_COMMAND", plan["setEnvironment"])
+
+    def test_unknown_tool_without_manifest_falls_back_to_direct_plan(self):
+        plan = agent_bench.LaunchPlanner(
+            profile=self._profile("mystery", "mystery", "mystery"),
+            scenario="smoke",
+            run_dir=pathlib.Path(tempfile.mkdtemp()),
+            resources_dir=None,
+            manifests={},
+        ).plan({"arguments": [], "environment": {"ZENTTY_CLI_BIN": "/x"}})
+
+        self.assertEqual(plan["setEnvironment"], {"ZENTTY_AGENT_TOOL": "mystery"})
 
 
 if __name__ == "__main__":
