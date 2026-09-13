@@ -29,6 +29,7 @@
 		080A2341A895C8E1BA3C4619 /* CleanCopyCommandFlattening.swift in Sources */ = {isa = PBXBuildFile; fileRef = D648F5647DDBBA44752103D5 /* CleanCopyCommandFlattening.swift */; };
 		0889B047795F8D959B7EC555 /* SidebarRowDiff.swift in Sources */ = {isa = PBXBuildFile; fileRef = 11072AE049C3591BEAFABAE0 /* SidebarRowDiff.swift */; };
 		08FB378A1223B113182A0BC6 /* LibghosttySelectionAutoscrollControllerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EA5DD7A1968777DF9C77029D /* LibghosttySelectionAutoscrollControllerTests.swift */; };
+		09BBB6282EAB0E872C79E634 /* DevinConfigWriteBackTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3AE6984D371CA1B889B8C475 /* DevinConfigWriteBackTests.swift */; };
 		0A837AADC493258185309302 /* AppUpdateController.swift in Sources */ = {isa = PBXBuildFile; fileRef = BA9DF527B186CAC92FE63473 /* AppUpdateController.swift */; };
 		0AA879EAFB09310C3F6B58C3 /* CleanCopyChromeDecoration.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3AF87E2D9E12F740E799D710 /* CleanCopyChromeDecoration.swift */; };
 		0AAC15DA2853AA84E4CCF668 /* WorklaneStoreReorderingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 599A5796CE02C9D0701F88B7 /* WorklaneStoreReorderingTests.swift */; };
@@ -452,6 +453,7 @@
 		B4C1005AD0D618DCB0A4C13D /* MoveToWorklaneMenuBuilderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 88AFF05A04C7107BED6423F8 /* MoveToWorklaneMenuBuilderTests.swift */; };
 		B78B6869AC1BB4C5B6AA60E4 /* RemoteFileUploadRequest.swift in Sources */ = {isa = PBXBuildFile; fileRef = D7B504722337DBCB03722FD8 /* RemoteFileUploadRequest.swift */; };
 		B7EDD5E8FF2844DE47EF5D21 /* WorklanePeekKeyMonitorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A3F1AF8D07B9B05151774B4F /* WorklanePeekKeyMonitorTests.swift */; };
+		B890BDFC9B4E95300EFC5DC3 /* DevinConfigWriteBack.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1D52E538B9FCEBF92768A1EA /* DevinConfigWriteBack.swift */; };
 		B891884A0BB67B8A6BEE5C36 /* ServerWatchRunner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 60B3AD9AA8F799603B573B28 /* ServerWatchRunner.swift */; };
 		BA240C8DF46842A5C6FCD616 /* WorkspaceRecipeMigrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0780927F63098801F0B6B9D5 /* WorkspaceRecipeMigrationTests.swift */; };
 		BA2E11FD5E7F4E71D7BF48D9 /* AppActionRouter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 609771315B7DE1068E588518 /* AppActionRouter.swift */; };
@@ -588,6 +590,7 @@
 		EA10CB44073C9B4AA793AB67 /* PiFamilyLaunchPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = EA24EE3B2294AADC4A0C3E82 /* PiFamilyLaunchPolicy.swift */; };
 		EA6847AAD0A938767899B578 /* VendoredGhosttyResourcesTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 82E1E9FF5B98D7124B6E65AC /* VendoredGhosttyResourcesTests.swift */; };
 		EAC39845FAE3EF9784F2F17C /* DroidTaskStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1BCA77C435DCC7E4F338789C /* DroidTaskStore.swift */; };
+		EB4319E7CED8C518997CFE63 /* DevinConfigWriteBack.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1D52E538B9FCEBF92768A1EA /* DevinConfigWriteBack.swift */; };
 		EBA82B93B865F768A59C3FB5 /* CommandPaletteItemBuilderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BC1927429EEB90A74961D30D /* CommandPaletteItemBuilderTests.swift */; };
 		EBAB412B1DBC55EC0D896F9F /* SettingsSidebarTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4B6F06FD570B9740CE7008CB /* SettingsSidebarTests.swift */; };
 		EC0DFEE3FDB6728B8FB6E6B6 /* SidebarDropHitTesting.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E587274DB966B186941A95A /* SidebarDropHitTesting.swift */; };
@@ -747,6 +750,7 @@
 		1B5FBD6A49E1AC7F9DB7BB3C /* LicensesWindowController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LicensesWindowController.swift; sourceTree = "<group>"; };
 		1BCA77C435DCC7E4F338789C /* DroidTaskStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DroidTaskStore.swift; sourceTree = "<group>"; };
 		1CF5DDE2F06EB5CBE4C2E0B9 /* WorklaneState+Testing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "WorklaneState+Testing.swift"; sourceTree = "<group>"; };
+		1D52E538B9FCEBF92768A1EA /* DevinConfigWriteBack.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DevinConfigWriteBack.swift; sourceTree = "<group>"; };
 		1D603FA3B4BCDFE0AC7C4342 /* SidebarBookmarkRowAction.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidebarBookmarkRowAction.swift; sourceTree = "<group>"; };
 		1ED8CC8942CC80500B98FD3D /* ProcessInspectionUnixSocketTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProcessInspectionUnixSocketTests.swift; sourceTree = "<group>"; };
 		1F7B9D0B9226983C2481488D /* DevinEventAdapterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DevinEventAdapterTests.swift; sourceTree = "<group>"; };
@@ -803,6 +807,7 @@
 		37FEDC5ACCE392A113BBE81E /* BookmarkRestoreBannerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BookmarkRestoreBannerView.swift; sourceTree = "<group>"; };
 		38818AED458478BCB3C95168 /* WorklaneHeaderSummaryBuilderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorklaneHeaderSummaryBuilderTests.swift; sourceTree = "<group>"; };
 		38C15EEBB2B6060FDC3C8A05 /* AgentIPCDiscoveryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentIPCDiscoveryTests.swift; sourceTree = "<group>"; };
+		3AE6984D371CA1B889B8C475 /* DevinConfigWriteBackTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DevinConfigWriteBackTests.swift; sourceTree = "<group>"; };
 		3AF87E2D9E12F740E799D710 /* CleanCopyChromeDecoration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CleanCopyChromeDecoration.swift; sourceTree = "<group>"; };
 		3B1B5C7232C6BA07C385B052 /* AgentIntegrationGrandfatherTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentIntegrationGrandfatherTests.swift; sourceTree = "<group>"; };
 		3B2B4CFEFDD5D5985609F1BA /* WorklaneAttentionSummaryBuilderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorklaneAttentionSummaryBuilderTests.swift; sourceTree = "<group>"; };
@@ -1707,6 +1712,7 @@
 				C344F4EE24498B605D2794B3 /* ClaudeHookSessionStore.swift */,
 				9108D5844FE620ED92B7B5BC /* CodexTranscriptQuestionExtractor.swift */,
 				D40A07AF51FBC28C9CC07ABA /* CursorHooksInstaller.swift */,
+				1D52E538B9FCEBF92768A1EA /* DevinConfigWriteBack.swift */,
 				8E60EACABB7717596CA70DEE /* DiscoveryIPCHandler.swift */,
 				6E98A96BAD466E5847C42948 /* DroidHooksInstaller.swift */,
 				1BCA77C435DCC7E4F338789C /* DroidTaskStore.swift */,
@@ -2157,6 +2163,7 @@
 				1B012FD12A48B0C31EE3634C /* CommandPaletteBackdropTests.swift */,
 				E6D7092CD7460BABDBD68C6E /* CommandPaletteTaskRunnerTests.swift */,
 				3DB6DE0A6A550780FF124F3D /* CommandPaletteWorklaneColorTests.swift */,
+				3AE6984D371CA1B889B8C475 /* DevinConfigWriteBackTests.swift */,
 				1F7B9D0B9226983C2481488D /* DevinEventAdapterTests.swift */,
 				359071C23827A5E0F2CD2B92 /* DockerServerDiscoveryTests.swift */,
 				A23FA3A9E846FAAD01B1BB06 /* DragReorderHapticClassifierTests.swift */,
@@ -2610,6 +2617,7 @@
 				71A0F88C4E10E1934E39BBEE /* CommandPaletteBackdropTests.swift in Sources */,
 				173791FED7615617FAF34B05 /* CommandPaletteTaskRunnerTests.swift in Sources */,
 				E65DC3627B94384EE63626ED /* CommandPaletteWorklaneColorTests.swift in Sources */,
+				09BBB6282EAB0E872C79E634 /* DevinConfigWriteBackTests.swift in Sources */,
 				8ADEEF68A08B51BFD3AD2CA9 /* DevinEventAdapterTests.swift in Sources */,
 				A9C59E3E7F7283D0FE87F832 /* DockerServerDiscoveryTests.swift in Sources */,
 				966CD805A3D009565385A8EC /* DragReorderHapticClassifierTests.swift in Sources */,
@@ -2881,6 +2889,7 @@
 				AFADFD3908694274D96F8574 /* CursorEventAdapter.swift in Sources */,
 				C6FC32D748BD8642629B7321 /* CursorHooksInstaller.swift in Sources */,
 				45B7388F3F1F61033D67BF41 /* DetectedServer.swift in Sources */,
+				EB4319E7CED8C518997CFE63 /* DevinConfigWriteBack.swift in Sources */,
 				885360CBF357D8C8F7885E24 /* DevinEventAdapter.swift in Sources */,
 				63889DD70BDB3D367FE16B16 /* DiscoveryIPCHandler.swift in Sources */,
 				865BA7699998731277DEB055 /* DockerServerDiscovery.swift in Sources */,
@@ -3213,6 +3222,7 @@
 				C8AC887AB1E462D59D6619FF /* AgyHooksInstaller.swift in Sources */,
 				F8250CEECD7700EA54A9687B /* AmpPluginInstaller.swift in Sources */,
 				BF98C820ECF82C8A5810259F /* CursorHooksInstaller.swift in Sources */,
+				B890BDFC9B4E95300EFC5DC3 /* DevinConfigWriteBack.swift in Sources */,
 				DB99D15DBBA9E04854EE979F /* DroidHooksInstaller.swift in Sources */,
 				2835550C9EC2274B56BB12EC /* GrokCanonicalReEmitter.swift in Sources */,
 				D1609E62F241375A9A62A4CB /* GrokHooksInstaller.swift in Sources */,

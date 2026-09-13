@@ -2002,7 +2002,11 @@ class LaunchPlanner:
         """Mirror of AgentLaunchBootstrap.devinPlan: `--config` replaces the
         user config, so the overlay is the user's real
         ~/.config/devin/config.json merged with the Zentty hook groups. A
-        user-supplied --config is consumed and becomes the merge source."""
+        user-supplied --config is consumed and becomes the merge source. A
+        byte-identical config.launch.json snapshot is written beside the
+        overlay and the overlay/source paths are exported so hook events can
+        sync in-session settings changes back to the source
+        (DevinConfigWriteBack)."""
         command = f'"{shell_escape_double_quoted(cli_path)}" ipc agent-event --adapter=devin'
         hook_specs = (
             ("SessionStart", 10), ("SessionEnd", 1), ("UserPromptSubmit", 10),
@@ -2038,7 +2042,18 @@ class LaunchPlanner:
 
         overlay = self._overlay_dir("devin") / "config.json"
         write_json(overlay, config)
-        return self._launch_plan(executable, ["--config", str(overlay), *forwarded], {"ZENTTY_AGENT_TOOL": "devin"})
+        # Launch snapshot for the write-back diff — byte-identical to the
+        # overlay, mirroring DevinConfigWriteBack.snapshotFileName.
+        (overlay.parent / "config.launch.json").write_bytes(overlay.read_bytes())
+        return self._launch_plan(
+            executable,
+            ["--config", str(overlay), *forwarded],
+            {
+                "ZENTTY_AGENT_TOOL": "devin",
+                "ZENTTY_DEVIN_CONFIG_OVERLAY": str(overlay),
+                "ZENTTY_DEVIN_CONFIG_SOURCE": str(source),
+            },
+        )
 
     def _plan_droid(self, executable: str, arguments: list[str], environment: dict[str, Any], cli_path: str) -> dict[str, Any]:
         home = self._overlay_home("droid", environment, {".factory": {"settings.local.json", "hooks"}})
