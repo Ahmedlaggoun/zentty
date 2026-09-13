@@ -355,7 +355,7 @@ Wrapped `devin` launches use a per-launch overlay config under Zentty's runtime 
 
 Two consequences worth knowing:
 
-- Devin writes in-session settings changes (permission grants, `/config` edits) back to whatever `--config` path it was given — our disposable overlay. Those changes are lost on next launch; make durable changes in `~/.config/devin/config.json` or project `.devin/config.local.json` instead.
+- Devin writes in-session settings changes (permission grants, `/config` edits) back to whatever `--config` path it was given — our disposable overlay. To keep them, Zentty writes a `config.launch.json` snapshot beside the overlay at launch, and after each Devin hook event the CLI diffs the overlay against that snapshot and merges the changed settings (everything except `hooks`) into the real config — `~/.config/devin/config.json` or the user's `--config` file. The real file is re-serialised as plain JSON, so JSONC comments in it are dropped the first time a setting is written back.
 - A user-supplied `devin --config <path>` is consumed by the bootstrap and becomes the overlay's merge source, so the user's choice is preserved.
 
 Devin management subcommands (`auth`, `mcp`, `models`, `doctor`, `rules`, `skills`, `plugins`, `cloud`, `list`, `update`, …) and early-exit flags (`--help`, `--version`) bypass Zentty bootstrap so the real `devin` binary handles them unchanged. `-p`/`--print` is intentionally **not** skipped — Devin fires hooks in print mode, so one-shot runs get pane status too. Set `ZENTTY_DEVIN_HOOKS_DISABLED=1` to bypass the overlay entirely.

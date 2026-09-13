@@ -57,6 +57,7 @@ targets:
       - path: Zentty/AppState/Agent/AgentIPCProtocol.swift
       - path: Zentty/AppState/Agent/AmpPluginInstaller.swift
       - path: Zentty/AppState/Agent/CursorHooksInstaller.swift
+      - path: Zentty/AppState/Agent/DevinConfigWriteBack.swift
       - path: Zentty/AppState/Agent/DroidHooksInstaller.swift
       - path: Zentty/AppState/Agent/GrokHooksInstaller.swift
       - path: Zentty/AppState/Agent/GrokCanonicalReEmitter.swift

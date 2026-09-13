@@ -2904,6 +2904,20 @@ final class AgentStatusSupportTests: XCTestCase {
             .compactMap { $0["command"] as? String }
         XCTAssertTrue(sessionStartCommands.contains("echo existing"))
         XCTAssertTrue(sessionStartCommands.contains { $0.contains("ipc agent-event --adapter=devin") })
+
+        // Write-back contract: hook events get the overlay and real config
+        // paths plus a byte-identical launch snapshot to diff against.
+        XCTAssertEqual(
+            plan.setEnvironment[DevinConfigWriteBack.overlayEnvironmentKey],
+            overlayConfigURL.path
+        )
+        XCTAssertEqual(
+            plan.setEnvironment[DevinConfigWriteBack.sourceEnvironmentKey],
+            devinConfigDir.appendingPathComponent("config.json", isDirectory: false).path
+        )
+        let snapshotURL = overlayConfigURL.deletingLastPathComponent()
+            .appendingPathComponent(DevinConfigWriteBack.snapshotFileName, isDirectory: false)
+        XCTAssertEqual(try Data(contentsOf: snapshotURL), overlayData)
     }
 
     func test_agent_launch_bootstrap_builds_devin_overlay_from_explicit_config_argument() throws {
