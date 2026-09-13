@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+# Kiro CLI's shell pre-block (`kiro-cli init <shell> pre`, installed by
+# `kiro-cli integrations install`) execs the pane shell into kiro-cli-term
+# (figterm), which then spawns a fresh inner shell. That inner shell never sees
+# Zentty's ZDOTDIR/PROMPT_COMMAND/XDG_DATA_DIRS, so our shell integration would
+# not load (dedene/zentty#95). Kiro honours a pre-set Q_TERM_PATH, so Zentty
+# points it at this wrapper: re-arm the integration env, then exec the real
+# figterm.
+
+set -euo pipefail
+
+if [[ -n "${ZENTTY_SHELL_INTEGRATION_DIR:-}" ]]; then
+    integration_dir="$ZENTTY_SHELL_INTEGRATION_DIR"
+
+    if [[ -n "${ZDOTDIR:-}" && "$ZDOTDIR" != "$integration_dir" ]]; then
+        export ZENTTY_ORIGINAL_ZDOTDIR="$ZDOTDIR"
+    elif [[ -z "${ZDOTDIR:-}" ]]; then
+        unset ZENTTY_ORIGINAL_ZDOTDIR
+    fi
+    export ZDOTDIR="$integration_dir"
+
+    integration_bash="$integration_dir/zentty-bash-integration.bash"
+    if [[ "${PROMPT_COMMAND:-}" != *zentty-bash-integration.bash* ]]; then
+        if [[ -n "${PROMPT_COMMAND:-}" && "$PROMPT_COMMAND" != *_zentty_* ]]; then
+            export ZENTTY_BASH_ORIGINAL_PROMPT_COMMAND="$PROMPT_COMMAND"
+        fi
+        export PROMPT_COMMAND=". \"$integration_bash\""
+    fi
+
+    if [[ -n "${ZENTTY_SHELL_INTEGRATION_XDG_DIR:-}" ]]; then
+        xdg_dir="$ZENTTY_SHELL_INTEGRATION_XDG_DIR"
+        xdg_result="$xdg_dir"
+        IFS=':' read -ra xdg_entries <<< "${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
+        for xdg_entry in "${xdg_entries[@]}"; do
+            if [[ -n "$xdg_entry" && "$xdg_entry" != "$xdg_dir" ]]; then
+                xdg_result+=":$xdg_entry"
+            fi
+        done
+        export XDG_DATA_DIRS="$xdg_result"
+    fi
+fi
+
+real_figterm=""
+if [[ -n "${ZENTTY_ORIGINAL_Q_TERM_PATH:-}" && -x "$ZENTTY_ORIGINAL_Q_TERM_PATH" ]]; then
+    real_figterm="$ZENTTY_ORIGINAL_Q_TERM_PATH"
+elif [[ -x "$HOME/.local/bin/kiro-cli-term" ]]; then
+    real_figterm="$HOME/.local/bin/kiro-cli-term"
+elif command -v kiro-cli-term >/dev/null 2>&1; then
+    real_figterm="$(command -v kiro-cli-term)"
+elif [[ -x "/Applications/Kiro CLI.app/Contents/MacOS/kiro-cli-term" ]]; then
+    real_figterm="/Applications/Kiro CLI.app/Contents/MacOS/kiro-cli-term"
+fi
+
+shell_name="$(basename "${Q_SHELL:-${SHELL:-zsh}}")"
+if [[ -n "$real_figterm" ]]; then
+    exec -a "${shell_name} (kiro-cli-term)" "$real_figterm" "$@"
+fi
+
+fallback_shell="${Q_SHELL:-${SHELL:-/bin/sh}}"
+echo "zentty-kiro-term: kiro-cli-term not found; starting ${fallback_shell} without Kiro" >&2
+# Q_TERM stops Kiro's pre block in the fallback shell's rc from exec'ing us again.
+export Q_TERM="${Q_TERM:-zentty-kiro-cli-term-missing}"
+if [[ "${Q_IS_LOGIN_SHELL:-}" == "1" ]]; then
+    exec "$fallback_shell" -l
+fi
+exec "$fallback_shell"

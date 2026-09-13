@@ -28,6 +28,7 @@ enum WorklaneSessionEnvironment {
         "GHOSTTY_LOG",
         "COLORTERM",
         "XDG_DATA_DIRS",
+        "Q_TERM_PATH",
     ]
 
     static func make(
@@ -115,6 +116,17 @@ enum WorklaneSessionEnvironment {
             environment["XDG_DATA_DIRS"] = ([xdgDir] + xdgEntries).joined(separator: ":")
             if let orig = processEnvironment["XDG_DATA_DIRS"], !orig.isEmpty {
                 environment["ZENTTY_ORIGINAL_XDG_DATA_DIRS"] = orig
+            }
+
+            if let kiroTermWrapper = AgentStatusHelper.kiroTermWrapperPath() {
+                // Kiro CLI's shell pre-block execs the pane shell into kiro-cli-term, which then
+                // spawns a fresh shell. It honours a pre-set Q_TERM_PATH, so route it through our
+                // wrapper, which re-exports ZDOTDIR/PROMPT_COMMAND/XDG_DATA_DIRS before exec'ing the
+                // real figterm (dedene/zentty#95).
+                if let existing = TerminalColorEnvironment.nonBlank(processEnvironment["Q_TERM_PATH"]), existing != kiroTermWrapper {
+                    environment["ZENTTY_ORIGINAL_Q_TERM_PATH"] = existing
+                }
+                environment["Q_TERM_PATH"] = kiroTermWrapper
             }
         }
 

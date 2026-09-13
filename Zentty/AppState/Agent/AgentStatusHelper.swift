@@ -160,6 +160,17 @@ enum AgentStatusHelper {
         }
     }
 
+    static func kiroTermWrapperPath(in bundle: Bundle = .main) -> String? {
+        guard let supportDirectory = wrapperSupportDirectoryPath(in: bundle) else {
+            return nil
+        }
+
+        let wrapperPath = URL(fileURLWithPath: supportDirectory, isDirectory: true)
+            .appendingPathComponent("zentty-kiro-term", isDirectory: false)
+            .path
+        return FileManager.default.isExecutableFile(atPath: wrapperPath) ? wrapperPath : nil
+    }
+
     static func shellIntegrationDirectoryPath(in bundle: Bundle = .main) -> String? {
         for candidateBundle in candidateBundles(for: bundle) {
             if let path = validatedDirectoryPath(
