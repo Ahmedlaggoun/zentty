@@ -410,6 +410,34 @@ class SyntheticScenarioTests(unittest.TestCase):
             self.assertEqual(extra["subagent"]["nickname"], "Dirac")
             self.assertIsNone(agent_bench.subagent_trace_extra("codex", "pre-tool-use", "{}"))
 
+    def test_subagent_trace_extra_devin_sidekick_tool(self):
+        pre = json.dumps(
+            {
+                "hook_event_name": "PreToolUse",
+                "tool_name": "sidekick",
+                "tool_use_id": "toolu_01",
+                "tool_input": {"message": "list files"},
+            }
+        )
+        extra = agent_bench.subagent_trace_extra("devin", "PreToolUse", pre)
+        self.assertEqual(extra["subagent"]["event"], "start")
+        self.assertEqual(extra["subagent"]["agent_type"], "sidekick")
+        self.assertEqual(extra["subagent"]["nickname"], "Sidekick")
+        self.assertEqual(extra["subagent"]["agent_id"], "toolu_01")
+
+        post = json.dumps(
+            {
+                "hook_event_name": "PostToolUse",
+                "tool_name": "sidekick",
+                "tool_use_id": "toolu_01",
+                "tool_input": {"message": "list files", "block": False},
+                "tool_response": {"output": "Sidekick handoff started (agent_id=sidekick)."},
+            }
+        )
+        extra = agent_bench.subagent_trace_extra("devin", "PostToolUse", post)
+        self.assertEqual(extra["subagent"]["event"], "stop")
+        self.assertEqual(extra["subagent"]["run_agent_id"], "sidekick")
+
     def test_subagent_payload_validation_explains_what_is_missing(self):
         self.assertEqual(agent_bench.missing_subagent_payload_detail([]), "no SubagentStart hook payload was captured")
         self.assertEqual(
@@ -919,6 +947,34 @@ class ExpectationTests(unittest.TestCase):
 
         self.assertEqual(session_capture.session_identity.session_id_pattern, "codex")
         self.assertTrue(session_capture.session_identity.tracked_pid)
+
+    def test_validation_required_event_accepts_alternatives(self):
+        scenario = agent_bench.ScenarioExpectation(
+            name="subagents",
+            required_events=["PreToolUse:run_subagent|PreToolUse:sidekick", "SessionEnd"],
+        )
+        observed = [
+            agent_bench.TraceRecord(
+                kind="hook",
+                agent="devin",
+                scenario="subagents",
+                event_name="PreToolUse",
+                standard_input='{"tool_name":"sidekick"}',
+            ),
+            agent_bench.TraceRecord(kind="hook", agent="devin", scenario="subagents", event_name="SessionEnd"),
+        ]
+
+        # Only the second alternative was observed — the requirement passes.
+        self.assertTrue(agent_bench.validate_scenario("devin", scenario, observed).passed)
+
+        # Neither alternative observed — the missing list keeps the full a|b form.
+        result = agent_bench.validate_scenario("devin", scenario, observed[1:])
+        self.assertFalse(result.passed)
+        self.assertEqual(result.missing_events, ["PreToolUse:run_subagent|PreToolUse:sidekick"])
+
+        # A plain event without "|" is unaffected.
+        plain = agent_bench.ScenarioExpectation(name="subagents", required_events=["SessionEnd"])
+        self.assertTrue(agent_bench.validate_scenario("devin", plain, observed).passed)
 
     def test_validation_reports_missing_required_bootstrap_arguments(self):
         scenario = agent_bench.ScenarioExpectation(
@@ -2368,6 +2424,14 @@ class ProfileTests(unittest.TestCase):
         self.assertEqual(sorted(agent_bench.SUPPORTED_AGENTS), sorted(profiles))
         for profile in profiles.values():
             self.assertIn("smoke", profile.expectations)
+
+    def test_devin_subagent_scenarios_accept_run_subagent_or_sidekick(self):
+        profile = agent_bench.load_profiles(ROOT / "profiles")["devin"]
+
+        for scenario in ("subagents", "subagents_async"):
+            events = profile.expectations[scenario].required_events
+            self.assertIn("PreToolUse:run_subagent|PreToolUse:sidekick", events, scenario)
+            self.assertIn("PostToolUse:run_subagent|PostToolUse:sidekick", events, scenario)
 
     def test_amp_profile_covers_session_capture_and_restore_launch(self):
         profile = agent_bench.load_profiles(ROOT / "profiles")["amp"]
