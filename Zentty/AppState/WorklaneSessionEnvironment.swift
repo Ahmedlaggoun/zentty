@@ -60,16 +60,24 @@ enum WorklaneSessionEnvironment {
             environment[AgentStatusTransport.instanceIDEnvironmentKey] = connectionInfo.instanceID
         }
 
-        if let wrapperDirectories = AgentStatusHelper.wrapperDirectoryPaths() {
-            environment["ZENTTY_ALL_WRAPPER_BIN_DIRS"] = wrapperDirectories.joined(separator: ":")
+        var allWrapperDirectories = AgentStatusHelper.wrapperDirectoryPaths() ?? []
+        allWrapperDirectories += AgentManifestWrapperMaterializer.materializedDirectories
+        if !allWrapperDirectories.isEmpty {
+            environment["ZENTTY_ALL_WRAPPER_BIN_DIRS"] = allWrapperDirectories.joined(separator: ":")
         }
 
         if let supportDirectory = AgentStatusHelper.wrapperSupportDirectoryPath(in: .main) {
+            environment["ZENTTY_WRAPPER_SUPPORT_DIR"] = supportDirectory
             let currentPath = processEnvironment["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin"
             let pathEntries = currentPath.split(separator: ":").map(String.init)
             environment["PATH"] = pathEntries.contains(supportDirectory)
                 ? currentPath
                 : ([supportDirectory] + pathEntries).joined(separator: ":")
+        }
+
+        let manifestTable = AgentManifestRegistry.provider().shellTable
+        if !manifestTable.isEmpty {
+            environment["ZENTTY_AGENT_MANIFEST_TABLE"] = manifestTable
         }
 
         environment["COLORTERM"] = TerminalColorEnvironment.colorTerm(inheritedFrom: processEnvironment)

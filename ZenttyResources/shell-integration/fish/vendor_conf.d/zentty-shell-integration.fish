@@ -44,8 +44,45 @@ function _zentty_print_tty
     end
 end
 
+# ZENTTY_AGENT_MANIFEST_TABLE carries manifest agents as
+# "id=Display Name=bin1,bin2;id2=...". $argv[1] is a command basename; when it
+# equals a manifest id or one of its binaries, $argv[2] selects what to print:
+# "name" -> the display name, "bins" -> one binary per line.
+function _zentty_manifest_field_for_command
+    set -l cmd $argv[1]
+    set -l field $argv[2]
+    if not set -q ZENTTY_AGENT_MANIFEST_TABLE; or test -z "$ZENTTY_AGENT_MANIFEST_TABLE"
+        return 1
+    end
+    for entry in (string split ';' -- $ZENTTY_AGENT_MANIFEST_TABLE)
+        set -l parts (string split '=' -- $entry)
+        set -l id ""
+        set -l name ""
+        set -l bins ""
+        if test (count $parts) -ge 1; set id $parts[1]; end
+        if test (count $parts) -ge 2; set name $parts[2]; end
+        if test (count $parts) -ge 3; set bins $parts[3]; end
+        if test -z "$id"; or test -z "$name"
+            continue
+        end
+        if test "$cmd" = "$id"; or contains -- $cmd (string split ',' -- $bins)
+            switch $field
+                case name
+                    echo $name
+                case bins
+                    string split ',' -- $bins
+            end
+            return 0
+        end
+    end
+    return 1
+end
+
 function _zentty_wrapper_binary_candidates
     set -l tool_name $argv[1]
+    if _zentty_manifest_field_for_command $tool_name bins
+        return 0
+    end
     switch $tool_name
         case cursor
             echo cursor-agent
@@ -173,6 +210,11 @@ end
 
 function _zentty_agent_tool_for_command
     set -l cmd (basename $argv[1])
+    set -l manifest_name (_zentty_manifest_field_for_command $cmd name)
+    if test -n "$manifest_name"
+        echo $manifest_name
+        return 0
+    end
     switch $cmd
         case amp; echo Amp
         case claude; echo "Claude Code"

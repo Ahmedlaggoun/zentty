@@ -145,7 +145,7 @@ enum AgentStatusHelper {
 
         return wrapperDirectories.filter { wrapperDirectory in
             let toolName = URL(fileURLWithPath: wrapperDirectory, isDirectory: true).lastPathComponent
-            let candidateBinaryNames = AgentBootstrapTool(rawValue: toolName)?.realBinaryNames ?? [toolName]
+            let candidateBinaryNames = AgentBootstrapTool(id: toolName)?.realBinaryNames ?? [toolName]
             return pathEntries.contains { entry in
                 guard !excludedDirectories.contains(entry) else {
                     return false

@@ -986,7 +986,7 @@ enum AppConfigTOML {
         _ assignment: (key: String, value: String),
         into config: inout AppConfig
     ) -> Bool {
-        // key = agent id (`AgentBootstrapTool.rawValue`); value = quoted state.
+        // key = agent id (`AgentBootstrapTool.id`); value = quoted state.
         guard let raw = decodeString(assignment.value) else { return false }
         // Unknown/future state values are skipped (not stored) so an older app
         // reading a newer config never discards the whole file; recognized

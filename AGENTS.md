@@ -68,6 +68,21 @@ Re-run after:
 - any change to `AgentLaunchBootstrap.devinPlan` or `DevinEventAdapter`,
 - any change to `scripts/agent-bench/profiles/devin.json`.
 
+For the kilo integration, the gate is `scripts/test-kilo-bench`. It runs `smoke,session_capture,approval,restore_launch,manual_compact` through the manifest-driven opencode-plugin path.
+
+Re-run after:
+- any kilo CLI version bump,
+- any change to the shared opencode-family plan (`openCodeFamilyPlan`) or the shared plugin `zentty-opencode-zentty.js`,
+- any change to `ZenttyResources/agents/kilo.json` or `scripts/agent-bench/profiles/kilo.json`.
+
+For the generic manifest seam, the gate is `scripts/test-generic-agent-bench`. It runs `smoke,session_capture,approval,restore_launch` against the `generic-canonical` fixture agent — a bash script that emits canonical events with no model auth required.
+
+Re-run after:
+- any change to `AgentManifest*`, `AgentManifestRegistry`, or `AgentManifestWrapperMaterializer`,
+- any change to `canonicalManifestPlan`,
+- any change to the shared `zentty-agent-wrapper` script,
+- any change to shell-integration manifest lookup (`ZENTTY_AGENT_MANIFEST_TABLE`).
+
 Profile-level Python tests (`scripts/agent-bench/tests/test_agent_bench.py`) run via `python3 -m unittest discover scripts/agent-bench/tests` and catch bad profile shapes before the harness is even invoked.
 
 ## Error Handling

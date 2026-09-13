@@ -409,6 +409,17 @@ Zentty injects a local OpenCode plugin overlay via the shared agent wrapper. The
 
 `todo.updated` is normalized inside the plugin into `taskProgressDoneCount` / `taskProgressTotalCount`. The Swift bridge treats those as the authoritative OpenCode task counts and uses them only for the main session's running label.
 
+## Kilo Code
+
+Kilo (Kilo Code CLI, an OpenCode fork) is a bundled manifest agent of family `opencode-plugin`. Zentty injects the same `zentty-opencode-zentty.js` plugin through a per-launch overlay pointed to by `KILO_CONFIG_DIR` — mirroring the OpenCode overlay with the `KILO` env prefix (`KILO_CONFIG`, `KILO_CONFIG_DIR`, `KILO_TUI_CONFIG`, `ZENTTY_KILO_BASE_CONFIG_DIR`).
+
+- `KILO_CONFIG_DIR` is additive in Kilo: the user's `~/.config/kilo` still merges underneath the overlay, and auth/state stay in `~/.local/share/kilo`.
+- Theme sync shares the **Sync OpenCode Theme** setting; when enabled, Zentty redirects `XDG_CONFIG_HOME` / `XDG_STATE_HOME` / `KILO_TUI_CONFIG` at the overlay roots and writes `tui.json` + `themes/` there.
+- Management subcommands and early-exit flags passthrough unchanged (`kilo auth`, `kilo --version`, …). `kilo run` is intentionally wrapped.
+- Set `ZENTTY_KILO_HOOKS_DISABLED=1` to bypass the plugin overlay.
+- Resume uses `kilo --session <sessionId>`; session ids match `^ses_[A-Za-z0-9]+$`.
+- The sidebar icon is the bundled `AgentIconKilo` template asset.
+
 ## Hermes Agent
 
 Wrapped `hermes` launches get persistent status hooks in the active Hermes home (`$HERMES_HOME` or `~/.hermes`). Zentty writes a managed block to `config.yaml` and matching approvals to `shell-hooks-allowlist.json`; foreign hooks and settings are preserved.
@@ -483,3 +494,97 @@ Earlier Zentty versions wrote to several places that Grok does not actually read
 See the [Agent Status Protocol](agent-status-protocol.md) for the canonical events Zentty expects.
 
 Feedback via `/feedback` inside Grok is welcome.
+
+## Custom agents (manifests)
+
+Zentty supports declarative agent manifests: a JSON file that describes how to wrap an agent CLI without touching Zentty's source. Manifests are loaded from, in order (later sources override earlier ones by `id`):
+
+1. The bundled `ZenttyResources/agents/*.json` directory (`kilo.json` ships there).
+2. Each directory in `ZENTTY_AGENT_MANIFEST_DIRS` (colon-separated, in order).
+3. `~/.config/zentty/agents/*.json`.
+
+Malformed manifests are logged and skipped. At launch, Zentty materializes a thin wrapper per manifest under its runtime directory (`agent-wrappers/<id>/<binary>`) and puts those directories on `PATH`, so typing the binary name inside a pane resolves through Zentty's bootstrap.
+
+### Schema
+
+```jsonc
+{
+  "schemaVersion": 1,                // required, must be 1
+  "id": "my-agent",                  // ^[a-z0-9][a-z0-9-]*$; must not collide with a builtin agent id
+  "displayName": "My Agent",         // unique across manifests and builtin display names; no ';', '=', ','
+  "binaries": ["my-agent"],          // non-empty; no ';', '=', ','; these names get wrapper shims
+  "family": "canonical",             // "canonical" or "opencode-plugin"
+  "canonical": {                     // optional, canonical family only
+    "env": {"MY_AGENT_EVENT_COMMAND": "{cliBin} ipc agent-event"},
+    "prependArguments": []
+  },
+  "opencodePlugin": {                // required when family is "opencode-plugin"
+    "envPrefix": "MYAGENT",          // produces MYAGENT_CONFIG_DIR, MYAGENT_TUI_CONFIG, ZENTTY_MYAGENT_BASE_CONFIG_DIR
+    "configDirName": "my-agent",     // ~/.config/my-agent, xdg-config-home/my-agent, xdg-state-home/my-agent
+    "siblingBinary": ".my-agent"     // optional; launcher-side sibling binary like .opencode/.kilo
+  },
+  "passthrough": {                   // optional; bypasses the bootstrap
+    "subcommands": ["auth", "help"],
+    "flags": ["-h", "--help", "--version"]
+  },
+  "resume": {                        // optional; enables session restore
+    "command": "my-agent --resume {sessionId}",
+    "sessionIdPattern": "^ses_[A-Za-z0-9]+$"
+  },
+  "icon": "AgentIconMyAgent"         // optional; asset-catalog image name for the menu-bar icon
+}
+```
+
+`{sessionId}` and `{workingDirectory}` are the only template variables in `resume.command`; when `sessionIdPattern` is set, captured ids are validated against it before substitution (a non-matching id makes the restore ineligible rather than building a bad command). `id` must not equal a builtin agent id; `displayName` must not equal a builtin display name or another manifest's. Both rules are enforced at load time — a violating manifest is skipped.
+
+### `opencode-plugin` family
+
+For OpenCode forks that share the plugin/config-dir layout (OpenCode, Kilo, …). Zentty builds a per-launch overlay containing a copy of the source config plus `plugins/zentty-opencode-zentty.js`, then sets `<ENVPREFIX>_CONFIG_DIR` at it. The plugin emits canonical events via `zentty ipc agent-event`. The bundled Kilo manifest (passthrough list abridged) is an example:
+
+```json
+{
+  "schemaVersion": 1,
+  "id": "kilo",
+  "displayName": "Kilo Code",
+  "binaries": ["kilo"],
+  "family": "opencode-plugin",
+  "icon": "AgentIconKilo",
+  "opencodePlugin": {
+    "envPrefix": "KILO",
+    "configDirName": "kilo",
+    "siblingBinary": ".kilo"
+  },
+  "passthrough": {
+    "subcommands": ["auth", "session", "help"],
+    "flags": ["-h", "--help", "-v", "--version"]
+  },
+  "resume": {
+    "command": "kilo --session {sessionId}",
+    "sessionIdPattern": "^ses_[A-Za-z0-9]+$"
+  }
+}
+```
+
+### `canonical` family
+
+For agents that can emit the [Agent Status Protocol](agent-status-protocol.md) themselves. Zentty sets `ZENTTY_AGENT_TOOL`, `ZENTTY_AGENT_CANONICAL_NAME`, and the manifest's `canonical.env` (with `{cliBin}` expanded to `ZENTTY_CLI_BIN`), prepends `canonical.prependArguments`, and emits a `session.start` event before exec. The agent's hooks are expected to call `$ZENTTY_AGENT_EVENT_COMMAND` (or an env var it points at) per the protocol doc. Example:
+
+```json
+{
+  "schemaVersion": 1,
+  "id": "my-agent",
+  "displayName": "My Agent",
+  "binaries": ["my-agent"],
+  "family": "canonical",
+  "canonical": {
+    "env": { "MY_AGENT_EVENT_COMMAND": "{cliBin} ipc agent-event" }
+  },
+  "passthrough": { "flags": ["--version", "--help"] },
+  "resume": {
+    "command": "my-agent --resume {sessionId}",
+    "sessionIdPattern": "^agent_[a-z0-9]+$"
+  }
+}
+```
+
+If `ZENTTY_CLI_BIN` is not in the launch environment, the canonical plan degrades to a direct launch (no env expansion, no prelaunch `session.start`).

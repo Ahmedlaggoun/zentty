@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "id": "kilo",
+  "displayName": "Kilo Code",
+  "binaries": ["kilo"],
+  "family": "opencode-plugin",
+  "icon": "AgentIconKilo",
+  "opencodePlugin": {
+    "envPrefix": "KILO",
+    "configDirName": "kilo",
+    "siblingBinary": ".kilo"
+  },
+  "passthrough": {
+    "subcommands": [
+      "completion", "acp", "mcp", "attach", "debug", "auth",
+      "providers", "agent", "upgrade", "uninstall", "serve",
+      "models", "stats", "export", "import", "github", "pr",
+      "session", "plugin", "plug", "db", "console", "cloud",
+      "roll-call", "profile", "remote", "daemon", "config",
+      "worktree", "help"
+    ],
+    "flags": ["-h", "--help", "-v", "--version"]
+  },
+  "resume": {
+    "command": "kilo --session {sessionId}",
+    "sessionIdPattern": "^ses_[A-Za-z0-9]+$"
+  }
+}

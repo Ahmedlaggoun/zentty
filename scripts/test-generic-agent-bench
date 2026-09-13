@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+#
+# test-generic-agent-bench — regression gate for manifest-driven agents.
+#
+# Builds Zentty in Debug (or reuses a derived build, see --no-build) and runs
+# the agent-bench harness against the generic-canonical fixture: a bash agent
+# under scripts/agent-bench/fixtures/generic-canonical that speaks the Agent
+# Status Protocol through the manifest's canonical.env {cliBin} expansion.
+# Needs no model auth — the fixture is deterministic.
+#
+# Re-run this after:
+#   * changes to AgentManifest* / canonicalManifestPlan / the shared wrapper
+#   * changes to shell-integration manifest lookup
+#   * changes to scripts/agent-bench/fixtures/generic-canonical/**
+#   * changes to scripts/agent-bench/profiles/generic-canonical.json
+#
+# Usage:
+#   scripts/test-generic-agent-bench                 # full sweep, builds first
+#   scripts/test-generic-agent-bench --no-build      # skip xcodebuild, reuse last build
+#   scripts/test-generic-agent-bench --scenarios smoke,session_capture
+#
+
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+NO_BUILD=0
+SCENARIOS="smoke,session_capture,approval,restore_launch"
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --no-build) NO_BUILD=1; shift ;;
+    --scenarios) SCENARIOS="$2"; shift 2 ;;
+    --scenarios=*) SCENARIOS="${1#--scenarios=}"; shift ;;
+    -h|--help)
+      sed -n '2,22p' "$0"
+      exit 0
+      ;;
+    *)
+      echo "Unknown argument: $1" >&2
+      exit 2
+      ;;
+  esac
+done
+
+BENCH_ARGS=(run --agents generic-canonical --scenarios "$SCENARIOS" --strict)
+if [[ $NO_BUILD -eq 1 ]]; then
+  BENCH_ARGS+=(--no-build)
+fi
+
+echo "==> Running agent-bench against scenarios: $SCENARIOS"
+python3 scripts/agent-bench/agent_bench.py "${BENCH_ARGS[@]}"

@@ -8,6 +8,8 @@ The Agent Status Protocol defines how coding agents (Claude Code, GitHub Copilot
 
 The protocol is transport-agnostic from the agent's perspective: send a JSON event to the bundled `zentty` CLI on stdin. Zentty handles the rest.
 
+For wiring a custom agent's binary into `PATH` shadowing, launch environment, and session-resume support without code changes, see [Custom agents (manifests)](agent-hooks.md#custom-agents-manifests) in `agent-hooks.md`.
+
 ## 2. Concepts
 
 **Pane.** A single terminal session inside Zentty. Each pane runs one shell process and can host one or more agent sessions.

@@ -8,11 +8,19 @@ final class AgentIntegrationConsentTests: XCTestCase {
     func test_persistent_and_ephemeral_lists_cover_every_tool() {
         let grouped = Set(AgentIntegrationConsent.allTools)
         XCTAssertEqual(
-            grouped,
-            Set(AgentBootstrapTool.allCases),
-            "allTools must cover every AgentBootstrapTool — add new agents to the persistent/ephemeral lists"
+            grouped.subtracting(AgentBootstrapTool.builtinCases),
+            Set(AgentManifestRegistry.provider().manifests.map { .manifest($0.id) }),
+            "manifest agents must be appended to allTools"
         )
-        XCTAssertEqual(AgentIntegrationConsent.allTools.count, AgentBootstrapTool.allCases.count)
+        XCTAssertTrue(
+            Set(AgentBootstrapTool.builtinCases).isSubset(of: grouped),
+            "allTools must cover every builtin AgentBootstrapTool — add new agents to the persistent/ephemeral lists"
+        )
+        XCTAssertEqual(
+            AgentIntegrationConsent.allTools.count,
+            AgentBootstrapTool.builtinCases.count
+                + AgentManifestRegistry.provider().manifests.count
+        )
         XCTAssertTrue(
             Set(AgentIntegrationConsent.persistentTools)
                 .isDisjoint(with: AgentIntegrationConsent.ephemeralTools),

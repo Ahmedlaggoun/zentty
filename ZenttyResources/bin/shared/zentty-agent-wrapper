@@ -49,7 +49,16 @@ should_passthrough_to_real_binary() {
 
 # Tools whose wrapper directory name differs from the real CLI binary name.
 # cursor's CLI ships as `cursor-agent` (`cursor` itself is the IDE launcher).
+# Manifest-agent wrappers export ZENTTY_AGENT_REAL_BINARIES (colon-separated).
 real_binary_candidates() {
+    if [[ -n "${ZENTTY_AGENT_REAL_BINARIES:-}" ]]; then
+        local IFS=:
+        local candidate
+        for candidate in $ZENTTY_AGENT_REAL_BINARIES; do
+            printf '%s\n' "$candidate"
+        done
+        return 0
+    fi
     case "$tool_basename" in
         cursor) printf '%s\n' cursor-agent ;;
         kimi)   printf '%s\n' kimi kimi-cli ;;
@@ -67,6 +76,7 @@ find_real_binary() {
         [[ "$path_entry" == "$self_dir" ]] && continue
         [[ "$path_entry" == "$wrapper_root" ]] && continue
         [[ "$path_entry" == "${wrapper_root}/${tool_basename}" ]] && continue
+        [[ -n "${ZENTTY_AGENT_WRAPPER_DIR:-}" && "$path_entry" == "$ZENTTY_AGENT_WRAPPER_DIR" ]] && continue
         while IFS= read -r candidate; do
             [[ -x "$path_entry/$candidate" ]] || continue
             printf '%s\n' "$path_entry/$candidate"

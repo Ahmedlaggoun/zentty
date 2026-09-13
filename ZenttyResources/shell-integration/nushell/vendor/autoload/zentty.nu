@@ -42,7 +42,29 @@ def _zentty_print_tty [sequence: string] {
     }
 }
 
+# ZENTTY_AGENT_MANIFEST_TABLE carries manifest agents as
+# "id=Display Name=bin1,bin2;id2=...". Returns the matching entry's
+# {name, bins} when the command basename equals a manifest id or one of its
+# binaries, else null.
+def _zentty_manifest_entry [cmd: string] {
+    let table = ($env | get -o ZENTTY_AGENT_MANIFEST_TABLE | default '')
+    if $table == '' { return null }
+    for entry in ($table | split row ';') {
+        let parts = ($entry | split row '=')
+        let id = ($parts | get -o 0 | default '')
+        let name = ($parts | get -o 1 | default '')
+        let bins = (($parts | get -o 2 | default '') | split row ',')
+        if $id == '' or $name == '' { continue }
+        if $cmd == $id or ($bins | any { |b| $b == $cmd }) {
+            return { name: $name, bins: $bins }
+        }
+    }
+    null
+}
+
 def _zentty_wrapper_binary_candidates [tool_name: string] {
+    let entry = (_zentty_manifest_entry $tool_name)
+    if $entry != null { return $entry.bins }
     match $tool_name {
         "cursor" => ["cursor-agent"],
         "kimi" => ["kimi", "kimi-cli"],
@@ -86,6 +108,8 @@ def --env _zentty_report_shell_activity [state: string, ...rest: string] {
 
 def _zentty_agent_tool_for_command [cmd: string] {
     let c = ($cmd | path basename)
+    let entry = (_zentty_manifest_entry $c)
+    if $entry != null { return $entry.name }
     match $c {
         "amp" => "Amp",
         "claude" => "Claude Code",

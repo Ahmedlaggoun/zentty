@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "id": "generic-canonical",
+  "displayName": "Bench Canonical Agent",
+  "binaries": ["zentty-bench-agent"],
+  "family": "canonical",
+  "canonical": {
+    "env": {
+      "BENCH_AGENT_EVENT_COMMAND": "{cliBin} ipc agent-event"
+    }
+  },
+  "resume": {
+    "command": "zentty-bench-agent --resume {sessionId}",
+    "sessionIdPattern": "^bench_[a-z0-9]+$"
+  }
+}

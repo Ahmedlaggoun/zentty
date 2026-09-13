@@ -1217,7 +1217,7 @@ final class AgentsSettingsSectionViewController: SettingsScrollableSectionViewCo
                 try performUninstall(tool)
             } catch {
                 settingsLogger.error(
-                    "Failed to uninstall \(tool.rawValue, privacy: .public) hooks: \(error.localizedDescription, privacy: .public)")
+                    "Failed to uninstall \(tool.id, privacy: .public) hooks: \(error.localizedDescription, privacy: .public)")
                 uninstallFailurePresenter(view.window, tool, error)
             }
             setIntegrationState(tool, .off)
@@ -1227,11 +1227,11 @@ final class AgentsSettingsSectionViewController: SettingsScrollableSectionViewCo
     private func setIntegrationState(_ tool: AgentBootstrapTool, _ state: AgentIntegrationState) {
         do {
             try configStore.update { config in
-                config.agentIntegrations.states[tool.rawValue] = state
+                config.agentIntegrations.states[tool.id] = state
             }
         } catch {
             settingsLogger.error(
-                "Failed to persist \(tool.rawValue, privacy: .public) integration state: \(error.localizedDescription, privacy: .public)")
+                "Failed to persist \(tool.id, privacy: .public) integration state: \(error.localizedDescription, privacy: .public)")
         }
         refreshIntegrationControls()
     }

@@ -3,6 +3,7 @@ const paneID = process.env.ZENTTY_PANE_ID
 const socketPath = process.env.ZENTTY_INSTANCE_SOCKET
 const paneToken = process.env.ZENTTY_PANE_TOKEN
 const resolvedCliBin = process.env.ZENTTY_CLI_BIN || Bun.which("zentty") || ""
+const agentName = process.env.ZENTTY_AGENT_CANONICAL_NAME || "OpenCode"
 
 const hasZenttyIntegration = Boolean(resolvedCliBin && socketPath && paneToken && worklaneID && paneID)
 const sessionWorkingDirectories = new Map()
@@ -154,7 +155,7 @@ function resolveWorkingDirectory(sessionID, cwd, fallbackDirectory) {
 }
 
 function canonicalBase(sessionID, cwd) {
-  const base = { version: 1, agent: { name: "OpenCode" } }
+  const base = { version: 1, agent: { name: agentName } }
   if (sessionID) base.session = { id: sessionID }
   if (cwd) base.context = { workingDirectory: cwd }
   return base
@@ -354,7 +355,7 @@ function toCanonicalEvent(envelope) {
         ...base,
         event: "agent.needs-input",
         state: {
-          interaction: { kind: "approval", text: firstString(envelope.title) || "OpenCode needs your approval" },
+          interaction: { kind: "approval", text: firstString(envelope.title) || `${agentName} needs your approval` },
         },
         progress,
       }
@@ -366,7 +367,7 @@ function toCanonicalEvent(envelope) {
         ...base,
         event: "agent.needs-input",
         state: {
-          interaction: { kind: q?.kind ?? "question", text: q?.text || "OpenCode is asking a question" },
+          interaction: { kind: q?.kind ?? "question", text: q?.text || `${agentName} is asking a question` },
         },
         progress,
       }

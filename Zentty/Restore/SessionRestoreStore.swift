@@ -571,7 +571,20 @@ enum SessionRestoreDraftExporter {
             return .sessionID
         case .gemini, .pi, .omp, .grok, .agy, .smallHarness:
             return .workingDirectory
-        case .zentty, .custom:
+        case .custom(let name):
+            guard let resume = AgentManifestRegistry.provider()
+                .manifest(displayName: name)?.resume
+            else {
+                return .unsupported
+            }
+            if resume.command.contains("{sessionId}") {
+                return .sessionID
+            }
+            if resume.command.contains("{workingDirectory}") {
+                return .workingDirectory
+            }
+            return .unsupported
+        case .zentty:
             return .unsupported
         }
     }
@@ -829,9 +842,78 @@ enum AgentResumeCommandBuilder {
                 return nil
             }
             return "devin --resume \(sessionID)"
+        case .custom(let name):
+            guard let resume = AgentManifestRegistry.provider()
+                .manifest(displayName: name)?.resume
+            else {
+                return nil
+            }
+            return manifestResumeCommand(resume: resume, draft: draft)
         default:
             return nil
         }
+    }
+
+    /// Build a resume command from a manifest's `resume.command` template.
+    /// `{sessionId}` requires a session id matching `sessionIdPattern` (when
+    /// present); `{workingDirectory}` requires the draft's working directory.
+    private static func manifestResumeCommand(
+        resume: AgentManifest.Resume,
+        draft: PaneRestoreDraft
+    ) -> String? {
+        var command = resume.command
+        if command.contains("{sessionId}") {
+            guard let sessionID = validatedManifestSessionID(
+                draft.sessionID,
+                pattern: resume.sessionIdPattern
+            ) else {
+                logRejectedSessionID(for: draft)
+                return nil
+            }
+            // shellQuotedArgument leaves pattern-validated ids (e.g. ses_abc)
+            // untouched but still protects against a manifest whose
+            // sessionIdPattern admits shell-unsafe characters.
+            command = command.replacingOccurrences(
+                of: "{sessionId}",
+                with: shellQuotedArgument(sessionID)
+            )
+        }
+        if command.contains("{workingDirectory}") {
+            guard let workingDirectory = draft.workingDirectory?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+                !workingDirectory.isEmpty
+            else {
+                logRejectedWorkingDirectory(for: draft)
+                return nil
+            }
+            command = command.replacingOccurrences(
+                of: "{workingDirectory}",
+                with: shellQuotedArgument(workingDirectory)
+            )
+        }
+        return command
+    }
+
+    private static func validatedManifestSessionID(
+        _ sessionID: String,
+        pattern: String?
+    ) -> String? {
+        let trimmed = sessionID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return nil
+        }
+        guard let pattern else {
+            return trimmed
+        }
+        guard let regex = try? NSRegularExpression(pattern: "^(?:\(pattern))$"),
+              regex.firstMatch(
+                  in: trimmed,
+                  range: NSRange(trimmed.startIndex..., in: trimmed)
+              ) != nil
+        else {
+            return nil
+        }
+        return trimmed
     }
 
     private static func validatedClaudeSessionID(from sessionID: String) -> String? {

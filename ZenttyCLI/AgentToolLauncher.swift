@@ -54,7 +54,7 @@ struct AgentToolLauncher {
             let resolved: AgentIPCResponse
             if response.result?.consentRequired == true {
                 FileHandle.standardError.write(Data(
-                    "[Zentty] Waiting for permission to enable \(tool.rawValue) status — respond in the dialog in Zentty…\n".utf8
+                    "[Zentty] Waiting for permission to enable \(tool.id) status — respond in the dialog in Zentty…\n".utf8
                 ))
                 trace("consent required; re-issuing awaitConsent with long timeout")
                 let consentRequest = AgentIPCRequest(
@@ -235,6 +235,20 @@ struct AgentToolLauncher {
             }
             if let flag = arguments.first(where: { Self.smallHarnessEarlyExitFlags.contains(Self.optionName($0)) }) {
                 return "small-harness early-exit flag: \(flag)"
+            }
+            return nil
+        case .manifest(let id):
+            let disabledKey = "ZENTTY_\(id.uppercased().replacingOccurrences(of: "-", with: "_"))_HOOKS_DISABLED"
+            if environment[disabledKey] == "1" {
+                return "\(disabledKey)=1"
+            }
+            if let passthrough = tool.manifest?.passthrough {
+                if let subcommand = arguments.first, passthrough.subcommands.contains(subcommand) {
+                    return "\(id) passthrough subcommand: \(subcommand)"
+                }
+                if let flag = arguments.first(where: { passthrough.flags.contains($0) }) {
+                    return "\(id) passthrough flag: \(flag)"
+                }
             }
             return nil
         case .codex, .gemini, .opencode:
@@ -556,11 +570,13 @@ struct AgentToolLauncher {
             return "Devin"
         case .smallHarness:
             return "Small Harness"
+        case .manifest(let id):
+            return tool.manifest?.displayName ?? id
         }
     }
 
     private func bootstrapEnvironment(realBinaryPath: String) -> [String: String] {
-        let forwardedKeys = [
+        var forwardedKeys = [
             "HOME",
             "PWD",
             "PATH",
@@ -602,6 +618,16 @@ struct AgentToolLauncher {
             "OPENCODE_TUI_CONFIG",
             "ZENTTY_OPENCODE_BASE_CONFIG_DIR",
         ]
+
+        if case .manifest = tool,
+           let options = tool.manifest?.opencodePlugin {
+            forwardedKeys += [
+                "\(options.envPrefix)_CONFIG",
+                "\(options.envPrefix)_CONFIG_DIR",
+                "\(options.envPrefix)_TUI_CONFIG",
+                "ZENTTY_\(options.envPrefix)_BASE_CONFIG_DIR",
+            ]
+        }
 
         var forwarded = [String: String](uniqueKeysWithValues: forwardedKeys.compactMap { key in
             guard let value = environment[key], !value.isEmpty else {
@@ -649,7 +675,7 @@ struct AgentToolLauncher {
             return EnvironmentPatch(set: [:], unset: ["CLAUDECODE"])
         case .smallHarness:
             return EnvironmentPatch(set: [:], unset: ["SMALL_HARNESS_MANAGED_HOOKS_FILE", "SMALL_HARNESS_MANAGED_HOOKS_JSON"])
-        case .amp, .codex, .copilot, .cursor, .droid, .gemini, .kimi, .opencode, .pi, .omp, .grok, .agy, .hermes, .vibe, .devin:
+        case .amp, .codex, .copilot, .cursor, .droid, .gemini, .kimi, .opencode, .pi, .omp, .grok, .agy, .hermes, .vibe, .devin, .manifest:
             return EnvironmentPatch()
         }
     }
@@ -694,7 +720,7 @@ struct AgentToolLauncher {
             environmentPatch.set["ZENTTY_DEVIN_PID"] = "\(getpid())"
         case .smallHarness:
             environmentPatch.set["ZENTTY_SMALL_HARNESS_PID"] = "\(getpid())"
-        case .opencode, .pi, .omp:
+        case .opencode, .pi, .omp, .manifest:
             break
         }
 

@@ -55,6 +55,9 @@ targets:
     sources:
       - path: ZenttyCLI
       - path: Zentty/AppState/Agent/AgentIPCProtocol.swift
+      - path: Zentty/AppState/Agent/AgentManifest.swift
+      - path: Zentty/AppState/Agent/AgentManifestRegistry.swift
+      - path: Zentty/AppState/Agent/AgentTool.swift
       - path: Zentty/AppState/Agent/AmpPluginInstaller.swift
       - path: Zentty/AppState/Agent/CursorHooksInstaller.swift
       - path: Zentty/AppState/Agent/DevinConfigWriteBack.swift
@@ -152,6 +155,7 @@ targets:
           install -m 755 "${BUILT_PRODUCTS_DIR}/zentty" "${RESOURCES_DST}/bin/shared/zentty"
           find "${RESOURCES_DST}/bin" -type f \( -path "*/amp/amp" -o -path "*/claude/claude" -o -path "*/codex/codex" -o -path "*/copilot/copilot" -o -path "*/cursor/cursor-agent" -o -path "*/droid/droid" -o -path "*/gemini/gemini" -o -path "*/grok/grok" -o -path "*/hermes/hermes" -o -path "*/kimi/kimi" -o -path "*/kimi/kimi-cli" -o -path "*/opencode/opencode" -o -path "*/pi/pi" -o -path "*/omp/omp" -o -path "*/agy/agy" -o -path "*/vibe/vibe" -o -path "*/vibe/mistral-vibe" -o -path "*/devin/devin" -o -path "*/small-harness/small-harness" -o -path "*/shared/zentty" -o -path "*/shared/zentty-agent-wrapper" -o -path "*/shared/zentty-kiro-term" -o -path "*/tmux-shim/tmux" \) -exec chmod 755 {} +
           rsync -a --delete "${RESOURCES_SRC}/shell-integration/" "${RESOURCES_DST}/shell-integration/"
+          rsync -a --delete "${RESOURCES_SRC}/agents/" "${RESOURCES_DST}/agents/"
           rsync -a --delete "${RESOURCES_SRC}/amp/" "${RESOURCES_DST}/amp/"
           rsync -a --delete "${RESOURCES_SRC}/opencode/" "${RESOURCES_DST}/opencode/"
           rsync -a --delete "${RESOURCES_SRC}/pi/" "${RESOURCES_DST}/pi/"

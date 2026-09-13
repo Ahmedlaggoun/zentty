@@ -20,7 +20,7 @@ enum AgentIntegrationGrandfather {
 
         var detected: [String: AgentIntegrationState] = [:]
         for tool in AgentIntegrationConsent.persistentTools where isInstalled(tool) {
-            detected[tool.rawValue] = .on
+            detected[tool.id] = .on
         }
 
         do {
