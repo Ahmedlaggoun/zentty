@@ -83,7 +83,7 @@ extension AgentBootstrapTool {
             // integration class must be resolved before the variant is probed,
             // so the whole tool is consent-gated.)
             return .persistent
-        case .claude, .codex, .copilot, .gemini, .opencode, .pi, .omp, .devin, .smallHarness:
+        case .claude, .codex, .copilot, .gemini, .opencode, .pi, .omp, .devin, .smallHarness, .manifest:
             return .ephemeral
         }
     }
@@ -115,6 +115,8 @@ extension AgentBootstrapTool {
         case .vibe: return .vibe
         case .devin: return .devin
         case .smallHarness: return .smallHarness
+        case .manifest(let id):
+            return .custom(manifest?.displayName ?? id)
         }
     }
 
@@ -137,7 +139,7 @@ extension AgentBootstrapTool {
         case .hermes: return HermesHooksInstaller.defaultConfigURL()
         case .vibe: return VibeHooksInstaller.defaultUserHooksFileURL()
         case .kimi: return KimiHooksInstaller.modernConfigURL(environment: ProcessInfo.processInfo.environment)
-        case .claude, .codex, .copilot, .gemini, .opencode, .pi, .omp, .devin, .smallHarness:
+        case .claude, .codex, .copilot, .gemini, .opencode, .pi, .omp, .devin, .smallHarness, .manifest:
             return nil
         }
     }
@@ -154,10 +156,16 @@ extension AgentBootstrapTool {
 enum AgentIntegrationConsent {
     /// Persistent (config-modifying) agents, in Settings display order.
     static let persistentTools: [AgentBootstrapTool] = [.amp, .cursor, .droid, .grok, .agy, .hermes, .vibe, .kimi]
-    /// Ephemeral (built-in) agents, in Settings display order.
-    static let ephemeralTools: [AgentBootstrapTool] = [.claude, .codex, .copilot, .gemini, .opencode, .pi, .omp, .devin, .smallHarness]
+    /// Ephemeral builtin agents, in Settings display order.
+    private static let builtinEphemeralTools: [AgentBootstrapTool] = [.claude, .codex, .copilot, .gemini, .opencode, .pi, .omp, .devin, .smallHarness]
+    /// Ephemeral agents: the builtin list plus every loaded manifest agent
+    /// (manifests never write to the user's config).
+    static var ephemeralTools: [AgentBootstrapTool] {
+        builtinEphemeralTools
+            + AgentManifestRegistry.provider().manifests.map { .manifest($0.id) }
+    }
     /// All known agents, persistent group first.
-    static let allTools: [AgentBootstrapTool] = persistentTools + ephemeralTools
+    static var allTools: [AgentBootstrapTool] { persistentTools + ephemeralTools }
 
     /// The effective state for a tool given what's stored in config (or its
     /// class default when unset).
@@ -236,7 +244,7 @@ enum AgentIntegrationHooks {
         case .cursor, .droid, .grok, .agy, .hermes, .vibe, .kimi:
             // Handled above via AgentHooksInstallerRegistry.
             return nil
-        case .claude, .codex, .copilot, .gemini, .opencode, .pi, .omp, .devin, .smallHarness:
+        case .claude, .codex, .copilot, .gemini, .opencode, .pi, .omp, .devin, .smallHarness, .manifest:
             return nil
         }
     }

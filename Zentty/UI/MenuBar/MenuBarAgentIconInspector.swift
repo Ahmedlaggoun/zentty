@@ -29,7 +29,7 @@ enum MenuBarAgentIconInspector {
         .vibe,
         .smallHarness,
         .custom("Custom Agent"),
-    ]
+    ] + AgentManifestRegistry.provider().manifests.map { .custom($0.displayName) }
 
     /// One idle snapshot per inspected agent. The context line reports whether
     /// the icon comes from a bundled asset or the generated letter-glyph

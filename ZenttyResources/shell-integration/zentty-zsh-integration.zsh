@@ -79,8 +79,42 @@ _zentty_ensure_wrapper_path() {
     export PATH
 }
 
+# ZENTTY_AGENT_MANIFEST_TABLE carries manifest agents as
+# "id=Display Name=bin1,bin2;id2=...". $1 is a command basename; when it equals
+# a manifest id or one of its binaries, $2 selects what to print:
+# "name" -> the display name, "bins" -> one binary per line.
+_zentty_manifest_field_for_command() {
+    [[ -n "${ZENTTY_AGENT_MANIFEST_TABLE:-}" ]] || return 1
+    local cmd="$1" entry id name bins
+    local -a entries fields bin_list
+    entries=("${(@s:;:)ZENTTY_AGENT_MANIFEST_TABLE}")
+    for entry in "${entries[@]}"; do
+        fields=("${(@s:=:)entry}")
+        id="${fields[1]:-}"
+        name="${fields[2]:-}"
+        bins="${fields[3]:-}"
+        [[ -n "$id" && -n "$name" ]] || continue
+        if [[ "$cmd" == "$id" || ",${bins}," == *",${cmd},"* ]]; then
+            case "$2" in
+                name)
+                    printf '%s\n' "$name"
+                    ;;
+                bins)
+                    bin_list=("${(@s:,:)bins}")
+                    printf '%s\n' "${bin_list[@]}"
+                    ;;
+            esac
+            return 0
+        fi
+    done
+    return 1
+}
+
 _zentty_wrapper_binary_candidates() {
     local tool_name="$1"
+    if _zentty_manifest_field_for_command "$tool_name" bins; then
+        return 0
+    fi
     case "$tool_name" in
         cursor) printf '%s\n' "cursor-agent" ;;
         kimi) printf '%s\n' "kimi" "kimi-cli" ;;
@@ -115,6 +149,11 @@ _zentty_report_shell_activity() {
 
 _zentty_agent_tool_for_command() {
     local cmd="${1:t}"
+    local manifest_name
+    if manifest_name="$(_zentty_manifest_field_for_command "$cmd" name)"; then
+        printf '%s\n' "$manifest_name"
+        return 0
+    fi
     case "$cmd" in
         amp) printf '%s\n' "Amp" ;;
         claude) printf '%s\n' "Claude Code" ;;

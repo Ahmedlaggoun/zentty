@@ -1625,14 +1625,14 @@ struct LaunchCommand: ParsableCommand {
         shouldDisplay: false
     )
 
-    @Argument(help: "Supported values: amp, claude, codex, copilot, cursor, droid, gemini, kimi, opencode, pi, grok, agy, hermes, vibe, devin, small-harness")
+    @Argument(help: .init("Supported values: \(AgentBootstrapTool.builtinCases.map(\.id).joined(separator: ", ")), or the id of an agent manifest"))
     var tool: String
 
     @Argument(parsing: .captureForPassthrough, help: "Arguments forwarded to the real tool.")
     var arguments: [String] = []
 
     mutating func run() throws {
-        guard let tool = AgentBootstrapTool(rawValue: tool) else {
+        guard let tool = AgentBootstrapTool(id: tool) else {
             throw ValidationError("Unsupported launch tool: \(tool)")
         }
         try AgentToolLauncher(tool: tool, arguments: arguments, environment: ProcessInfo.processInfo.environment).run()

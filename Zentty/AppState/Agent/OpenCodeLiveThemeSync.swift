@@ -7,25 +7,51 @@ struct OpenCodeRunningPane: Equatable, Sendable {
     let worklaneID: WorklaneID
     let paneID: PaneID
     let pid: Int32
+    /// Pane-local overlay leaf (`launch/<worklane>/<pane>/<toolID>`).
+    var toolID: String = "opencode"
+    /// The agent's own config dir name (`opencode`, `kilo`, …).
+    var configDirName: String = "opencode"
 }
 
 enum OpenCodeLiveThemeSync {
     private static let logger = Logger(subsystem: "be.zenjoy.zentty", category: "OpenCodeLiveThemeSync")
 
-    static func runningPanes(in worklanes: [WorklaneState]) -> [OpenCodeRunningPane] {
+    static func runningPanes(
+        in worklanes: [WorklaneState],
+        registry: AgentManifestRegistry = AgentManifestRegistry.provider()
+    ) -> [OpenCodeRunningPane] {
         worklanes.flatMap { worklane in
             worklane.auxiliaryStateByPaneID.compactMap { paneID, auxiliaryState in
-                guard auxiliaryState.agentStatus?.tool == .openCode,
-                      let pid = auxiliaryState.agentStatus?.trackedPID
+                guard let agentStatus = auxiliaryState.agentStatus,
+                      let pid = agentStatus.trackedPID
                 else {
                     return nil
                 }
 
-                return OpenCodeRunningPane(
-                    worklaneID: worklane.id,
-                    paneID: paneID,
-                    pid: pid
-                )
+                switch agentStatus.tool {
+                case .openCode:
+                    return OpenCodeRunningPane(
+                        worklaneID: worklane.id,
+                        paneID: paneID,
+                        pid: pid
+                    )
+                case .custom(let name):
+                    guard let manifest = registry.manifest(displayName: name),
+                          manifest.family == .opencodePlugin,
+                          let options = manifest.opencodePlugin
+                    else {
+                        return nil
+                    }
+                    return OpenCodeRunningPane(
+                        worklaneID: worklane.id,
+                        paneID: paneID,
+                        pid: pid,
+                        toolID: manifest.id,
+                        configDirName: options.configDirName
+                    )
+                default:
+                    return nil
+                }
             }
         }
     }
@@ -61,7 +87,9 @@ enum OpenCodeLiveThemeSync {
                 .overlayRoots(
                     runtimeDirectoryURL: runtimeDirectoryURL,
                     worklaneID: pane.worklaneID,
-                    paneID: pane.paneID
+                    paneID: pane.paneID,
+                    toolID: pane.toolID,
+                    configDirName: pane.configDirName
                 )
                 .configDirectoryURL
 

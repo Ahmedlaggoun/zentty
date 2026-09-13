@@ -64,11 +64,11 @@ final class AgentConsentCoordinator {
         if persist {
             do {
                 try configStore?.update { config in
-                    config.agentIntegrations.states[tool.rawValue] = state
+                    config.agentIntegrations.states[tool.id] = state
                 }
             } catch {
                 agentIntegrationLogger.error(
-                    "Failed to persist \(tool.rawValue, privacy: .public) consent decision: \(error.localizedDescription, privacy: .public)")
+                    "Failed to persist \(tool.id, privacy: .public) consent decision: \(error.localizedDescription, privacy: .public)")
             }
         }
         let completions = waiters[tool] ?? []

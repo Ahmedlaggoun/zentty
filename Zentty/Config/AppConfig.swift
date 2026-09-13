@@ -290,7 +290,7 @@ struct AppConfig: Equatable, Sendable {
     /// (config-modifying) agents are tri-state and consent-gated; ephemeral
     /// agents are on by default. See `AgentIntegrationConsent`.
     struct AgentIntegrations: Equatable, Sendable {
-        /// State keyed by `AgentBootstrapTool.rawValue`. Absent keys fall back to
+        /// State keyed by `AgentBootstrapTool.id`. Absent keys fall back to
         /// the tool's class default (`AgentBootstrapTool.defaultIntegrationState`).
         var states: [String: AgentIntegrationState]
         /// True once the one-time grandfather migration has run, marking
@@ -302,7 +302,7 @@ struct AppConfig: Equatable, Sendable {
 
         /// Effective state for a tool, applying the class default when unset.
         func state(for tool: AgentBootstrapTool) -> AgentIntegrationState {
-            AgentIntegrationConsent.effectiveState(for: tool, storedState: states[tool.rawValue])
+            AgentIntegrationConsent.effectiveState(for: tool, storedState: states[tool.id])
         }
     }
 

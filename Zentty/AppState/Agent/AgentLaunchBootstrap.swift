@@ -129,9 +129,15 @@ enum AgentLaunchBootstrap {
                 fileManager: fileManager
             )
         case .opencode:
-            return try opencodePlan(
-                executablePath: resolvedOpenCodeExecutablePath(
+            return try openCodeFamilyPlan(
+                toolID: AgentBootstrapTool.opencode.id,
+                displayName: "OpenCode",
+                envPrefix: "OPENCODE",
+                configDirName: "opencode",
+                executablePath: resolvedSiblingExecutablePath(
                     executablePath,
+                    binaryNames: ["opencode"],
+                    siblingName: ".opencode",
                     fileManager: fileManager
                 ),
                 arguments: request.arguments,
@@ -142,6 +148,45 @@ enum AgentLaunchBootstrap {
                 fileManager: fileManager,
                 appConfigProvider: appConfigProvider
             )
+        case .manifest(let id):
+            guard let manifest = tool.manifest else {
+                agentLaunchLogger.error(
+                    "Bootstrap requested unknown manifest agent '\(id, privacy: .public)'"
+                )
+                throw AgentIPCError.invalidMessage
+            }
+            switch manifest.family {
+            case .opencodePlugin:
+                guard let options = manifest.opencodePlugin else {
+                    throw AgentIPCError.invalidMessage
+                }
+                return try openCodeFamilyPlan(
+                    toolID: manifest.id,
+                    displayName: manifest.displayName,
+                    envPrefix: options.envPrefix,
+                    configDirName: options.configDirName,
+                    executablePath: resolvedSiblingExecutablePath(
+                        executablePath,
+                        binaryNames: manifest.binaries,
+                        siblingName: options.siblingBinary,
+                        fileManager: fileManager
+                    ),
+                    arguments: request.arguments,
+                    environment: environment,
+                    target: target,
+                    runtimeDirectoryURL: runtimeDirectoryURL,
+                    bundle: bundle,
+                    fileManager: fileManager,
+                    appConfigProvider: appConfigProvider
+                )
+            case .canonical:
+                return canonicalManifestPlan(
+                    manifest: manifest,
+                    executablePath: executablePath,
+                    arguments: request.arguments,
+                    environment: environment
+                )
+            }
         case .pi:
             return piPlan(
                 executablePath: executablePath,
@@ -221,7 +266,7 @@ enum AgentLaunchBootstrap {
         consumeRestorePending: (String) -> Bool = { AgentIPCServer.shared.consumeRestorePendingPane($0) }
     ) -> AgentIntegrationGate? {
         guard let tool = request.tool else { return nil }
-        let storedState = loadAppConfig().agentIntegrations.states[tool.rawValue]
+        let storedState = loadAppConfig().agentIntegrations.states[tool.id]
         let isRestore = request.environment["ZENTTY_PANE_ID"].map(consumeRestorePending) ?? false
         return AgentIntegrationConsent.gate(for: tool, storedState: storedState, isRestore: isRestore)
     }
@@ -705,7 +750,7 @@ enum AgentLaunchBootstrap {
             environment: environment
         )
         let overlayDirectoryURL = try prepareToolDirectory(
-            tool: .kimi,
+            toolID: AgentBootstrapTool.kimi.id,
             target: target,
             runtimeDirectoryURL: runtimeDirectoryURL,
             fileManager: fileManager
@@ -967,7 +1012,7 @@ enum AgentLaunchBootstrap {
         let (forwardedArguments, userConfigPath) = extractDevinConfigOverride(arguments)
 
         let overlayDirectoryURL = try prepareToolDirectory(
-            tool: .devin,
+            toolID: AgentBootstrapTool.devin.id,
             target: target,
             runtimeDirectoryURL: runtimeDirectoryURL,
             fileManager: fileManager
@@ -1014,7 +1059,7 @@ enum AgentLaunchBootstrap {
         }
 
         let toolDirectoryURL = try prepareToolDirectory(
-            tool: .smallHarness,
+            toolID: AgentBootstrapTool.smallHarness.id,
             target: target,
             runtimeDirectoryURL: runtimeDirectoryURL,
             fileManager: fileManager
@@ -1058,7 +1103,7 @@ enum AgentLaunchBootstrap {
         var setEnvironment = ["ZENTTY_AGENT_TOOL": "copilot"]
 
         let overlayDirectoryURL = try prepareToolDirectory(
-            tool: .copilot,
+            toolID: AgentBootstrapTool.copilot.id,
             target: target,
             runtimeDirectoryURL: runtimeDirectoryURL,
             fileManager: fileManager
@@ -1104,7 +1149,7 @@ enum AgentLaunchBootstrap {
 
         var setEnvironment = ["ZENTTY_AGENT_TOOL": "gemini"]
         let overlayDirectoryURL = try prepareToolDirectory(
-            tool: .gemini,
+            toolID: AgentBootstrapTool.gemini.id,
             target: target,
             runtimeDirectoryURL: runtimeDirectoryURL,
             fileManager: fileManager
@@ -1127,7 +1172,16 @@ enum AgentLaunchBootstrap {
         )
     }
 
-    private static func opencodePlan(
+    /// Shared plan for the OpenCode plugin family: opencode itself plus every
+    /// `opencode-plugin` manifest agent (kilo, …). `envPrefix` ("OPENCODE",
+    /// "KILO") derives `<PREFIX>_CONFIG_DIR` / `<PREFIX>_TUI_CONFIG` /
+    /// `ZENTTY_<PREFIX>_BASE_CONFIG_DIR`; `configDirName` ("opencode", "kilo")
+    /// derives `~/.config/<name>` and the `xdg-*-home/<name>` overlay leaves.
+    private static func openCodeFamilyPlan(
+        toolID: String,
+        displayName: String,
+        envPrefix: String,
+        configDirName: String,
         executablePath: String,
         arguments: [String],
         environment: [String: String],
@@ -1137,12 +1191,17 @@ enum AgentLaunchBootstrap {
         fileManager: FileManager,
         appConfigProvider: () -> AppConfig
     ) throws -> AgentLaunchPlan {
-        var setEnvironment = ["ZENTTY_AGENT_TOOL": "opencode"]
-        let sourceConfigPath = opencodeSourceConfigDirectoryPath(
+        var setEnvironment = [
+            "ZENTTY_AGENT_TOOL": toolID,
+            "ZENTTY_AGENT_CANONICAL_NAME": displayName,
+        ]
+        let sourceConfigPath = openCodeFamilySourceConfigDirectoryPath(
+            envPrefix: envPrefix,
+            configDirName: configDirName,
             environment: environment,
             fileManager: fileManager
         )
-        setEnvironment["ZENTTY_OPENCODE_BASE_CONFIG_DIR"] = sourceConfigPath
+        setEnvironment["ZENTTY_\(envPrefix)_BASE_CONFIG_DIR"] = sourceConfigPath
         let appConfig = appConfigProvider()
 
         if let pluginURL = bundle.resourceURL?
@@ -1151,12 +1210,15 @@ enum AgentLaunchBootstrap {
             .appendingPathComponent("zentty-opencode-zentty.js", isDirectory: false),
            fileManager.isReadableFile(atPath: pluginURL.path) {
             let overlayDirectoryURL = try prepareToolDirectory(
-                tool: .opencode,
+                toolID: toolID,
                 target: target,
                 runtimeDirectoryURL: runtimeDirectoryURL,
                 fileManager: fileManager
             )
-            let overlayRoots = OpenCodeOverlayLayout.overlayRoots(for: overlayDirectoryURL)
+            let overlayRoots = OpenCodeOverlayLayout.overlayRoots(
+                for: overlayDirectoryURL,
+                configDirName: configDirName
+            )
             let overlayConfigURL = appConfig.appearance.syncOpenCodeThemeWithTerminal
                 ? overlayRoots.configDirectoryURL
                 : overlayDirectoryURL.appendingPathComponent("config", isDirectory: true)
@@ -1187,21 +1249,24 @@ enum AgentLaunchBootstrap {
             )
             if appConfig.appearance.syncOpenCodeThemeWithTerminal {
                 try prepareOpenCodeStateOverlay(
-                    sourceStateDirectoryURL: opencodeSourceStateDirectoryURL(environment: environment),
+                    sourceStateDirectoryURL: openCodeFamilySourceStateDirectoryURL(
+                        configDirName: configDirName,
+                        environment: environment
+                    ),
                     overlayStateDirectoryURL: overlayRoots.stateDirectoryURL,
                     fileManager: fileManager
                 )
                 setEnvironment["XDG_CONFIG_HOME"] = overlayRoots.configHomeURL.path
                 setEnvironment["XDG_STATE_HOME"] = overlayRoots.stateHomeURL.path
-                setEnvironment["OPENCODE_TUI_CONFIG"] = overlayConfigURL
+                setEnvironment["\(envPrefix)_TUI_CONFIG"] = overlayConfigURL
                     .appendingPathComponent("tui.json", isDirectory: false)
                     .path
             }
-            setEnvironment["OPENCODE_CONFIG_DIR"] = overlayConfigURL.path
+            setEnvironment["\(envPrefix)_CONFIG_DIR"] = overlayConfigURL.path
         }
 
         let sessionStartJSON = """
-        {"version":1,"event":"session.start","agent":{"name":"OpenCode","pid":\(AgentIPCProtocol.selfPIDPlaceholder)}}
+        {"version":1,"event":"session.start","agent":{"name":"\(displayName)","pid":\(AgentIPCProtocol.selfPIDPlaceholder)}}
         """
         return AgentLaunchPlan(
             executablePath: executablePath,
@@ -1218,12 +1283,63 @@ enum AgentLaunchBootstrap {
         )
     }
 
-    private static func resolvedOpenCodeExecutablePath(
+    /// A `canonical` manifest agent launches the resolved binary with optional
+    /// prepended arguments and env (both may embed `{cliBin}`). With no
+    /// `ZENTTY_CLI_BIN` available there is nothing to expand against and no
+    /// prelaunch event to send, so the plan degrades to a direct exec.
+    private static func canonicalManifestPlan(
+        manifest: AgentManifest,
+        executablePath: String,
+        arguments: [String],
+        environment: [String: String]
+    ) -> AgentLaunchPlan {
+        guard let cliBin = environment["ZENTTY_CLI_BIN"]?.nilIfBlank else {
+            return directPlan(executablePath: executablePath, arguments: arguments)
+        }
+
+        var setEnvironment = [
+            "ZENTTY_AGENT_TOOL": manifest.id,
+            "ZENTTY_AGENT_CANONICAL_NAME": manifest.displayName,
+        ]
+        for (key, value) in manifest.canonical?.env ?? [:] {
+            setEnvironment[key] = value.replacingOccurrences(of: "{cliBin}", with: cliBin)
+        }
+        let expandedArguments = (manifest.canonical?.prependArguments ?? []).map {
+            $0.replacingOccurrences(of: "{cliBin}", with: cliBin)
+        } + arguments
+
+        let sessionStartJSON = """
+        {"version":1,"event":"session.start","agent":{"name":"\(manifest.displayName)","pid":\(AgentIPCProtocol.selfPIDPlaceholder)}}
+        """
+        return AgentLaunchPlan(
+            executablePath: executablePath,
+            arguments: expandedArguments,
+            setEnvironment: setEnvironment,
+            unsetEnvironment: [],
+            preLaunchActions: [
+                AgentLaunchAction(
+                    subcommand: "agent-event",
+                    arguments: [],
+                    standardInput: sessionStartJSON
+                ),
+            ]
+        )
+    }
+
+    /// Node launchers (opencode, kilo) exec a hidden sibling binary (`.opencode`,
+    /// `.kilo`) next to the resolved script; launching the sibling directly keeps
+    /// the process name/title matching the real agent instead of `node`.
+    private static func resolvedSiblingExecutablePath(
         _ executablePath: String,
+        binaryNames: [String],
+        siblingName: String?,
         fileManager: FileManager
     ) -> String {
+        guard let siblingName else {
+            return executablePath
+        }
         let executableURL = URL(fileURLWithPath: executablePath, isDirectory: false)
-        guard executableURL.lastPathComponent == "opencode" else {
+        guard binaryNames.contains(executableURL.lastPathComponent) else {
             return executablePath
         }
 
@@ -1231,7 +1347,7 @@ enum AgentLaunchBootstrap {
         for candidateExecutableURL in candidateExecutableURLs {
             let siblingBinaryURL = candidateExecutableURL
                 .deletingLastPathComponent()
-                .appendingPathComponent(".opencode", isDirectory: false)
+                .appendingPathComponent(siblingName, isDirectory: false)
             if fileManager.isExecutableFile(atPath: siblingBinaryURL.path) {
                 return siblingBinaryURL.path
             }
@@ -1436,7 +1552,7 @@ enum AgentLaunchBootstrap {
     }
 
     private static func prepareToolDirectory(
-        tool: AgentBootstrapTool,
+        toolID: String,
         target: AgentIPCTarget,
         runtimeDirectoryURL: URL,
         fileManager: FileManager
@@ -1449,7 +1565,7 @@ enum AgentLaunchBootstrap {
             .appendingPathComponent(target.paneID.rawValue, isDirectory: true)
         try fileManager.createDirectory(at: paneURL, withIntermediateDirectories: true)
 
-        let toolURL = paneURL.appendingPathComponent(tool.rawValue, isDirectory: true)
+        let toolURL = paneURL.appendingPathComponent(toolID, isDirectory: true)
         if fileManager.fileExists(atPath: toolURL.path) {
             try fileManager.removeItem(at: toolURL)
         }
@@ -1457,36 +1573,41 @@ enum AgentLaunchBootstrap {
         return toolURL
     }
 
-    private static func opencodeSourceStateDirectoryURL(environment: [String: String]) -> URL {
+    private static func openCodeFamilySourceStateDirectoryURL(
+        configDirName: String,
+        environment: [String: String]
+    ) -> URL {
         let basePath = environment["XDG_STATE_HOME"]?.nilIfBlank
             ?? URL(fileURLWithPath: environment["HOME"]?.nilIfBlank ?? NSHomeDirectory(), isDirectory: true)
                 .appendingPathComponent(".local", isDirectory: true)
                 .appendingPathComponent("state", isDirectory: true)
                 .path
         return URL(fileURLWithPath: basePath, isDirectory: true)
-            .appendingPathComponent("opencode", isDirectory: true)
+            .appendingPathComponent(configDirName, isDirectory: true)
     }
 
-    private static func opencodeSourceConfigDirectoryPath(
+    private static func openCodeFamilySourceConfigDirectoryPath(
+        envPrefix: String,
+        configDirName: String,
         environment: [String: String],
         fileManager: FileManager
     ) -> String {
-        if let explicitPath = environment["ZENTTY_OPENCODE_BASE_CONFIG_DIR"]?.nilIfBlank {
+        if let explicitPath = environment["ZENTTY_\(envPrefix)_BASE_CONFIG_DIR"]?.nilIfBlank {
             return explicitPath
         }
-        if let explicitPath = environment["OPENCODE_CONFIG_DIR"]?.nilIfBlank {
+        if let explicitPath = environment["\(envPrefix)_CONFIG_DIR"]?.nilIfBlank {
             return explicitPath
         }
 
         let fallbackPaths = [
             environment["XDG_CONFIG_HOME"]?.nilIfBlank.map {
                 URL(fileURLWithPath: $0, isDirectory: true)
-                    .appendingPathComponent("opencode", isDirectory: true)
+                    .appendingPathComponent(configDirName, isDirectory: true)
                     .path
             },
             URL(fileURLWithPath: environment["HOME"]?.nilIfBlank ?? NSHomeDirectory(), isDirectory: true)
                 .appendingPathComponent(".config", isDirectory: true)
-                .appendingPathComponent("opencode", isDirectory: true)
+                .appendingPathComponent(configDirName, isDirectory: true)
                 .path,
         ].compactMap { $0 }
 
@@ -2005,7 +2126,7 @@ enum AgentLaunchBootstrap {
                 return ["KIMI_CODE_HOME"]
             }
             return []
-        case .amp, .codex, .copilot, .cursor, .droid, .gemini, .opencode, .pi, .omp, .grok, .agy, .hermes, .vibe, .devin:
+        case .amp, .codex, .copilot, .cursor, .droid, .gemini, .opencode, .pi, .omp, .grok, .agy, .hermes, .vibe, .devin, .manifest:
             return []
         }
     }

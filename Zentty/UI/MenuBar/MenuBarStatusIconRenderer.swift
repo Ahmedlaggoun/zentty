@@ -447,7 +447,13 @@ enum MenuBarStatusIconRenderer {
             return nil
         case .smallHarness:
             return nil
-        case .custom:
+        case .custom(let name):
+            // Manifest agents may name an asset-catalog image via `icon`.
+            if let icon = AgentManifestRegistry.provider()
+                .manifest(displayName: name)?.icon,
+               hasBundledOrSourceCatalogAsset(named: icon) {
+                return icon
+            }
             return nil
         }
     }

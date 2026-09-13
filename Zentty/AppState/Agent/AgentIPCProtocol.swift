@@ -74,7 +74,7 @@ enum AgentIPCRequestKind: String, Codable, Equatable {
     case awaitConsent = "await_consent"
 }
 
-enum AgentBootstrapTool: String, Codable, Equatable, CaseIterable {
+enum AgentBootstrapTool: Codable, Equatable, Hashable, Sendable {
     case amp
     case claude
     case codex
@@ -91,21 +91,95 @@ enum AgentBootstrapTool: String, Codable, Equatable, CaseIterable {
     case hermes
     case vibe
     case devin
-    case smallHarness = "small-harness"
+    case smallHarness
+    case manifest(String)
+
+    /// Builtin cases in declaration order (replaces the former `allCases`;
+    /// manifest agents are registry-driven, not enum cases).
+    static let builtinCases: [AgentBootstrapTool] = [
+        .amp, .claude, .codex, .copilot, .cursor, .droid, .gemini, .kimi,
+        .opencode, .pi, .omp, .grok, .agy, .hermes, .vibe, .devin,
+        .smallHarness,
+    ]
+
+    /// Wire-format identifier: the former rawValue for builtins, the manifest id
+    /// for manifest agents.
+    var id: String {
+        switch self {
+        case .amp: return "amp"
+        case .claude: return "claude"
+        case .codex: return "codex"
+        case .copilot: return "copilot"
+        case .cursor: return "cursor"
+        case .droid: return "droid"
+        case .gemini: return "gemini"
+        case .kimi: return "kimi"
+        case .opencode: return "opencode"
+        case .pi: return "pi"
+        case .omp: return "omp"
+        case .grok: return "grok"
+        case .agy: return "agy"
+        case .hermes: return "hermes"
+        case .vibe: return "vibe"
+        case .devin: return "devin"
+        case .smallHarness: return "small-harness"
+        case .manifest(let id): return id
+        }
+    }
+
+    init?(id: String, registry: AgentManifestRegistry = AgentManifestRegistry.provider()) {
+        for builtin in Self.builtinCases where builtin.id == id {
+            self = builtin
+            return
+        }
+        if registry.manifest(id: id) != nil {
+            self = .manifest(id)
+            return
+        }
+        return nil
+    }
+
+    static func isBuiltinID(_ id: String) -> Bool {
+        builtinCases.contains { $0.id == id }
+    }
+
+    var manifest: AgentManifest? {
+        guard case .manifest(let id) = self else { return nil }
+        return AgentManifestRegistry.provider().manifest(id: id)
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        let id = try container.decode(String.self)
+        guard let tool = AgentBootstrapTool(id: id) else {
+            throw DecodingError.dataCorruptedError(
+                in: container,
+                debugDescription: "Unknown agent bootstrap tool '\(id)'"
+            )
+        }
+        self = tool
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(id)
+    }
 
     /// Names of the real CLI binary (or binaries) this wrapped tool resolves to on PATH.
-    /// For most tools this matches `rawValue`, but cursor's CLI is shipped as `cursor-agent`
+    /// For most tools this matches `id`, but cursor's CLI is shipped as `cursor-agent`
     /// (with `agent` as a user-facing alias) while `cursor` itself is the IDE launcher.
     var realBinaryNames: [String] {
         switch self {
         case .cursor:
             return ["cursor-agent"]
         case .amp, .claude, .codex, .copilot, .droid, .gemini, .opencode, .pi, .omp, .grok, .agy, .hermes, .devin, .smallHarness:
-            return [rawValue]
+            return [id]
         case .kimi:
-            return [rawValue, "kimi-cli"]
+            return [id, "kimi-cli"]
         case .vibe:
-            return [rawValue, "mistral-vibe"]
+            return [id, "mistral-vibe"]
+        case .manifest:
+            return manifest?.binaries ?? [id]
         }
     }
 
@@ -114,9 +188,20 @@ enum AgentBootstrapTool: String, Codable, Equatable, CaseIterable {
     /// the PATH wrapper itself decides a command is an agent (binary-name match),
     /// so a restored pane is treated as an "agent pane" iff its command would
     /// actually trip the wrapper.
-    static func wrappedAgent(forCommand command: String) -> AgentBootstrapTool? {
+    static func wrappedAgent(
+        forCommand command: String,
+        registry: AgentManifestRegistry = AgentManifestRegistry.provider()
+    ) -> AgentBootstrapTool? {
         guard let binaryName = wrappedAgentBinaryName(forCommand: command) else { return nil }
-        return allCases.first { $0.realBinaryNames.contains(binaryName) }
+        if let builtin = builtinCases.first(where: { $0.realBinaryNames.contains(binaryName) }) {
+            return builtin
+        }
+        for manifest in registry.manifests {
+            if manifest.binaries.contains(binaryName) || manifest.id == binaryName {
+                return .manifest(manifest.id)
+            }
+        }
+        return nil
     }
 
     private static func wrappedAgentBinaryName(forCommand command: String) -> String? {
