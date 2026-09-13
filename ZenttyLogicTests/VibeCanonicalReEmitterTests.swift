@@ -208,6 +208,11 @@ final class VibeCanonicalReEmitterTests: XCTestCase {
         if let progress = payload["progress"] as? [String: Any] {
             XCTAssertEqual(progress["done"] as? Int, 2, "two completed todos")
             XCTAssertEqual(progress["total"] as? Int, 4)
+            let items = progress["items"] as? [[String: Any]]
+            XCTAssertEqual(items?.count, 4)
+            XCTAssertEqual(items?.map { $0["title"] as? String }, ["Review", "Identify", "Suggest", "Verify"])
+            XCTAssertEqual(items?.map { $0["status"] as? String }, ["done", "done", "in_progress", "pending"])
+            XCTAssertEqual(items?.first?["id"] as? String, "1")
         } else {
             XCTFail("Expected progress in payload")
         }

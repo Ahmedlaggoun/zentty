@@ -500,7 +500,10 @@ struct PaneAgentReducerState: Equatable, Sendable {
         session.updatedAt = now
         session.idleVisibleUntil = nil
         session.unresolvedStopVisibleUntil = nil
-        session.taskProgress = payload.taskProgress ?? session.taskProgress
+        if let incomingTaskProgress = payload.taskProgress {
+            session.taskProgress = session.taskProgress?.mergingCountsOnlyUpdate(incomingTaskProgress)
+                ?? incomingTaskProgress
+        }
         if let subagents = payload.subagents {
             session.subagents = subagents
             session.subagentsRefreshedAt = now

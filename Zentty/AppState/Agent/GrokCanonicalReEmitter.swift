@@ -43,7 +43,7 @@ enum GrokCanonicalReEmitter: HookCanonicalReEmitter {
         case "pretooluse", "pre_tool_use", "pretool":
             let lowerTool = hookToolName?.lowercased() ?? ""
             if isTodoToolName(lowerTool), let progress = todoProgress(in: toolInput) {
-                emissions.append(taskProgressEnvelope(done: progress.done, total: progress.total))
+                emissions.append(taskProgressEnvelope(done: progress.done, total: progress.total, items: progress.items))
             }
             if isAskToolName(lowerTool) {
                 let text = JSONKeyAccess.firstString(in: jsonObject, keys: ["message", "body", "text", "prompt", "description", "question"])
@@ -204,15 +204,16 @@ enum GrokCanonicalReEmitter: HookCanonicalReEmitter {
         ])
     }
 
-    /// Extracts `(done, total)` from a TodoWrite-shaped tool input, supporting
-    /// the variants Grok and Claude-compat agents have been seen to send.
-    static func todoProgress(in input: [String: Any]?) -> (done: Int, total: Int)? {
+    /// Extracts `(done, total)` plus item titles/statuses from a
+    /// TodoWrite-shaped tool input, supporting the variants Grok and
+    /// Claude-compat agents have been seen to send.
+    static func todoProgress(in input: [String: Any]?) -> (done: Int, total: Int, items: [[String: Any]])? {
         guard let input else { return nil }
 
         if let done = JSONKeyAccess.firstInt(in: input, keys: ["done", "completedCount", "completed_count"]),
            let total = JSONKeyAccess.firstInt(in: input, keys: ["total", "totalCount", "total_count"]),
            total > 0 {
-            return (done, total)
+            return (done, total, [])
         }
 
         let candidates: [[[String: Any]]?] = [
@@ -235,7 +236,35 @@ enum GrokCanonicalReEmitter: HookCanonicalReEmitter {
             let status = ((todo["status"] as? String) ?? (todo["state"] as? String) ?? "").lowercased()
             return status.contains("done") || status.contains("complete")
         }.count
-        return (done, todos.count)
+        return (done, todos.count, todoItems(todos))
+    }
+
+    /// Normalizes a todo object to the canonical `{id, title, status}` shape
+    /// `task.progress.items` carries. Statuses follow the sidebar's
+    /// pending/in_progress/done normalization.
+    static func todoItems(_ todos: [[String: Any]]) -> [[String: Any]] {
+        todos.enumerated().map { index, todo in
+            let id = JSONKeyAccess.firstString(in: todo, keys: ["id", "taskId", "task_id", "key"])
+            let title = JSONKeyAccess.firstString(in: todo, keys: ["content", "title", "subject", "text"])
+                ?? id
+                ?? "Task \(index + 1)"
+            return [
+                "id": id ?? title,
+                "title": title,
+                "status": normalizedTaskStatus(JSONKeyAccess.firstString(in: todo, keys: ["status", "state"])),
+            ]
+        }
+    }
+
+    static func normalizedTaskStatus(_ status: String?) -> String {
+        switch status?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "completed", "complete", "done", "finished", "cancelled":
+            return "done"
+        case "in_progress", "in-progress", "inprogress", "active", "doing", "running":
+            return "in_progress"
+        default:
+            return "pending"
+        }
     }
 
     // MARK: - Canonical envelopes
@@ -245,12 +274,16 @@ enum GrokCanonicalReEmitter: HookCanonicalReEmitter {
     /// deterministic — keys come out alphabetically (`agent`, `event`,
     /// `progress`/`session`/`state`, `version`).
 
-    static func taskProgressEnvelope(done: Int, total: Int) -> String {
-        serialize([
+    static func taskProgressEnvelope(done: Int, total: Int, items: [[String: Any]] = []) -> String {
+        var progress: [String: Any] = ["done": done, "total": total]
+        if !items.isEmpty {
+            progress["items"] = items
+        }
+        return serialize([
             "version": 1,
             "event": "task.progress",
             "agent": ["name": "Grok"],
-            "progress": ["done": done, "total": total],
+            "progress": progress,
         ])
     }
 

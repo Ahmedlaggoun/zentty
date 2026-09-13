@@ -488,11 +488,14 @@ final class AgentsSettingsSectionViewController: SettingsScrollableSectionViewCo
     private let agentTeamsEnableWarningPresenter: AgentTeamsEnableWarningPresenter
     private var currentAgentTeams: AppConfig.AgentTeams
     private var currentAgentCaffeination: AppConfig.AgentCaffeination
+    private var currentAgentLists: AppConfig.AgentLists
     private var currentMenuBar: AppConfig.MenuBar
 
     private let menuBarStatusSwitch = NSSwitch()
     private let agentTeamsSwitch = NSSwitch()
     private let agentCaffeinationSwitch = NSSwitch()
+    private let alwaysShowTaskListsSwitch = NSSwitch()
+    private let alwaysShowSubagentListsSwitch = NSSwitch()
     private let experimentalBadgeLabel = NSTextField(labelWithString: "EXPERIMENTAL")
     private weak var agentTeamsTitleLabel: NSTextField?
 
@@ -536,6 +539,7 @@ final class AgentsSettingsSectionViewController: SettingsScrollableSectionViewCo
         self.uninstallFailurePresenter = uninstallFailurePresenter
         self.currentAgentTeams = configStore.current.agentTeams
         self.currentAgentCaffeination = configStore.current.agentCaffeination
+        self.currentAgentLists = configStore.current.agentLists
         self.currentMenuBar = configStore.current.menuBar
         super.init(nibName: nil, bundle: nil)
     }
@@ -577,6 +581,28 @@ final class AgentsSettingsSectionViewController: SettingsScrollableSectionViewCo
         cardStack.addArrangedSubview(agentCaffeinationRow)
         agentCaffeinationRow.widthAnchor.constraint(equalTo: cardStack.widthAnchor).isActive = true
 
+        addSeparator(to: cardStack)
+
+        let alwaysShowTaskListsRow = makeAgentSwitchRow(
+            title: "Always show task lists",
+            subtitle: "Keep each agent's task list expanded in the sidebar instead of revealing it on click.",
+            toggle: alwaysShowTaskListsSwitch,
+            action: #selector(handleAlwaysShowTaskListsSwitchChanged(_:))
+        )
+        cardStack.addArrangedSubview(alwaysShowTaskListsRow)
+        alwaysShowTaskListsRow.widthAnchor.constraint(equalTo: cardStack.widthAnchor).isActive = true
+
+        addSeparator(to: cardStack)
+
+        let alwaysShowSubagentListsRow = makeAgentSwitchRow(
+            title: "Always show subagent lists",
+            subtitle: "Keep the running-subagents list expanded under each agent pane instead of revealing it on click.",
+            toggle: alwaysShowSubagentListsSwitch,
+            action: #selector(handleAlwaysShowSubagentListsSwitchChanged(_:))
+        )
+        cardStack.addArrangedSubview(alwaysShowSubagentListsRow)
+        alwaysShowSubagentListsRow.widthAnchor.constraint(equalTo: cardStack.widthAnchor).isActive = true
+
         NSLayoutConstraint.activate([
             cardStack.topAnchor.constraint(equalTo: card.topAnchor),
             cardStack.leadingAnchor.constraint(equalTo: card.leadingAnchor),
@@ -608,6 +634,8 @@ final class AgentsSettingsSectionViewController: SettingsScrollableSectionViewCo
         menuBarStatusSwitch.state = currentMenuBar.showStatusItem ? .on : .off
         agentTeamsSwitch.state = currentAgentTeams.enabled ? .on : .off
         agentCaffeinationSwitch.state = currentAgentCaffeination.enabled ? .on : .off
+        alwaysShowTaskListsSwitch.state = currentAgentLists.alwaysShowTaskLists ? .on : .off
+        alwaysShowSubagentListsSwitch.state = currentAgentLists.alwaysShowSubagentLists ? .on : .off
         refreshIntegrationControls()
 
         // Re-check on-disk hook status when a pane launch (re)installs hooks while
@@ -663,15 +691,19 @@ final class AgentsSettingsSectionViewController: SettingsScrollableSectionViewCo
     func apply(
         agentTeams: AppConfig.AgentTeams,
         agentCaffeination: AppConfig.AgentCaffeination,
+        agentLists: AppConfig.AgentLists,
         menuBar: AppConfig.MenuBar
     ) {
         currentAgentTeams = agentTeams
         currentAgentCaffeination = agentCaffeination
+        currentAgentLists = agentLists
         currentMenuBar = menuBar
         guard isViewLoaded else { return }
         menuBarStatusSwitch.state = menuBar.showStatusItem ? .on : .off
         agentTeamsSwitch.state = agentTeams.enabled ? .on : .off
         agentCaffeinationSwitch.state = agentCaffeination.enabled ? .on : .off
+        alwaysShowTaskListsSwitch.state = agentLists.alwaysShowTaskLists ? .on : .off
+        alwaysShowSubagentListsSwitch.state = agentLists.alwaysShowSubagentLists ? .on : .off
         refreshIntegrationControls()
     }
 
@@ -817,6 +849,35 @@ final class AgentsSettingsSectionViewController: SettingsScrollableSectionViewCo
     @objc
     private func handleAgentCaffeinationSwitchChanged(_ sender: NSSwitch) {
         persistAgentCaffeinationEnabled(sender.state == .on)
+    }
+
+    @objc
+    private func handleAlwaysShowTaskListsSwitchChanged(_ sender: NSSwitch) {
+        persistAgentLists(alwaysShowTaskLists: sender.state == .on, alwaysShowSubagentLists: nil)
+    }
+
+    @objc
+    private func handleAlwaysShowSubagentListsSwitchChanged(_ sender: NSSwitch) {
+        persistAgentLists(alwaysShowTaskLists: nil, alwaysShowSubagentLists: sender.state == .on)
+    }
+
+    private func persistAgentLists(alwaysShowTaskLists: Bool?, alwaysShowSubagentLists: Bool?) {
+        do {
+            try configStore.update { config in
+                if let alwaysShowTaskLists {
+                    config.agentLists.alwaysShowTaskLists = alwaysShowTaskLists
+                }
+                if let alwaysShowSubagentLists {
+                    config.agentLists.alwaysShowSubagentLists = alwaysShowSubagentLists
+                }
+            }
+        } catch {
+            settingsLogger.error(
+                "Failed to persist agent list visibility: \(error.localizedDescription, privacy: .public)")
+        }
+        currentAgentLists = configStore.current.agentLists
+        alwaysShowTaskListsSwitch.state = currentAgentLists.alwaysShowTaskLists ? .on : .off
+        alwaysShowSubagentListsSwitch.state = currentAgentLists.alwaysShowSubagentLists ? .on : .off
     }
 
     private func requestAgentTeamsChange(to requestedValue: Bool) {
@@ -1187,6 +1248,14 @@ final class AgentsSettingsSectionViewController: SettingsScrollableSectionViewCo
         agentCaffeinationSwitch.state == .on
     }
 
+    var isAlwaysShowTaskListsSwitchOn: Bool {
+        alwaysShowTaskListsSwitch.state == .on
+    }
+
+    var isAlwaysShowSubagentListsSwitchOn: Bool {
+        alwaysShowSubagentListsSwitch.state == .on
+    }
+
     var experimentalBadgeText: String {
         experimentalBadgeLabel.stringValue
     }
@@ -1209,6 +1278,16 @@ final class AgentsSettingsSectionViewController: SettingsScrollableSectionViewCo
     func setAgentCaffeinationEnabledForTesting(_ enabled: Bool) {
         agentCaffeinationSwitch.state = enabled ? .on : .off
         persistAgentCaffeinationEnabled(enabled)
+    }
+
+    func setAlwaysShowTaskListsEnabledForTesting(_ enabled: Bool) {
+        alwaysShowTaskListsSwitch.state = enabled ? .on : .off
+        handleAlwaysShowTaskListsSwitchChanged(alwaysShowTaskListsSwitch)
+    }
+
+    func setAlwaysShowSubagentListsEnabledForTesting(_ enabled: Bool) {
+        alwaysShowSubagentListsSwitch.state = enabled ? .on : .off
+        handleAlwaysShowSubagentListsSwitchChanged(alwaysShowSubagentListsSwitch)
     }
 
     /// Drives an integration row's toggle and runs the same handler the real

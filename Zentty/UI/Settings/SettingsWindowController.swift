@@ -735,6 +735,7 @@ final class SettingsViewController: NSSplitViewController, SettingsSidebarViewCo
         agentsViewController.apply(
             agentTeams: config.agentTeams,
             agentCaffeination: config.agentCaffeination,
+            agentLists: config.agentLists,
             menuBar: config.menuBar
         )
         shortcutsViewController.apply(shortcuts: config.shortcuts)

@@ -105,6 +105,16 @@ final class SidebarTaskProgressIndicatorView: NSView {
         (Arc.startAngle, Arc.endAngle, Arc.clockwise)
     }
 
+    /// "n/m tasks" plus a click hint when the pane carries an item list the
+    /// ring can reveal; counts-only progress stays a plain readout.
+    static func tooltipText(for taskProgress: PaneAgentTaskProgress) -> String {
+        var text = "\(taskProgress.doneCount)/\(taskProgress.totalCount) tasks"
+        if taskProgress.items.isEmpty == false {
+            text += "\nClick for details"
+        }
+        return text
+    }
+
     func configure(
         taskProgress: PaneAgentTaskProgress?,
         color: NSColor,
@@ -123,8 +133,8 @@ final class SidebarTaskProgressIndicatorView: NSView {
         isHidden = false
         progressColor = color
         let progressText = "\(taskProgress.doneCount)/\(taskProgress.totalCount) tasks"
-        tooltipText = ""
-        toolTip = nil
+        tooltipText = Self.tooltipText(for: taskProgress)
+        toolTip = tooltipText.isEmpty ? nil : tooltipText
         setAccessibilityLabel("Task progress")
         setAccessibilityValue(progressText)
 
@@ -253,6 +263,7 @@ final class SidebarTaskProgressRevealView: NSView {
         guard let taskProgress else {
             revealText = ""
             label.stringValue = ""
+            toolTip = nil
             measuredExpandedWidth = 0
             lastConfigureSyncedPresentationForTesting = true
             setRevealed(false, animated: false, reducedMotion: true, appliesAlpha: true)
@@ -269,6 +280,7 @@ final class SidebarTaskProgressRevealView: NSView {
 
         revealText = nextRevealText
         label.stringValue = revealText
+        toolTip = SidebarTaskProgressIndicatorView.tooltipText(for: taskProgress)
         measuredExpandedWidth = nextMeasuredExpandedWidth
         isHidden = false
         lastConfigureSyncedPresentationForTesting = shouldSyncPresentation
@@ -1177,6 +1189,24 @@ final class SidebarPaneTextRowView: NSView {
     func subagentBadgeFrame(in view: NSView) -> NSRect? {
         guard subagentBadgeView.isHidden == false, isHidden == false, alphaValue > 0 else { return nil }
         return view.convert(subagentBadgeView.bounds, from: subagentBadgeView)
+    }
+
+    /// Click target covering the progress ring plus its hover reveal, in
+    /// `view`'s coordinates. `nil` while the ring is hidden or the pane's
+    /// progress is counts-only (no item list exists to reveal).
+    func taskProgressFrame(in view: NSView) -> NSRect? {
+        guard progressIndicator.isHidden == false,
+              isHidden == false,
+              alphaValue > 0,
+              taskProgress?.items.isEmpty == false
+        else {
+            return nil
+        }
+        let indicatorFrame = view.convert(progressIndicator.bounds, from: progressIndicator)
+        guard progressRevealView.isHidden == false else {
+            return indicatorFrame
+        }
+        return indicatorFrame.union(view.convert(progressRevealView.bounds, from: progressRevealView))
     }
 
     var progressFractionForTesting: CGFloat {

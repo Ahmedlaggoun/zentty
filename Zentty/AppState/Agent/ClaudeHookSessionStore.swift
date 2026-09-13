@@ -4,6 +4,14 @@ import os
 
 private let claudeHookSessionStoreLogger = Logger(subsystem: "be.zenjoy.zentty", category: "ClaudeHookSessionStore")
 
+/// One task of Claude's task list, kept in creation order. `subject` is empty
+/// for records migrated from the counts-only `tasksByID` state.
+struct ClaudeTaskRecord: Codable, Equatable {
+    var id: String
+    var subject: String
+    var status: PaneAgentTaskItemStatus
+}
+
 struct ClaudeHookSessionRecord: Codable, Equatable {
     let sessionID: String
     var windowIDRawValue: String?
@@ -38,7 +46,7 @@ struct ClaudeHookSessionRecord: Codable, Equatable {
     /// must not hand its id to the prompt. Reset when the turn ends.
     var preToolUseSlotsByAgentID: [String: [ClaudePreToolUseSlot]] = [:]
     var lastNotificationText: String?
-    var tasksByID: [String: Bool] = [:]
+    var tasks: [ClaudeTaskRecord] = []
     var updatedAt: TimeInterval
 
     var windowID: WindowID? {
@@ -124,6 +132,7 @@ extension ClaudeHookSessionRecord {
         case lastStructuredInteractionAgentID
         case preToolUseSlotsByAgentID
         case lastNotificationText
+        case tasks
         case tasksByID
         case updatedAt
     }
@@ -160,8 +169,39 @@ extension ClaudeHookSessionRecord {
             preToolUseSlotsByAgentID = [:]
         }
         lastNotificationText = try container.decodeIfPresent(String.self, forKey: .lastNotificationText)
-        tasksByID = try container.decodeIfPresent([String: Bool].self, forKey: .tasksByID) ?? [:]
+        if let decodedTasks = try container.decodeIfPresent([ClaudeTaskRecord].self, forKey: .tasks) {
+            tasks = decodedTasks
+        } else {
+            // Pre-items state stored task id -> completed; migrate to records
+            // with unknown subjects so the file does not get discarded.
+            tasks = (try container.decodeIfPresent([String: Bool].self, forKey: .tasksByID) ?? [:])
+                .sorted { $0.key < $1.key }
+                .map { ClaudeTaskRecord(id: $0.key, subject: "", status: $0.value ? .done : .pending) }
+        }
         updatedAt = try container.decodeIfPresent(TimeInterval.self, forKey: .updatedAt) ?? 0
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(sessionID, forKey: .sessionID)
+        try container.encodeIfPresent(windowIDRawValue, forKey: .windowIDRawValue)
+        try container.encode(worklaneIDRawValue, forKey: .worklaneIDRawValue)
+        try container.encode(paneIDRawValue, forKey: .paneIDRawValue)
+        try container.encodeIfPresent(cwd, forKey: .cwd)
+        try container.encodeIfPresent(transcriptPath, forKey: .transcriptPath)
+        try container.encodeIfPresent(pid, forKey: .pid)
+        try container.encodeIfPresent(lastHumanMessage, forKey: .lastHumanMessage)
+        try container.encodeIfPresent(lastInteractionKindRawValue, forKey: .lastInteractionKindRawValue)
+        try container.encodeIfPresent(lastStructuredInteractionText, forKey: .lastStructuredInteractionText)
+        try container.encodeIfPresent(lastStructuredInteractionKindRawValue, forKey: .lastStructuredInteractionKindRawValue)
+        try container.encodeIfPresent(lastStructuredInteractionConfidenceRawValue, forKey: .lastStructuredInteractionConfidenceRawValue)
+        try container.encodeIfPresent(lastStructuredInteractionToolUseID, forKey: .lastStructuredInteractionToolUseID)
+        try container.encodeIfPresent(lastStructuredInteractionToolName, forKey: .lastStructuredInteractionToolName)
+        try container.encodeIfPresent(lastStructuredInteractionAgentID, forKey: .lastStructuredInteractionAgentID)
+        try container.encode(preToolUseSlotsByAgentID, forKey: .preToolUseSlotsByAgentID)
+        try container.encodeIfPresent(lastNotificationText, forKey: .lastNotificationText)
+        try container.encode(tasks, forKey: .tasks)
+        try container.encode(updatedAt, forKey: .updatedAt)
     }
 }
 
@@ -269,7 +309,7 @@ final class ClaudeHookSessionStore {
                 lastStructuredInteractionKindRawValue: nil,
                 lastStructuredInteractionConfidenceRawValue: nil,
                 lastNotificationText: nil,
-                tasksByID: [:],
+                tasks: [],
                 updatedAt: now
             )
             record.windowIDRawValue = windowID?.rawValue
@@ -336,7 +376,7 @@ final class ClaudeHookSessionStore {
                 lastStructuredInteractionKindRawValue: nil,
                 lastStructuredInteractionConfidenceRawValue: nil,
                 lastNotificationText: nil,
-                tasksByID: [:],
+                tasks: [],
                 updatedAt: now
             )
             record.windowIDRawValue = windowID?.rawValue
@@ -502,6 +542,21 @@ final class ClaudeHookSessionStore {
         taskID: String,
         isCompleted: Bool
     ) throws -> PaneAgentTaskProgress? {
+        try updateTask(
+            sessionID: sessionID,
+            taskID: taskID,
+            status: isCompleted ? .done : .pending
+        )
+    }
+
+    /// A `nil` status keeps the record's current status (subject-only
+    /// `TaskUpdate`); a new task then starts as pending.
+    func updateTask(
+        sessionID: String,
+        taskID: String,
+        subject: String? = nil,
+        status: PaneAgentTaskItemStatus?
+    ) throws -> PaneAgentTaskProgress? {
         let normalizedSessionID = normalized(sessionID)
         let normalizedTaskID = normalized(taskID)
         guard !normalizedSessionID.isEmpty, !normalizedTaskID.isEmpty else {
@@ -515,16 +570,71 @@ final class ClaudeHookSessionStore {
             // A new task ID arriving after every prior task is done signals a fresh
             // TodoWrite batch within the same session. Drop the prior batch so the
             // sidebar counter restarts at 0/N instead of accumulating.
-            if !isCompleted,
-               !record.tasksByID.isEmpty,
-               record.tasksByID[normalizedTaskID] == nil,
-               record.tasksByID.values.allSatisfy({ $0 }) {
-                record.tasksByID.removeAll()
+            if status != .done,
+               !record.tasks.isEmpty,
+               !record.tasks.contains(where: { $0.id == normalizedTaskID }),
+               record.tasks.allSatisfy({ $0.status == .done }) {
+                record.tasks.removeAll()
             }
-            record.tasksByID[normalizedTaskID] = isCompleted
+            if let index = record.tasks.firstIndex(where: { $0.id == normalizedTaskID }) {
+                if let status {
+                    record.tasks[index].status = status
+                }
+                if let subject = normalizedOptional(subject) {
+                    record.tasks[index].subject = subject
+                }
+            } else {
+                record.tasks.append(ClaudeTaskRecord(
+                    id: normalizedTaskID,
+                    subject: normalizedOptional(subject) ?? "",
+                    status: status ?? .pending
+                ))
+            }
             record.updatedAt = Date().timeIntervalSince1970
             state.sessions[normalizedSessionID] = record
-            return progress(from: record.tasksByID)
+            return progress(from: record.tasks)
+        }
+    }
+
+    /// Registers a task observed via `PostToolUse(TaskCreate)` when `TaskCreated`
+    /// did not fire first. An existing record keeps its status; only a missing
+    /// subject is filled in.
+    func registerTask(
+        sessionID: String,
+        taskID: String,
+        subject: String?
+    ) throws -> PaneAgentTaskProgress? {
+        let normalizedSessionID = normalized(sessionID)
+        let normalizedTaskID = normalized(taskID)
+        guard !normalizedSessionID.isEmpty, !normalizedTaskID.isEmpty else {
+            return nil
+        }
+
+        return try withLockedState { state in
+            guard var record = state.sessions[normalizedSessionID] else {
+                return nil
+            }
+            if let index = record.tasks.firstIndex(where: { $0.id == normalizedTaskID }) {
+                if record.tasks[index].subject.isEmpty,
+                   let subject = normalizedOptional(subject) {
+                    record.tasks[index].subject = subject
+                    record.updatedAt = Date().timeIntervalSince1970
+                    state.sessions[normalizedSessionID] = record
+                }
+            } else {
+                if !record.tasks.isEmpty,
+                   record.tasks.allSatisfy({ $0.status == .done }) {
+                    record.tasks.removeAll()
+                }
+                record.tasks.append(ClaudeTaskRecord(
+                    id: normalizedTaskID,
+                    subject: normalizedOptional(subject) ?? "",
+                    status: .pending
+                ))
+                record.updatedAt = Date().timeIntervalSince1970
+                state.sessions[normalizedSessionID] = record
+            }
+            return progress(from: record.tasks)
         }
     }
 
@@ -537,7 +647,7 @@ final class ClaudeHookSessionStore {
             guard let record = state.sessions[normalizedSessionID] else {
                 return nil
             }
-            return progress(from: record.tasksByID)
+            return progress(from: record.tasks)
         }
     }
 
@@ -622,12 +732,14 @@ final class ClaudeHookSessionStore {
         return value
     }
 
-    private func progress(from tasksByID: [String: Bool]) -> PaneAgentTaskProgress? {
-        guard !tasksByID.isEmpty else {
-            return nil
+    private func progress(from tasks: [ClaudeTaskRecord]) -> PaneAgentTaskProgress? {
+        let items = tasks.map { task in
+            PaneAgentTaskItem(
+                id: task.id,
+                title: task.subject.isEmpty ? task.id : task.subject,
+                status: task.status
+            )
         }
-
-        let doneCount = tasksByID.values.filter { $0 }.count
-        return PaneAgentTaskProgress(doneCount: doneCount, totalCount: tasksByID.count)
+        return PaneAgentTaskProgress(items: items)
     }
 }

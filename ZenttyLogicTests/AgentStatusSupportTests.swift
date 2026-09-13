@@ -4150,6 +4150,47 @@ final class AgentStatusSupportTests: XCTestCase {
         XCTAssertTrue(envelope.contains("\"total\":3"))
     }
 
+    // Real grok todo_write payload (agent-bench grok/tasks): todos carry
+    // {id, content, status}; the canonical envelope must keep them as
+    // normalized {id, title, status} items for the sidebar task list.
+    func test_grok_canonical_reemitter_items_round_trip_through_bridge() throws {
+        let payload = """
+        {
+          "hook_event_name": "PreToolUse",
+          "session_id": "s1",
+          "tool_name": "todo_write",
+          "tool_input": {
+            "todos": [
+              {"id": "1", "content": "Review directory", "status": "completed"},
+              {"id": "2", "content": "Identify main language", "status": "in_progress"},
+              {"id": "3", "content": "Suggest one improvement", "status": "pending"}
+            ],
+            "merge": false
+          }
+        }
+        """.data(using: .utf8)!
+
+        let envelope = try XCTUnwrap(GrokCanonicalReEmitter.reEmissions(forHookPayload: payload).first)
+        XCTAssertTrue(envelope.contains("\"items\""))
+
+        let input = try AgentEventBridge.parseInput(Data(envelope.utf8))
+        let payloads = try AgentEventBridge.makePayloads(
+            from: input,
+            environment: [
+                "ZENTTY_WORKLANE_ID": "worklane-main",
+                "ZENTTY_PANE_ID": "worklane-main-shell",
+            ]
+        )
+        XCTAssertEqual(
+            payloads.first?.taskProgress,
+            PaneAgentTaskProgress(items: [
+                PaneAgentTaskItem(id: "1", title: "Review directory", status: .done),
+                PaneAgentTaskItem(id: "2", title: "Identify main language", status: .inProgress),
+                PaneAgentTaskItem(id: "3", title: "Suggest one improvement", status: .pending),
+            ])
+        )
+    }
+
     func test_grok_canonical_reemitter_emits_needs_input_for_notification() throws {
         let payload = """
         {
@@ -8273,7 +8314,12 @@ final class AgentStatusSupportTests: XCTestCase {
         )
 
         XCTAssertEqual(createdPayload.state, .running)
-        XCTAssertEqual(createdPayload.taskProgress, PaneAgentTaskProgress(doneCount: 0, totalCount: 1))
+        XCTAssertEqual(
+            createdPayload.taskProgress,
+            PaneAgentTaskProgress(items: [
+                PaneAgentTaskItem(id: "task-1", title: "Write regression test", status: .pending),
+            ])
+        )
 
         let completedInput = try AgentEventBridge.claudeParseInput(
             Data(
@@ -8291,7 +8337,12 @@ final class AgentStatusSupportTests: XCTestCase {
         )
 
         XCTAssertEqual(completedPayload.state, .running)
-        XCTAssertEqual(completedPayload.taskProgress, PaneAgentTaskProgress(doneCount: 1, totalCount: 1))
+        XCTAssertEqual(
+            completedPayload.taskProgress,
+            PaneAgentTaskProgress(items: [
+                PaneAgentTaskItem(id: "task-1", title: "Write regression test", status: .done),
+            ])
+        )
     }
 
     func test_claude_hook_task_created_resets_when_prior_batch_all_completed() throws {
@@ -8312,14 +8363,27 @@ final class AgentStatusSupportTests: XCTestCase {
         }
 
         let priorProgress = try store.taskProgress(sessionID: "session-1")
-        XCTAssertEqual(priorProgress, PaneAgentTaskProgress(doneCount: 5, totalCount: 5))
+        XCTAssertEqual(
+            priorProgress,
+            PaneAgentTaskProgress(items: (1...5).map {
+                PaneAgentTaskItem(id: "task-\($0)", title: "task-\($0)", status: .done)
+            })
+        )
 
         let firstNew = try store.updateTask(sessionID: "session-1", taskID: "task-6", isCompleted: false)
-        XCTAssertEqual(firstNew, PaneAgentTaskProgress(doneCount: 0, totalCount: 1))
+        XCTAssertEqual(
+            firstNew,
+            PaneAgentTaskProgress(items: [PaneAgentTaskItem(id: "task-6", title: "task-6", status: .pending)])
+        )
 
         _ = try store.updateTask(sessionID: "session-1", taskID: "task-7", isCompleted: false)
         let thirdNew = try store.updateTask(sessionID: "session-1", taskID: "task-8", isCompleted: false)
-        XCTAssertEqual(thirdNew, PaneAgentTaskProgress(doneCount: 0, totalCount: 3))
+        XCTAssertEqual(
+            thirdNew,
+            PaneAgentTaskProgress(items: (6...8).map {
+                PaneAgentTaskItem(id: "task-\($0)", title: "task-\($0)", status: .pending)
+            })
+        )
     }
 
     func test_claude_hook_task_created_does_not_reset_mid_batch() throws {
@@ -8337,7 +8401,14 @@ final class AgentStatusSupportTests: XCTestCase {
         _ = try store.updateTask(sessionID: "session-1", taskID: "task-1", isCompleted: true)
 
         let progress = try store.updateTask(sessionID: "session-1", taskID: "task-3", isCompleted: false)
-        XCTAssertEqual(progress, PaneAgentTaskProgress(doneCount: 1, totalCount: 3))
+        XCTAssertEqual(
+            progress,
+            PaneAgentTaskProgress(items: [
+                PaneAgentTaskItem(id: "task-1", title: "task-1", status: .done),
+                PaneAgentTaskItem(id: "task-2", title: "task-2", status: .pending),
+                PaneAgentTaskItem(id: "task-3", title: "task-3", status: .pending),
+            ])
+        )
     }
 
     func test_claude_hook_task_created_for_existing_id_does_not_reset() throws {
@@ -8356,7 +8427,239 @@ final class AgentStatusSupportTests: XCTestCase {
         _ = try store.updateTask(sessionID: "session-1", taskID: "task-2", isCompleted: true)
 
         let progress = try store.updateTask(sessionID: "session-1", taskID: "task-1", isCompleted: false)
-        XCTAssertEqual(progress, PaneAgentTaskProgress(doneCount: 1, totalCount: 2))
+        XCTAssertEqual(
+            progress,
+            PaneAgentTaskProgress(items: [
+                PaneAgentTaskItem(id: "task-1", title: "task-1", status: .pending),
+                PaneAgentTaskItem(id: "task-2", title: "task-2", status: .done),
+            ])
+        )
+    }
+
+    // The real 2.1.x sequence (agent-bench claude/tasks): TaskCreated carries
+    // task_id + task_subject, then PostToolUse for TaskUpdate carries
+    // tool_input.{taskId,status} — the only place `in_progress` shows up.
+    func test_claude_hook_task_list_carries_titles_and_normalized_statuses() throws {
+        let store = try makeClaudeHookSessionStore()
+        let environment = [
+            "ZENTTY_WORKLANE_ID": "worklane-main",
+            "ZENTTY_PANE_ID": "worklane-main-shell",
+        ]
+        try store.upsert(
+            sessionID: "session-1",
+            worklaneID: WorklaneID("worklane-main"),
+            paneID: PaneID("worklane-main-shell"),
+            cwd: "/tmp/project",
+            pid: 4242
+        )
+
+        for (taskID, subject) in [("1", "Review directory"), ("2", "Identify main language"), ("3", "Suggest one improvement")] {
+            let created = try AgentEventBridge.claudeMakePayloads(
+                from: AgentEventBridge.claudeParseInput(Data(
+                    """
+                    {"hook_event_name":"TaskCreated","session_id":"session-1","task_id":"\(taskID)","task_subject":"\(subject)"}
+                    """.utf8
+                )),
+                environment: environment,
+                sessionStore: store
+            )
+            XCTAssertEqual(created.first?.state, .running)
+        }
+
+        let progressAfterCreate = try XCTUnwrap(store.taskProgress(sessionID: "session-1"))
+        XCTAssertEqual(progressAfterCreate.items.map(\.title), ["Review directory", "Identify main language", "Suggest one improvement"])
+        XCTAssertEqual(progressAfterCreate.items.map(\.status), [.pending, .pending, .pending])
+
+        let updated = try XCTUnwrap(
+            AgentEventBridge.claudeMakePayloads(
+                from: AgentEventBridge.claudeParseInput(Data(
+                    """
+                    {"hook_event_name":"PostToolUse","session_id":"session-1","tool_name":"TaskUpdate","tool_use_id":"toolu_1","tool_input":{"taskId":"2","status":"in_progress"},"tool_response":{"success":true,"taskId":"2","updatedFields":["status"],"statusChange":{"from":"pending","to":"in_progress"}}}
+                    """.utf8
+                )),
+                environment: environment,
+                sessionStore: store
+            ).first
+        )
+        XCTAssertEqual(
+            updated.taskProgress?.items.map(\.status),
+            [.pending, .inProgress, .pending]
+        )
+
+        _ = try AgentEventBridge.claudeMakePayloads(
+            from: AgentEventBridge.claudeParseInput(Data(
+                """
+                {"hook_event_name":"TaskCompleted","session_id":"session-1","task_id":"1","task_subject":"Review directory"}
+                """.utf8
+            )),
+            environment: environment,
+            sessionStore: store
+        )
+
+        let progress = try XCTUnwrap(store.taskProgress(sessionID: "session-1"))
+        XCTAssertEqual(
+            progress,
+            PaneAgentTaskProgress(items: [
+                PaneAgentTaskItem(id: "1", title: "Review directory", status: .done),
+                PaneAgentTaskItem(id: "2", title: "Identify main language", status: .inProgress),
+                PaneAgentTaskItem(id: "3", title: "Suggest one improvement", status: .pending),
+            ])
+        )
+    }
+
+    // `TaskCreated` does not fire in every session; PostToolUse(TaskCreate)
+    // carries tool_response.task.{id,subject} as the fallback registration.
+    func test_claude_hook_post_tool_use_task_create_registers_task() throws {
+        let store = try makeClaudeHookSessionStore()
+        let environment = [
+            "ZENTTY_WORKLANE_ID": "worklane-main",
+            "ZENTTY_PANE_ID": "worklane-main-shell",
+        ]
+        try store.upsert(
+            sessionID: "session-1",
+            worklaneID: WorklaneID("worklane-main"),
+            paneID: PaneID("worklane-main-shell"),
+            cwd: "/tmp/project",
+            pid: 4242
+        )
+
+        let payload = try XCTUnwrap(
+            AgentEventBridge.claudeMakePayloads(
+                from: AgentEventBridge.claudeParseInput(Data(
+                    """
+                    {"hook_event_name":"PostToolUse","session_id":"session-1","tool_name":"TaskCreate","tool_use_id":"toolu_1","tool_input":{"subject":"Review directory","description":"Walk the tree","activeForm":"Reviewing"},"tool_response":{"task":{"id":"7","subject":"Review directory"}}}
+                    """.utf8
+                )),
+                environment: environment,
+                sessionStore: store
+            ).first
+        )
+
+        XCTAssertEqual(
+            payload.taskProgress,
+            PaneAgentTaskProgress(items: [
+                PaneAgentTaskItem(id: "7", title: "Review directory", status: .pending),
+            ])
+        )
+    }
+
+    func test_claude_hook_task_update_without_status_keeps_existing_status() throws {
+        let store = try makeClaudeHookSessionStore()
+        try store.upsert(
+            sessionID: "session-1",
+            worklaneID: WorklaneID("worklane-main"),
+            paneID: PaneID("worklane-main-shell"),
+            cwd: "/tmp/project",
+            pid: 4242
+        )
+        _ = try store.updateTask(sessionID: "session-1", taskID: "1", subject: "Review directory", status: .inProgress)
+
+        let progress = try store.updateTask(sessionID: "session-1", taskID: "1", subject: "Renamed subject", status: nil)
+
+        XCTAssertEqual(
+            progress,
+            PaneAgentTaskProgress(items: [
+                PaneAgentTaskItem(id: "1", title: "Renamed subject", status: .inProgress),
+            ])
+        )
+    }
+
+    func test_claude_hook_session_store_decodes_legacy_tasks_by_id() throws {
+        let directoryURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: directoryURL) }
+
+        let stateURL = directoryURL.appendingPathComponent("claude-hook-sessions.json")
+        try """
+        {"version":1,"sessions":{"session-1":{"sessionID":"session-1","worklaneIDRawValue":"worklane-main","paneIDRawValue":"worklane-main-shell","tasksByID":{"task-1":true,"task-2":false},"updatedAt":123}}}
+        """.write(to: stateURL, atomically: true, encoding: .utf8)
+
+        let store = ClaudeHookSessionStore(stateURL: stateURL)
+        XCTAssertEqual(
+            try store.taskProgress(sessionID: "session-1"),
+            PaneAgentTaskProgress(items: [
+                PaneAgentTaskItem(id: "task-1", title: "task-1", status: .done),
+                PaneAgentTaskItem(id: "task-2", title: "task-2", status: .pending),
+            ])
+        )
+    }
+
+    func test_pane_agent_task_progress_items_derive_counts() throws {
+        let progress = try XCTUnwrap(
+            PaneAgentTaskProgress(items: [
+                PaneAgentTaskItem(title: "A", status: .done),
+                PaneAgentTaskItem(title: "B", status: .inProgress),
+                PaneAgentTaskItem(title: "C", status: .pending),
+            ])
+        )
+        XCTAssertEqual(progress.doneCount, 1)
+        XCTAssertEqual(progress.totalCount, 3)
+        XCTAssertNil(PaneAgentTaskProgress(items: []))
+    }
+
+    func test_pane_agent_task_item_status_normalizes_harness_statuses() {
+        for raw in ["completed", "complete", "done", "finished", "cancelled", "Done"] {
+            XCTAssertEqual(PaneAgentTaskItemStatus(rawHarnessStatus: raw), .done, raw)
+        }
+        for raw in ["in_progress", "in-progress", "inprogress", "active", "doing", "running", "In_Progress"] {
+            XCTAssertEqual(PaneAgentTaskItemStatus(rawHarnessStatus: raw), .inProgress, raw)
+        }
+        for raw in ["pending", "todo", "", "unknown"] {
+            XCTAssertEqual(PaneAgentTaskItemStatus(rawHarnessStatus: raw), .pending, raw)
+        }
+        XCTAssertEqual(PaneAgentTaskItemStatus(rawHarnessStatus: nil), .pending)
+    }
+
+    func test_pane_agent_task_progress_transport_json_round_trip() throws {
+        let progress = try XCTUnwrap(
+            PaneAgentTaskProgress(items: [
+                PaneAgentTaskItem(id: "1", title: "Review directory", status: .done),
+                PaneAgentTaskItem(id: "2", title: "Identify main language", status: .inProgress),
+            ])
+        )
+        let json = try XCTUnwrap(progress.itemsTransportJSON)
+        XCTAssertEqual(PaneAgentTaskItem.transportItems(fromJSON: json), progress.items)
+        XCTAssertNil(PaneAgentTaskProgress(doneCount: 1, totalCount: 2)?.itemsTransportJSON)
+    }
+
+    func test_agent_status_payload_notification_round_trips_task_items() throws {
+        let progress = try XCTUnwrap(
+            PaneAgentTaskProgress(items: [
+                PaneAgentTaskItem(id: "1", title: "Review directory", status: .done),
+                PaneAgentTaskItem(id: "2", title: "Identify main language", status: .inProgress),
+                PaneAgentTaskItem(id: "3", title: "Suggest one improvement", status: .pending),
+            ])
+        )
+        let payload = AgentStatusPayload(
+            worklaneID: WorklaneID("worklane-main"),
+            paneID: PaneID("worklane-main-shell"),
+            state: .running,
+            origin: .explicitHook,
+            toolName: "Claude Code",
+            text: nil,
+            sessionID: "session-1",
+            taskProgress: progress,
+            artifactKind: nil,
+            artifactLabel: nil,
+            artifactURL: nil
+        )
+
+        let decoded = try AgentStatusPayload(
+            userInfo: try XCTUnwrap(payload.notificationUserInfo)
+        )
+        XCTAssertEqual(decoded.taskProgress, progress)
+    }
+
+    func test_agent_status_payload_notification_decodes_counts_only_progress() throws {
+        let decoded = try AgentStatusPayload(userInfo: [
+            "worklaneID": "worklane-main",
+            "paneID": "worklane-main-shell",
+            "taskProgressDoneCount": NSNumber(value: 2),
+            "taskProgressTotalCount": NSNumber(value: 5),
+        ])
+        XCTAssertEqual(decoded.taskProgress, PaneAgentTaskProgress(doneCount: 2, totalCount: 5))
+        XCTAssertEqual(decoded.taskProgress?.items, [])
     }
 
     func test_claude_hook_session_end_clears_status_pid_and_mapping() throws {

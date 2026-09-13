@@ -89,6 +89,27 @@ extension AgentEventBridge {
     struct DroidTodoProgressSnapshot {
         let doneCount: Int
         let totalCount: Int
+        let items: [PaneAgentTaskItem]
+    }
+
+    /// Shared `todos[]`-object → item extraction for TodoWrite-style tool
+    /// inputs. Objects without a status are skipped, matching the counts-only
+    /// behavior that only ever counted status-bearing entries.
+    static func taskItems(fromTodoObjects todos: [[String: Any]]) -> [PaneAgentTaskItem] {
+        todos.enumerated().compactMap { index, todo in
+            guard let rawStatus = JSONKeyAccess.firstString(in: todo, keys: ["status", "state"]) else {
+                return nil
+            }
+            let id = JSONKeyAccess.firstString(in: todo, keys: ["id", "taskId", "task_id", "key"])
+            let title = JSONKeyAccess.firstString(in: todo, keys: ["content", "title", "subject", "text"])
+                ?? id
+                ?? "Task \(index + 1)"
+            return PaneAgentTaskItem(
+                id: id,
+                title: title,
+                status: PaneAgentTaskItemStatus(rawHarnessStatus: rawStatus)
+            )
+        }
     }
 
     static func droidTodoProgress(toolInput: [String: Any]?) -> DroidTodoProgressSnapshot? {
@@ -113,16 +134,14 @@ extension AgentEventBridge {
 
     private static func droidTodoProgress(todoObjects: [[String: Any]]) -> DroidTodoProgressSnapshot? {
         guard !todoObjects.isEmpty else {
-            return DroidTodoProgressSnapshot(doneCount: 0, totalCount: 0)
+            return DroidTodoProgressSnapshot(doneCount: 0, totalCount: 0, items: [])
         }
 
-        let statuses = todoObjects.compactMap { todo in
-            JSONKeyAccess.firstString(in: todo, keys: ["status", "state"])
-        }
-        guard !statuses.isEmpty else { return nil }
+        let items = taskItems(fromTodoObjects: todoObjects)
+        guard !items.isEmpty else { return nil }
 
-        let doneCount = statuses.filter { droidTodoStatusIsComplete($0) }.count
-        return DroidTodoProgressSnapshot(doneCount: doneCount, totalCount: statuses.count)
+        let doneCount = items.filter { $0.status == .done }.count
+        return DroidTodoProgressSnapshot(doneCount: doneCount, totalCount: items.count, items: items)
     }
 
     private static func droidTodoProgress(todoText: String) -> DroidTodoProgressSnapshot? {
@@ -153,16 +172,7 @@ extension AgentEventBridge {
         guard totalCount > 0 || !sawTodoLine else {
             return nil
         }
-        return DroidTodoProgressSnapshot(doneCount: doneCount, totalCount: totalCount)
-    }
-
-    private static func droidTodoStatusIsComplete(_ status: String) -> Bool {
-        switch status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
-        case "completed", "complete", "done":
-            return true
-        default:
-            return false
-        }
+        return DroidTodoProgressSnapshot(doneCount: doneCount, totalCount: totalCount, items: [])
     }
 }
 

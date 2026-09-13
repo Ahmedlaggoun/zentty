@@ -115,7 +115,7 @@ enum VibeCanonicalReEmitter {
 
         // The todo tool carries progress (completed / total).
         if isTaskTool(toolName), let progress = extractTaskProgress(from: toolOutput) {
-            return [taskProgressPayload(done: progress.done, total: progress.total, sessionID: sessionID)]
+            return [taskProgressPayload(done: progress.done, total: progress.total, items: progress.items, sessionID: sessionID)]
         }
 
         // Any other tool completion means the agent is still working.
@@ -220,16 +220,21 @@ enum VibeCanonicalReEmitter {
     private static func taskProgressPayload(
         done: Int,
         total: Int,
+        items: [[String: Any]] = [],
         sessionID: String?
     ) -> [String: Any] {
+        var progress: [String: Any] = [
+            "done": done,
+            "total": total,
+        ]
+        if !items.isEmpty {
+            progress["items"] = items
+        }
         var payload: [String: Any] = [
             "version": 1,
             "event": "task.progress",
             "agent": ["name": "Mistral Vibe"],
-            "progress": [
-                "done": done,
-                "total": total,
-            ]
+            "progress": progress,
         ]
 
         if let sessionID {
@@ -287,8 +292,9 @@ enum VibeCanonicalReEmitter {
 
     /// Extracts task progress from the `todo` tool's output:
     /// `{"todos": [{"status": "pending|in_progress|completed|cancelled", ...}],
-    /// "total_count": N}`. done = completed todos, total = total_count.
-    private static func extractTaskProgress(from toolOutput: [String: Any]?) -> (done: Int, total: Int)? {
+    /// "total_count": N}`. done = completed todos, total = total_count. Each
+    /// todo also becomes a normalized `{id, title, status}` item.
+    private static func extractTaskProgress(from toolOutput: [String: Any]?) -> (done: Int, total: Int, items: [[String: Any]])? {
         guard let toolOutput,
               let todos = toolOutput["todos"] as? [[String: Any]] else {
             return nil
@@ -297,6 +303,19 @@ enum VibeCanonicalReEmitter {
         let done = todos.filter {
             ($0["status"] as? String)?.lowercased() == "completed"
         }.count
-        return (done, total)
+        let items = todos.enumerated().map { index, todo -> [String: Any] in
+            let id = JSONKeyAccess.firstString(in: todo, keys: ["id", "taskId", "task_id"])
+            let title = JSONKeyAccess.firstString(in: todo, keys: ["content", "title", "subject", "text"])
+                ?? id
+                ?? "Task \(index + 1)"
+            return [
+                "id": id ?? title,
+                "title": title,
+                "status": PaneAgentTaskItemStatus(
+                    rawHarnessStatus: JSONKeyAccess.firstString(in: todo, keys: ["status", "state"])
+                ).rawValue,
+            ]
+        }
+        return (done, total, items)
     }
 }

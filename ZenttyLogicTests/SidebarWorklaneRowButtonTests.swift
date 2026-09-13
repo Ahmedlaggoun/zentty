@@ -1764,7 +1764,7 @@ final class SidebarWorklaneRowButtonTests: AppKitTestCase {
         XCTAssertEqual(row.debugSnapshotForTesting.statusText, "Running")
         XCTAssertTrue(row.debugSnapshotForTesting.statusProgressIndicatorIsVisible)
         XCTAssertEqual(row.debugSnapshotForTesting.statusProgressFraction, 0.4, accuracy: 0.001)
-        XCTAssertEqual(row.debugSnapshotForTesting.statusProgressToolTip, "")
+        XCTAssertEqual(row.debugSnapshotForTesting.statusProgressToolTip, "2/5 tasks")
         XCTAssertEqual(
             row.debugSnapshotForTesting.statusProgressColor.srgbClamped, theme.statusRunning.srgbClamped)
         XCTAssertEqual(row.debugSnapshotForTesting.statusProgressRevealText, "2/5 tasks ・")
@@ -2061,7 +2061,7 @@ final class SidebarWorklaneRowButtonTests: AppKitTestCase {
         XCTAssertEqual(row.debugSnapshotForTesting.paneStatusTexts, ["Idle"])
         XCTAssertTrue(row.debugSnapshotForTesting.firstPaneStatusProgressIndicatorIsVisible)
         XCTAssertEqual(row.debugSnapshotForTesting.firstPaneStatusProgressFraction, 0.25, accuracy: 0.001)
-        XCTAssertEqual(row.debugSnapshotForTesting.firstPaneStatusProgressToolTip, "")
+        XCTAssertEqual(row.debugSnapshotForTesting.firstPaneStatusProgressToolTip, "1/4 tasks")
         XCTAssertEqual(
             row.debugSnapshotForTesting.firstPaneStatusProgressColor?.srgbClamped, theme.statusRunning.srgbClamped
         )

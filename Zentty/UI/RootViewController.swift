@@ -1111,6 +1111,9 @@ final class RootViewController: NSViewController {
         sidebarView.moveToWorklaneCatalogProvider = { [weak self] paneID in
             self?.moveToWorklaneCatalogProvider?(paneID)
         }
+        sidebarView.agentListsProvider = { [weak configStore] in
+            configStore?.current.agentLists ?? .default
+        }
         sidebarView.restoredRerunnableCommandProvider = { [weak self] paneID in
             self?.worklaneStore.restoredRerunnableCommand(for: paneID)
         }

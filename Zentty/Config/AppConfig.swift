@@ -278,6 +278,19 @@ struct AppConfig: Equatable, Sendable {
         static let `default` = AgentCaffeination(enabled: true)
     }
 
+    /// Opt-in always-expanded rendering of the sidebar's per-pane task and
+    /// subagent lists. A click on the badge/ring still toggles a pane for the
+    /// session, so with an always-show flag on a click collapses it.
+    struct AgentLists: Equatable, Sendable {
+        var alwaysShowTaskLists: Bool
+        var alwaysShowSubagentLists: Bool
+
+        static let `default` = AgentLists(
+            alwaysShowTaskLists: false,
+            alwaysShowSubagentLists: false
+        )
+    }
+
     struct MenuBar: Equatable, Sendable {
         var showStatusItem: Bool
 
@@ -322,6 +335,7 @@ struct AppConfig: Equatable, Sendable {
     var restore: Restore
     var agentTeams: AgentTeams
     var agentCaffeination: AgentCaffeination
+    var agentLists: AgentLists
     var menuBar: MenuBar
     var agentIntegrations: AgentIntegrations
 
@@ -345,6 +359,7 @@ struct AppConfig: Equatable, Sendable {
         restore: .default,
         agentTeams: .default,
         agentCaffeination: .default,
+        agentLists: .default,
         menuBar: .default,
         agentIntegrations: .default
     )
@@ -374,6 +389,7 @@ struct AppConfig: Equatable, Sendable {
             restore: .default,
             agentTeams: .default,
             agentCaffeination: .default,
+            agentLists: .default,
             menuBar: .default,
             agentIntegrations: .default
         )

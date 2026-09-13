@@ -379,14 +379,29 @@ struct WorklaneArtifactLink: Equatable, Sendable {
 struct PaneAgentTaskProgress: Equatable, Sendable {
     let doneCount: Int
     let totalCount: Int
+    /// Item-level task list in harness order; empty for counts-only updates.
+    let items: [PaneAgentTaskItem]
 
-    init?(doneCount: Int, totalCount: Int) {
+    init?(doneCount: Int, totalCount: Int, items: [PaneAgentTaskItem] = []) {
         guard totalCount > 0 else {
             return nil
         }
 
         self.totalCount = totalCount
         self.doneCount = min(max(doneCount, 0), totalCount)
+        self.items = items
+    }
+
+    init?(items: [PaneAgentTaskItem]) {
+        guard !items.isEmpty else {
+            return nil
+        }
+
+        self.init(
+            doneCount: items.filter { $0.status == .done }.count,
+            totalCount: items.count,
+            items: items
+        )
     }
 }
 

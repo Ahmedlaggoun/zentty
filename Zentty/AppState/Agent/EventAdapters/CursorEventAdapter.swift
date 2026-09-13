@@ -314,7 +314,8 @@ extension AgentEventBridge {
         return try taskStore.updateProgress(
             sessionID: sessionID,
             doneCount: todoProgress.doneCount,
-            totalCount: todoProgress.totalCount
+            totalCount: todoProgress.totalCount,
+            items: todoProgress.items
         )
     }
 

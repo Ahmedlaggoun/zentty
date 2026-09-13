@@ -30,6 +30,7 @@ struct ClaudeAdapterInput {
     let transcriptPath: String?
     let toolName: String?
     let toolInput: [String: Any]
+    let toolResponse: [String: Any]?
     let toolUseID: String?
     let taskID: String?
     let taskSubject: String?
@@ -53,6 +54,7 @@ struct ClaudeAdapterInput {
         transcriptPath: String?,
         toolName: String?,
         toolInput: [String: Any],
+        toolResponse: [String: Any]? = nil,
         toolUseID: String?,
         taskID: String?,
         taskSubject: String?,
@@ -70,6 +72,7 @@ struct ClaudeAdapterInput {
         self.transcriptPath = transcriptPath
         self.toolName = toolName
         self.toolInput = toolInput
+        self.toolResponse = toolResponse
         self.toolUseID = toolUseID
         self.taskID = taskID
         self.taskSubject = taskSubject
@@ -99,6 +102,7 @@ extension AgentEventBridge {
             transcriptPath: JSONKeyAccess.firstString(in: json, keys: ["transcript_path", "transcriptPath"]),
             toolName: JSONKeyAccess.firstString(in: json, keys: ["tool_name", "toolName"]),
             toolInput: (json["tool_input"] as? [String: Any]) ?? [:],
+            toolResponse: (json["tool_response"] as? [String: Any]) ?? (json["toolResponse"] as? [String: Any]),
             toolUseID: JSONKeyAccess.firstString(in: json, keys: ["tool_use_id", "toolUseId"]),
             taskID: JSONKeyAccess.firstString(in: json, keys: ["task_id", "taskId"]),
             taskSubject: JSONKeyAccess.firstString(in: json, keys: ["task", "task_subject", "taskSubject", "title"]),
@@ -353,6 +357,12 @@ extension AgentEventBridge {
             if let sessionID = input.sessionID {
                 // Finished calls leave the queue whether or not they prompted.
                 try sessionStore.forgetPreToolUse(sessionID: sessionID, toolUseID: input.toolUseID, agentID: input.agentID)
+                if input.hookEventName == "PostToolUse" {
+                    // TaskCreate/TaskUpdate PostToolUse carries the task list
+                    // changes TaskCreated/TaskCompleted do not (the id join for
+                    // `in_progress` lives only here).
+                    try claudeApplyTaskToolUse(input: input, sessionID: sessionID, sessionStore: sessionStore)
+                }
             }
             if claudeShouldKeepPendingInteraction(
                 existing: existing,
@@ -429,13 +439,13 @@ extension AgentEventBridge {
         case "TaskCreated":
             let target = try claudeResolvedTarget(for: input, environment: environment, sessionStore: sessionStore)
             guard let sessionID = input.sessionID, let taskID = input.taskID else { return [] }
-            let taskProgress = try sessionStore.updateTask(sessionID: sessionID, taskID: taskID, isCompleted: false)
+            let taskProgress = try sessionStore.updateTask(sessionID: sessionID, taskID: taskID, subject: input.taskSubject, status: .pending)
             return [claudeLifecyclePayload(target: target, state: .running, cwd: input.cwd, interactionKind: .none, confidence: .explicit, sessionID: sessionID, taskProgress: taskProgress)]
 
         case "TaskCompleted":
             let target = try claudeResolvedTarget(for: input, environment: environment, sessionStore: sessionStore)
             guard let sessionID = input.sessionID, let taskID = input.taskID else { return [] }
-            let taskProgress = try sessionStore.updateTask(sessionID: sessionID, taskID: taskID, isCompleted: true)
+            let taskProgress = try sessionStore.updateTask(sessionID: sessionID, taskID: taskID, subject: input.taskSubject, status: .done)
             return [claudeLifecyclePayload(target: target, state: .running, cwd: input.cwd, interactionKind: .none, confidence: .explicit, sessionID: sessionID, taskProgress: taskProgress)]
 
         case "Stop":
@@ -579,6 +589,47 @@ extension AgentEventBridge {
     }
 
     // MARK: - Claude Helpers
+
+    /// `PostToolUse` for `TaskCreate` carries `tool_response.task.{id,subject}`
+    /// (a fallback for sessions where `TaskCreated` never fired); `TaskUpdate`
+    /// carries `tool_input.{taskId,status}` joined onto the earlier `task_id`,
+    /// with `tool_response.statusChange.to` as a fallback status source.
+    private static func claudeApplyTaskToolUse(
+        input: ClaudeAdapterInput,
+        sessionID: String,
+        sessionStore: ClaudeHookSessionStore
+    ) throws {
+        switch input.toolName {
+        case "TaskCreate":
+            let task = input.toolResponse?["task"] as? [String: Any]
+            guard let taskID = JSONKeyAccess.firstString(in: task, keys: ["id"])
+                ?? JSONKeyAccess.firstString(in: input.toolResponse, keys: ["taskId", "task_id", "id"]) else {
+                return
+            }
+            let subject = JSONKeyAccess.firstString(in: task, keys: ["subject", "title"])
+                ?? JSONKeyAccess.firstString(in: input.toolInput, keys: ["subject", "title"])
+            _ = try sessionStore.registerTask(sessionID: sessionID, taskID: taskID, subject: subject)
+
+        case "TaskUpdate":
+            guard let taskID = JSONKeyAccess.firstString(in: input.toolInput, keys: ["taskId", "task_id", "id"])
+                ?? JSONKeyAccess.firstString(in: input.toolResponse, keys: ["taskId", "task_id", "id"]) else {
+                return
+            }
+            let statusChange = input.toolResponse?["statusChange"] as? [String: Any]
+            let status = JSONKeyAccess.firstString(in: input.toolInput, keys: ["status", "state"])
+                ?? JSONKeyAccess.firstString(in: statusChange, keys: ["to"])
+                ?? JSONKeyAccess.firstString(in: input.toolResponse, keys: ["status", "state"])
+            _ = try sessionStore.updateTask(
+                sessionID: sessionID,
+                taskID: taskID,
+                subject: JSONKeyAccess.firstString(in: input.toolInput, keys: ["subject", "title"]),
+                status: status.map { PaneAgentTaskItemStatus(rawHarnessStatus: $0) }
+            )
+
+        default:
+            return
+        }
+    }
 
     static func claudeResolvedTarget(
         for input: ClaudeAdapterInput,
