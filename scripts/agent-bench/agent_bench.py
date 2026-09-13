@@ -338,8 +338,12 @@ def validate_scenario(
 
     missing: list[str] = []
     for event in expectation.required_events:
-        if observed_counts[event] > 0:
-            observed_counts[event] -= 1
+        satisfied = next(
+            (name for name in required_event_alternatives(event) if observed_counts[name] > 0),
+            None,
+        )
+        if satisfied is not None:
+            observed_counts[satisfied] -= 1
         else:
             missing.append(event)
     observed_bootstrap_arguments = [
@@ -375,11 +379,18 @@ def validate_scenario(
     )
 
 
+def required_event_alternatives(event: str) -> list[str]:
+    """A required event may name alternatives joined by `|` — either in the
+    tool suffix or as whole names (`PreToolUse:run_subagent|PreToolUse:sidekick`)
+    — and is satisfied when any single alternative was observed."""
+    return [alternative.strip() for alternative in event.split("|")]
+
+
 def hook_record_event_names(record: TraceRecord) -> list[str | None]:
     """Event names a hook record satisfies. Besides the raw event name, tool
     events also satisfy the tool-qualified form `EventName:tool_name` — used by
     agents like Devin that express subagent lifecycle through the
-    `run_subagent` tool rather than dedicated Subagent* hooks."""
+    `run_subagent`/`sidekick` tools rather than dedicated Subagent* hooks."""
     if not record.event_name:
         return [None]
     names = [record.event_name]
@@ -1386,12 +1397,13 @@ def subagent_trace_extra(agent: str | None, event_name: str | None, stdin_payloa
         payload_event = str(first_string(payload, ["hook_event_name", "hookEventName"]) or "").lower()
         if payload_event in SUBAGENT_START_EVENTS | SUBAGENT_STOP_EVENTS:
             lowered = payload_event
-        elif agent == "devin" and payload_event in ("pretooluse", "posttooluse") and payload.get("tool_name") == "run_subagent":
-            # Devin has no Subagent* lifecycle events; the run_subagent tool
-            # call IS the contract. PreToolUse starts the subagent (input
-            # carries title/profile/is_background); PostToolUse ends a
-            # foreground run or hands a background run off with
-            # `agent_id=<hex>` embedded in the output text.
+        elif agent == "devin" and payload_event in ("pretooluse", "posttooluse") and payload.get("tool_name") in ("run_subagent", "sidekick"):
+            # Devin has no Subagent* lifecycle events; the run_subagent /
+            # sidekick tool call IS the contract. PreToolUse starts the
+            # subagent (input carries title/profile/is_background, or
+            # message/block for sidekick); PostToolUse ends a foreground run
+            # or hands a background run off with `agent_id=<id>` embedded in
+            # the output text.
             lowered = "subagentstart" if payload_event == "pretooluse" else "subagentstop"
         else:
             return None
@@ -1408,15 +1420,22 @@ def subagent_trace_extra(agent: str | None, event_name: str | None, stdin_payloa
         response = payload.get("tool_response") if isinstance(payload.get("tool_response"), dict) else {}
         match = re.search(r"agent_id=([A-Za-z0-9_-]+)", str(response.get("output") or ""))
         run_agent_id = match.group(1) if match else None
+    agent_type = first_string(payload, ["agent_type", "agentType", "subagent_type", "subagentType", "agent_role", "agentRole"]) or first_string(
+        tool_input, ["profile", "agent_type", "agentType"]
+    )
+    nickname = resolved.get("nickname") or first_string(tool_input, ["title"])
+    if agent == "devin" and payload.get("tool_name") == "sidekick":
+        # sidekick carries no profile/title — exactly one per session.
+        agent_type = agent_type or "sidekick"
+        nickname = nickname or "Sidekick"
     observation: dict[str, Any] = {
         "event": "start" if lowered in SUBAGENT_START_EVENTS else "stop",
-        "agent_type": first_string(payload, ["agent_type", "agentType", "subagent_type", "subagentType", "agent_role", "agentRole"])
-        or first_string(tool_input, ["profile", "agent_type", "agentType"]),
+        "agent_type": agent_type,
         "agent_id": agent_id,
         "transcript_path_present": bool(transcript_path),
         "transcript_exists": bool(transcript_path) and pathlib.Path(transcript_path).exists(),
         "model": resolved.get("model"),
-        "nickname": resolved.get("nickname") or first_string(tool_input, ["title"]),
+        "nickname": nickname,
     }
     if run_agent_id:
         observation["run_agent_id"] = run_agent_id

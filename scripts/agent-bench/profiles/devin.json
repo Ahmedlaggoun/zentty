@@ -57,7 +57,7 @@
       "--permission-mode",
       "dangerous",
       "--",
-      "For an integration hook regression test: use the run_subagent tool exactly once, with profile subagent_explore and title \"bench-subagent\", to list the files in the current directory. Wait for it to finish, then reply with exactly DONE."
+      "For an integration hook regression test: delegate exactly once to a subagent — use the run_subagent tool (profile subagent_explore, title \"bench-subagent\") if you have it, otherwise the sidekick tool with block true — asking it to list the files in the current directory. Wait for it to finish, then reply with exactly DONE."
     ],
     "subagents_async": [
       "-p",
@@ -66,7 +66,7 @@
       "--permission-mode",
       "dangerous",
       "--",
-      "For an integration hook regression test: use the run_subagent tool exactly once, with profile subagent_explore, title \"bench-subagent-async\" and is_background true, to list the files in the current directory. Do not wait for it: as soon as the run_subagent call returns, reply with exactly DONE and end your turn."
+      "For an integration hook regression test: delegate exactly once to a subagent — use the run_subagent tool (profile subagent_explore, title \"bench-subagent-async\", is_background true) if you have it, otherwise the sidekick tool with block false — asking it to list the files in the current directory. Do not wait for it: as soon as the delegation call returns, reply with exactly DONE and end your turn."
     ]
   },
   "expectations": {
@@ -103,8 +103,8 @@
       "required_events": [
         "SessionStart",
         "UserPromptSubmit",
-        "PreToolUse:run_subagent",
-        "PostToolUse:run_subagent",
+        "PreToolUse:run_subagent|PreToolUse:sidekick",
+        "PostToolUse:run_subagent|PostToolUse:sidekick",
         "Stop",
         "SessionEnd"
       ],
@@ -115,8 +115,8 @@
       "required_events": [
         "SessionStart",
         "UserPromptSubmit",
-        "PreToolUse:run_subagent",
-        "PostToolUse:run_subagent",
+        "PreToolUse:run_subagent|PreToolUse:sidekick",
+        "PostToolUse:run_subagent|PostToolUse:sidekick",
         "Stop",
         "SessionEnd"
       ],

@@ -365,17 +365,17 @@ Zentty registers these Devin hooks, each calling `zentty ipc agent-event --adapt
 - `SessionStart` -> session register (slug id) + PID attach + `starting`
 - `SessionEnd` -> clear session + PID mapping
 - `UserPromptSubmit` -> `running`
-- `PreToolUse` -> `running`; `ask_user_question` -> `needs-input` with decision text; `run_subagent` -> registers a subagent
-- `PostToolUse` -> `running`; `todo_write` -> task progress from `tool_input.todos`; `run_subagent`/`read_subagent` -> retires the subagent
+- `PreToolUse` -> `running`; `ask_user_question` -> `needs-input` with decision text; `run_subagent`/`sidekick` -> registers a subagent
+- `PostToolUse` -> `running`; `todo_write` -> task progress from `tool_input.todos`; `run_subagent`/`sidekick`/`read_subagent` -> retires the subagent
 - `PermissionRequest` -> `needs-input` with approval text
 - `Stop` -> `idle`
 - `PostCompaction` -> `running`
 
 ### Subagent tracking
 
-Devin has no `SubagentStart`/`SubagentStop` events, so lifecycle is inferred from the `run_subagent` tool call. `PreToolUse` registers an entry keyed by `tool_use_id` (`run_subagent_N`) with `profile` as the agent type and `title` as the nickname. A foreground call's `PostToolUse` retires it; a background call's `PostToolUse` re-keys the entry to the real `agent_id=` parsed from the output so a later `read_subagent` completion can retire it. `subagent_explore` maps to the `swe-1-6` model badge; `subagent_general` inherits the parent model and shows no label.
+Devin has no `SubagentStart`/`SubagentStop` events, so lifecycle is inferred from the `run_subagent` or `sidekick` tool call — which one the model uses depends on the configured model (Fusion models delegate via `sidekick`). `PreToolUse` registers an entry keyed by `tool_use_id` (`run_subagent_N` / `toolu_…`) with `profile` as the agent type and `title` as the nickname; `sidekick` calls carry no profile/title, so the entry is fixed to agent type `sidekick`, nickname `Sidekick`, no model badge. A foreground call's `PostToolUse` retires it; a background call's `PostToolUse` (`is_background: true` / `block: false`) re-keys the entry to the real `agent_id=` parsed from the output (`agent_id=sidekick` for the sidekick — there is exactly one per session, and `read_subagent` with `agent_id: "sidekick"` reads it) so a later `read_subagent` completion can retire it. `subagent_explore` maps to the `swe-1-6` model badge; `subagent_general` inherits the parent model and shows no label.
 
-Hooks fired inside a subagent share the parent's `session_id`/`prompt_id` and carry no `agent_id`. A `Stop` arriving while any tool call is still open is therefore a subagent's own turn end — it stays `running` and retires the oldest tracked entry when the open call isn't `run_subagent` itself. The parent's `Stop` only fires once it has no calls in flight, so `Stop` with an empty slot set is a real `idle`.
+Hooks fired inside a subagent share the parent's `session_id`/`prompt_id` and carry no `agent_id`. A `Stop` arriving while any tool call is still open is therefore a subagent's own turn end — it stays `running` and retires the oldest tracked entry when the open call isn't `run_subagent`/`sidekick` itself. The parent's `Stop` only fires once it has no calls in flight, so `Stop` with an empty slot set is a real `idle`.
 
 ### Session restore
 
