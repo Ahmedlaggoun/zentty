@@ -8,12 +8,14 @@ import Foundation
 ///
 /// 1. Session IDs are human-readable slugs (`thorn-angora`), not UUIDs.
 /// 2. There are no `SubagentStart`/`SubagentStop` events. Subagent lifecycle is
-///    inferred from the `run_subagent` tool call: `tool_input` carries
-///    `title`, `profile` and `is_background`; the `PostToolUse` response embeds
-///    `agent_id=<hex>` in its output text. Hooks fired inside a subagent share
-///    the parent's `session_id`/`prompt_id` and carry no `agent_id`, so a
-///    `Stop` arriving while a `run_subagent` call is in flight is the
-///    subagent's own turn end, not the parent's.
+///    inferred from the `run_subagent` or `sidekick` tool call (which one the
+///    model uses depends on the configured model): `tool_input` carries
+///    `title`, `profile` and `is_background` (`sidekick` instead takes a
+///    `message` and `block`); the `PostToolUse` response embeds `agent_id=<id>`
+///    in its output text. Hooks fired inside a subagent share the parent's
+///    `session_id`/`prompt_id` and carry no `agent_id`, so a `Stop` arriving
+///    while a `run_subagent`/`sidekick` call is in flight is the subagent's
+///    own turn end, not the parent's.
 extension AgentEventBridge {
     static func devinAdapter(
         data: Data,
@@ -100,7 +102,7 @@ extension AgentEventBridge {
 
             var subagents: PaneAgentSubagentSummary?
             if devinIsSubagentTool(toolName) {
-                subagents = try subagentStore.start(key: devinSubagentKey(target), entry: devinSubagentEntry(toolUseID: toolUseID, toolInput: toolInput))
+                subagents = try subagentStore.start(key: devinSubagentKey(target), entry: devinSubagentEntry(toolName: toolName, toolUseID: toolUseID, toolInput: toolInput))
             }
             return [lifecyclePayload(
                 target: target, toolName: displayName, state: .running, sessionID: sessionID, cwd: cwd,
@@ -125,7 +127,7 @@ extension AgentEventBridge {
                         _ = try subagentStore.stop(key: devinSubagentKey(target), subagentID: toolUseID)
                         subagents = try subagentStore.start(
                             key: devinSubagentKey(target),
-                            entry: devinSubagentEntry(toolUseID: agentID, toolInput: toolInput)
+                            entry: devinSubagentEntry(toolName: toolName, toolUseID: agentID, toolInput: toolInput)
                         )
                     }
                 } else {
@@ -194,7 +196,7 @@ extension AgentEventBridge {
             // turn end — the parent's Stop only fires when it has no calls in
             // flight. Hooks from inside a subagent share the parent's
             // session_id/prompt_id with no agent_id, so this is a subagent's
-            // own Stop. A run_subagent call still in flight means a foreground
+            // own Stop. A run_subagent/sidekick call still in flight means a foreground
             // subagent ended; any other open call means a background subagent
             // finished while the parent worked — retire the oldest entry.
             let record = try sessionID.flatMap { try sessionStore.lookup(sessionID: $0) }
@@ -277,7 +279,10 @@ extension AgentEventBridge {
     }
 
     private static func devinIsSubagentTool(_ toolName: String?) -> Bool {
-        toolName?.trimmingCharacters(in: .whitespacesAndNewlines) == "run_subagent"
+        guard let name = toolName?.trimmingCharacters(in: .whitespacesAndNewlines) else {
+            return false
+        }
+        return name == "run_subagent" || name == "sidekick"
     }
 
     private static func devinIsQuestionTool(_ toolName: String?) -> Bool {
@@ -291,10 +296,19 @@ extension AgentEventBridge {
         if let flag = toolInput["is_background"] as? NSNumber {
             return flag.boolValue
         }
+        // `sidekick` spells the flag `block` — `block: false` is a background
+        // handoff; `block` absent (or true) is a blocking foreground call.
+        if let block = toolInput["block"] as? Bool {
+            return !block
+        }
+        if let block = toolInput["block"] as? NSNumber {
+            return !block.boolValue
+        }
         // Older payloads may lack the flag; the background response announces
-        // itself with "Background subagent started with agent_id=…".
+        // itself ("Background subagent started with agent_id=…" /
+        // "Sidekick handoff started (agent_id=sidekick)").
         let output = toolResponse?["output"] as? String ?? ""
-        return output.contains("Background subagent")
+        return output.contains("Background subagent") || output.contains("handoff started")
     }
 
     private static func devinSubagentAgentID(toolResponse: [String: Any]?) -> String? {
@@ -324,8 +338,19 @@ extension AgentEventBridge {
     /// `subagent_explore` resolves through the subagent-model router to
     /// SWE-1.6 by default; `subagent_general` inherits the parent's model,
     /// which the adapter cannot see, so it stays nil. Custom profiles may pin
-    /// a model in their definition — also invisible here.
-    private static func devinSubagentEntry(toolUseID: String?, toolInput: [String: Any]) -> PaneAgentSubagentEntry {
+    /// a model in their definition — also invisible here. A `sidekick` call
+    /// has no profile/title — there is exactly one sidekick per session —
+    /// so it gets a fixed agent type and nickname.
+    private static func devinSubagentEntry(toolName: String?, toolUseID: String?, toolInput: [String: Any]) -> PaneAgentSubagentEntry {
+        if toolName?.trimmingCharacters(in: .whitespacesAndNewlines) == "sidekick" {
+            return PaneAgentSubagentEntry(
+                id: toolUseID ?? UUID().uuidString,
+                agentType: "sidekick",
+                model: nil,
+                nickname: "Sidekick",
+                transcriptPath: nil
+            )
+        }
         let profile = JSONKeyAccess.firstString(in: toolInput, keys: ["profile", "agent_type", "agentType"])
         let title = JSONKeyAccess.firstString(in: toolInput, keys: ["title", "name"])
         let model = profile == "subagent_explore" ? "swe-1-6" : nil
@@ -367,10 +392,7 @@ extension AgentEventBridge {
         guard let todos = toolInput["todos"] as? [[String: Any]] else {
             return nil
         }
-        let statuses = todos.compactMap { JSONKeyAccess.firstString(in: $0, keys: ["status", "state"])?.lowercased() }
-        guard !statuses.isEmpty else { return nil }
-        let doneCount = statuses.filter { ["completed", "complete", "done"].contains($0) }.count
-        return PaneAgentTaskProgress(doneCount: doneCount, totalCount: statuses.count)
+        return PaneAgentTaskProgress(items: taskItems(fromTodoObjects: todos))
     }
 
     private static func devinInteractionPayload(

@@ -16,6 +16,13 @@
       "workspace-write",
       "Run this exact shell command: printf ZENTTY_AGENT_BENCH_OK"
     ],
+    "tasks": [
+      "--sandbox",
+      "workspace-write",
+      "--ask-for-approval",
+      "on-request",
+      "Use your task list tool (update_plan) to create a task list with these exact three tasks: Review directory, Identify main language, Suggest one improvement. Mark Review directory completed. Mark Identify main language in progress. Leave Suggest one improvement pending. Then run this exact shell command: printf ZENTTY_AGENT_BENCH_TASKS_OK"
+    ],
     "restart": [
       "exec",
       "--sandbox",
@@ -70,6 +77,15 @@
         "session_id_pattern": "codex",
         "tracked_pid": true
       }
+    },
+    "tasks": {
+      "required_events": ["session-start", "prompt-submit", "post-tool-use", "stop"],
+      "expected_task_progress": {"done": 1, "total": 3},
+      "expected_task_items": [
+        {"title": "Review directory", "status": "completed"},
+        {"title": "Identify main language", "status": "in_progress"},
+        {"title": "Suggest one improvement", "status": "pending"}
+      ]
     },
     "restart": {
       "required_events": [
@@ -126,6 +142,25 @@
         "match": "Would you like to run the following command",
         "text": "y\n",
         "label": "approve-command"
+      }
+    ],
+    "tasks": [
+      {
+        "match": "trust",
+        "after": 4,
+        "text": "1\r",
+        "label": "trust-workspace"
+      },
+      {
+        "match": "Would you like to run the following command",
+        "text": "y\r",
+        "label": "approve-command"
+      },
+      {
+        "match": "(?m)^[^\\w\\n]*ZENTTY_AGENT_BENCH_TASKS_OK\\s*$",
+        "after": 15,
+        "text": "/quit\r",
+        "label": "quit"
       }
     ],
     "question": [

@@ -41,6 +41,15 @@
       "1.00",
       "For an integration hook regression test, create a file named ZENTTY_AGENT_BENCH_APPROVAL_OK in the current directory using the Write tool. Put the text ZENTTY_AGENT_BENCH_APPROVAL_OK in the file."
     ],
+    "tasks": [
+      "--setting-sources",
+      "project,local",
+      "--permission-mode",
+      "default",
+      "--max-budget-usd",
+      "1.00",
+      "Use your task list tool (TaskCreate/TaskUpdate) to create a task list with these exact three tasks: Review directory, Identify main language, Suggest one improvement. Mark Review directory completed. Mark Identify main language in progress. Leave Suggest one improvement pending. Then run this exact shell command: printf ZENTTY_AGENT_BENCH_TASKS_OK"
+    ],
     "manual_compact": [
       "--setting-sources",
       "project,local"
@@ -122,6 +131,20 @@
         "PermissionRequest"
       ]
     },
+    "tasks": {
+      "required_events": [
+        "SessionStart",
+        "UserPromptSubmit",
+        "PostToolUse",
+        "Stop"
+      ],
+      "expected_task_progress": {"done": 1, "total": 3},
+      "expected_task_items": [
+        {"title": "Review directory", "status": "completed"},
+        {"title": "Identify main language", "status": "in_progress"},
+        {"title": "Suggest one improvement", "status": "pending"}
+      ]
+    },
     "stop_race": {
       "synthetic": true,
       "fixture": "claude_stop_then_late_notification.jsonl",
@@ -199,11 +222,30 @@
       "subagent_nested_required": true
     }
   },
+  "environment_by_scenario": {
+    "tasks": {
+      "CLAUDE_CODE_ENABLE_TODO_TOOLS": "1",
+      "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1"
+    }
+  },
   "input_by_scenario": {
     "approval": [
       {
         "match": "Command to approve|Yes, allow|Do you want|Permission|allow",
         "text": "1\n"
+      }
+    ],
+    "tasks": [
+      {
+        "match": "Command to approve|Yes, allow|Do you want|Permission|allow",
+        "text": "1\n",
+        "label": "approve"
+      },
+      {
+        "match": "(?m)^[^\\w\\n]*ZENTTY_AGENT_BENCH_TASKS_OK\\s*$",
+        "after": 15,
+        "text": "/exit\r",
+        "label": "exit"
       }
     ],
     "manual_compact": [

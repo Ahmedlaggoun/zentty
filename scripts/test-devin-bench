@@ -8,8 +8,8 @@
 # auth blocker fails the gate rather than silently passing.
 #
 # Devin has no SubagentStart/SubagentStop events; subagent lifecycle is
-# inferred from run_subagent tool hooks — this bench is what guards that
-# inference plus the `--config` overlay contract.
+# inferred from run_subagent / sidekick tool hooks — this bench is what guards
+# that inference plus the `--config` overlay contract.
 #
 # Re-run this after:
 #   * any devin CLI bump (it is the upstream side of the contract)
@@ -20,6 +20,7 @@
 #   scripts/test-devin-bench                 # full sweep, builds first
 #   scripts/test-devin-bench --no-build      # skip xcodebuild, reuse last build
 #   scripts/test-devin-bench --scenarios smoke,tools
+#   scripts/test-devin-bench --no-build --app-path <Zentty.app>   # pin a worktree build
 #
 
 set -euo pipefail
@@ -27,14 +28,17 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 NO_BUILD=0
+APP_PATH=""
 SCENARIOS="smoke,session_capture,tools,approval,restore_launch,subagents,subagents_async"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --no-build) NO_BUILD=1; shift ;;
     --scenarios) SCENARIOS="$2"; shift 2 ;;
     --scenarios=*) SCENARIOS="${1#--scenarios=}"; shift ;;
+    --app-path) APP_PATH="$2"; shift 2 ;;
+    --app-path=*) APP_PATH="${1#--app-path=}"; shift ;;
     -h|--help)
-      sed -n '2,24p' "$0"
+      sed -n '2,25p' "$0"
       exit 0
       ;;
     *)
@@ -47,6 +51,9 @@ done
 BENCH_ARGS=(run --agents devin --scenarios "$SCENARIOS" --strict)
 if [[ $NO_BUILD -eq 1 ]]; then
   BENCH_ARGS+=(--no-build)
+fi
+if [[ -n "$APP_PATH" ]]; then
+  BENCH_ARGS+=(--app-path "$APP_PATH")
 fi
 
 echo "==> Running agent-bench against scenarios: $SCENARIOS"

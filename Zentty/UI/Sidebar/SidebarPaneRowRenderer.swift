@@ -42,12 +42,14 @@ final class SidebarPaneRowRenderer {
         var onServerPortSelected: ((String) -> Void)?
         var restoredRerunnableCommandProvider: ((PaneID) -> String?)?
         var onToggleSubagentDetails: ((PaneID) -> Void)?
+        var onToggleTaskListDetails: ((PaneID) -> Void)?
     }
 
     private(set) var panePrimaryRows: [SidebarPanePrimaryRowView] = []
     private(set) var paneDetailLabels: [SidebarStaticLabel] = []
     private(set) var paneStatusRows: [SidebarPaneTextRowView] = []
     private(set) var paneServerRows: [SidebarPaneServerRowView] = []
+    private(set) var paneTaskListRows: [SidebarPaneTaskListView] = []
     private(set) var paneSubagentRows: [SidebarPaneSubagentListView] = []
     private(set) var paneRowButtons: [SidebarPaneRowButton] = []
     private(set) var paneRowContainers: [SidebarInsetContainerView] = []
@@ -127,6 +129,9 @@ final class SidebarPaneRowRenderer {
             )
             paneStatusRows[index].setShimmerPhaseOffset(panePhaseOffset)
             paneServerRows[index].configure(serverPorts: panePresentation.serverPorts)
+            paneTaskListRows[index].configure(
+                items: panePresentation.showsTaskDetails ? paneRow.taskProgress?.items : nil
+            )
             paneSubagentRows[index].configure(
                 summary: panePresentation.showsSubagentDetails ? panePresentation.subagents : nil
             )
@@ -159,6 +164,7 @@ final class SidebarPaneRowRenderer {
             button.serverRowView = paneServerRows[index]
             button.statusRowView = paneStatusRows[index]
             button.onSubagentBadgeClicked = callbacks.onToggleSubagentDetails
+            button.onTaskProgressClicked = callbacks.onToggleTaskListDetails
             button.onServerPortSelected = callbacks.onServerPortSelected
             button.onHoverChanged = callbacks.onHoverChanged
             button.worklaneMoveAvailability = callbacks.worklaneMoveAvailability
@@ -195,6 +201,10 @@ final class SidebarPaneRowRenderer {
 
         while paneServerRows.count < count {
             paneServerRows.append(SidebarPaneServerRowView())
+        }
+
+        while paneTaskListRows.count < count {
+            paneTaskListRows.append(SidebarPaneTaskListView())
         }
 
         while paneSubagentRows.count < count {
@@ -245,6 +255,7 @@ final class SidebarWorklaneRowContentRenderer {
         let detailLabels: [NSView]
         let statusRows: [NSView]
         let serverRows: [NSView]
+        let taskListRows: [NSView]
         let subagentRows: [NSView]
         let buttons: [SidebarPaneRowButton]
         let containers: [NSView]
@@ -296,6 +307,7 @@ final class SidebarWorklaneRowContentRenderer {
         views.append(contentsOf: [
             paneRows.statusRows[index],
             paneRows.serverRows[index],
+            paneRows.taskListRows[index],
             paneRows.subagentRows[index],
         ])
         return views
@@ -342,6 +354,8 @@ final class SidebarWorklaneRowContentRenderer {
             paneRows.statusRows[index]
         case .paneServer(let index):
             paneRows.serverRows[index]
+        case .paneTaskList(let index):
+            paneRows.taskListRows[index]
         case .paneSubagents(let index):
             paneRows.subagentRows[index]
         case .context:

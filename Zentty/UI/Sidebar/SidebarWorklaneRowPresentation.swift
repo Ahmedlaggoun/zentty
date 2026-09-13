@@ -13,6 +13,7 @@ struct SidebarWorklaneRowRenderPlan: Equatable {
         let remotePaneLabel: String?
         let subagents: PaneAgentSubagentSummary?
         let showsSubagentDetails: Bool
+        let showsTaskDetails: Bool
     }
 
     let summary: WorklaneSidebarSummary
@@ -27,12 +28,20 @@ struct SidebarWorklaneRowRenderPlan: Equatable {
     let statusLineCount: Int
     let paneRows: [PaneRow]
 
-    init(summary: WorklaneSidebarSummary, availableWidth: CGFloat?, expandedSubagentPaneIDs: Set<PaneID> = []) {
+    init(
+        summary: WorklaneSidebarSummary,
+        availableWidth: CGFloat?,
+        toggledSubagentPaneIDs: Set<PaneID> = [],
+        toggledTaskListPaneIDs: Set<PaneID> = [],
+        agentLists: AppConfig.AgentLists = .default
+    ) {
         self.summary = summary
         let layout = SidebarWorklaneRowLayout(
             summary: summary,
             availableWidth: availableWidth,
-            expandedSubagentPaneIDs: expandedSubagentPaneIDs
+            toggledSubagentPaneIDs: toggledSubagentPaneIDs,
+            toggledTaskListPaneIDs: toggledTaskListPaneIDs,
+            agentLists: agentLists
         )
         mode = layout.mode
         visibleTextRows = layout.visibleTextRows
@@ -98,7 +107,13 @@ struct SidebarWorklaneRowRenderPlan: Equatable {
                 subagents: (paneRow.subagents?.isEmpty ?? true) ? nil : paneRow.subagents,
                 showsSubagentDetails: SidebarWorklaneRowLayout.paneRowShowsSubagentDetails(
                     paneRow,
-                    expandedSubagentPaneIDs: expandedSubagentPaneIDs
+                    toggledSubagentPaneIDs: toggledSubagentPaneIDs,
+                    alwaysShow: agentLists.alwaysShowSubagentLists
+                ),
+                showsTaskDetails: SidebarWorklaneRowLayout.paneRowShowsTaskDetails(
+                    paneRow,
+                    toggledTaskListPaneIDs: toggledTaskListPaneIDs,
+                    alwaysShow: agentLists.alwaysShowTaskLists
                 )
             )
         }

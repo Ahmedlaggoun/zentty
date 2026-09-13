@@ -1154,6 +1154,154 @@ final class PaneAgentReducerTests: XCTestCase {
         XCTAssertEqual(status?.taskProgress, PaneAgentTaskProgress(doneCount: 1, totalCount: 3))
     }
 
+    // A counts-only follow-up (e.g. Codex title progress or an older harness
+    // path) must not wipe an item-bearing list while the counts still agree.
+    func test_counts_only_progress_preserves_items_when_counts_match() {
+        let startedAt = Date(timeIntervalSince1970: 100)
+        var reducerState = PaneAgentReducerState()
+        let items = [
+            PaneAgentTaskItem(id: "1", title: "Review directory", status: .done),
+            PaneAgentTaskItem(id: "2", title: "Identify main language", status: .inProgress),
+            PaneAgentTaskItem(id: "3", title: "Suggest one improvement", status: .pending),
+        ]
+
+        reducerState.apply(
+            AgentStatusPayload(
+                worklaneID: WorklaneID("worklane-main"),
+                paneID: PaneID("pane-shell"),
+                state: .running,
+                origin: .explicitHook,
+                toolName: "Claude Code",
+                text: nil,
+                confidence: .explicit,
+                sessionID: "session-1",
+                taskProgress: PaneAgentTaskProgress(items: items),
+                artifactKind: nil,
+                artifactLabel: nil,
+                artifactURL: nil
+            ),
+            now: startedAt
+        )
+        reducerState.apply(
+            AgentStatusPayload(
+                worklaneID: WorklaneID("worklane-main"),
+                paneID: PaneID("pane-shell"),
+                state: .running,
+                origin: .explicitHook,
+                toolName: "Claude Code",
+                text: nil,
+                confidence: .explicit,
+                sessionID: "session-1",
+                taskProgress: PaneAgentTaskProgress(doneCount: 1, totalCount: 3),
+                artifactKind: nil,
+                artifactLabel: nil,
+                artifactURL: nil
+            ),
+            now: startedAt.addingTimeInterval(1)
+        )
+
+        let status = reducerState.reducedStatus(now: startedAt.addingTimeInterval(1))
+        XCTAssertEqual(status?.taskProgress?.items, items)
+        XCTAssertEqual(status?.taskProgress?.doneCount, 1)
+        XCTAssertEqual(status?.taskProgress?.totalCount, 3)
+    }
+
+    // Different counts with no items mean the list changed underneath us:
+    // the stale items are dropped in favor of the counts.
+    func test_counts_only_progress_drops_stale_items_when_counts_differ() {
+        let startedAt = Date(timeIntervalSince1970: 100)
+        var reducerState = PaneAgentReducerState()
+
+        reducerState.apply(
+            AgentStatusPayload(
+                worklaneID: WorklaneID("worklane-main"),
+                paneID: PaneID("pane-shell"),
+                state: .running,
+                origin: .explicitHook,
+                toolName: "Claude Code",
+                text: nil,
+                confidence: .explicit,
+                sessionID: "session-1",
+                taskProgress: PaneAgentTaskProgress(items: [
+                    PaneAgentTaskItem(id: "1", title: "Review directory", status: .done),
+                ]),
+                artifactKind: nil,
+                artifactLabel: nil,
+                artifactURL: nil
+            ),
+            now: startedAt
+        )
+        reducerState.apply(
+            AgentStatusPayload(
+                worklaneID: WorklaneID("worklane-main"),
+                paneID: PaneID("pane-shell"),
+                state: .running,
+                origin: .explicitHook,
+                toolName: "Claude Code",
+                text: nil,
+                confidence: .explicit,
+                sessionID: "session-1",
+                taskProgress: PaneAgentTaskProgress(doneCount: 2, totalCount: 4),
+                artifactKind: nil,
+                artifactLabel: nil,
+                artifactURL: nil
+            ),
+            now: startedAt.addingTimeInterval(1)
+        )
+
+        let status = reducerState.reducedStatus(now: startedAt.addingTimeInterval(1))
+        XCTAssertEqual(status?.taskProgress, PaneAgentTaskProgress(doneCount: 2, totalCount: 4))
+    }
+
+    // Item-bearing updates always replace the previous list wholesale.
+    func test_item_bearing_progress_replaces_items() {
+        let startedAt = Date(timeIntervalSince1970: 100)
+        var reducerState = PaneAgentReducerState()
+
+        reducerState.apply(
+            AgentStatusPayload(
+                worklaneID: WorklaneID("worklane-main"),
+                paneID: PaneID("pane-shell"),
+                state: .running,
+                origin: .explicitHook,
+                toolName: "Claude Code",
+                text: nil,
+                confidence: .explicit,
+                sessionID: "session-1",
+                taskProgress: PaneAgentTaskProgress(items: [
+                    PaneAgentTaskItem(id: "1", title: "Old", status: .done),
+                ]),
+                artifactKind: nil,
+                artifactLabel: nil,
+                artifactURL: nil
+            ),
+            now: startedAt
+        )
+        reducerState.apply(
+            AgentStatusPayload(
+                worklaneID: WorklaneID("worklane-main"),
+                paneID: PaneID("pane-shell"),
+                state: .running,
+                origin: .explicitHook,
+                toolName: "Claude Code",
+                text: nil,
+                confidence: .explicit,
+                sessionID: "session-1",
+                taskProgress: PaneAgentTaskProgress(items: [
+                    PaneAgentTaskItem(id: "9", title: "New batch", status: .pending),
+                    PaneAgentTaskItem(id: "10", title: "Second", status: .pending),
+                ]),
+                artifactKind: nil,
+                artifactLabel: nil,
+                artifactURL: nil
+            ),
+            now: startedAt.addingTimeInterval(1)
+        )
+
+        let status = reducerState.reducedStatus(now: startedAt.addingTimeInterval(1))
+        XCTAssertEqual(status?.taskProgress?.items.map(\.title), ["New batch", "Second"])
+    }
+
     func test_real_opencode_session_idle_replaces_synthetic_prelaunch_session() {
         let startedAt = Date(timeIntervalSince1970: 100)
         var reducerState = PaneAgentReducerState()

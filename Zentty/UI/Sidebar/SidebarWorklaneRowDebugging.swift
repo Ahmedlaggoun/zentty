@@ -55,6 +55,8 @@ struct SidebarWorklaneRowDebugSnapshot {
     let firstPaneSubagentBadgeToolTip: String?
     let firstPaneSubagentBadgeFillColor: NSColor?
     let paneSubagentListTexts: [[String]]
+    let paneTaskListTexts: [[(glyph: String, title: String)]]
+    let paneTaskListRuleColors: [NSColor?]
     let paneStatusShimmerPhaseOffsets: [CGFloat]
     let firstPaneStatusTextColor: NSColor?
     let firstPaneStatusProgressIndicatorIsVisible: Bool
@@ -100,6 +102,7 @@ enum SidebarWorklaneRowDebugInteraction {
     case firstPaneStatusLineHoverReconciliation(pointerInsideLine: Bool)
     case firstPaneServerPortClick(index: Int)
     case firstPaneSubagentBadgeClick
+    case firstPaneTaskListClick
 }
 
 enum SidebarWorklaneRowDebugMenuTarget {
@@ -133,6 +136,7 @@ struct SidebarWorklaneRowDebugAccess {
     let paneDetailLabels: [SidebarStaticLabel]
     let paneStatusRows: [SidebarPaneTextRowView]
     let paneServerRows: [SidebarPaneServerRowView]
+    let paneTaskListRows: [SidebarPaneTaskListView]
     let paneSubagentRows: [SidebarPaneSubagentListView]
     let paneRowButtons: [SidebarPaneRowButton]
     let paneRowContainers: [SidebarInsetContainerView]
@@ -258,6 +262,10 @@ extension SidebarWorklaneRowButton {
             firstPaneSubagentBadgeFillColor: access.paneStatusRows.first?.subagentBadgeFillColorForTesting,
             paneSubagentListTexts: access.paneSubagentRows.prefix(paneRowCount)
                 .map { $0.isHidden ? [] : $0.lineTextsForTesting },
+            paneTaskListTexts: access.paneTaskListRows.prefix(paneRowCount)
+                .map { $0.isHidden ? [] : $0.lineTextsForTesting },
+            paneTaskListRuleColors: access.paneTaskListRows.prefix(paneRowCount)
+                .map(\.ruleColorForTesting),
             paneStatusShimmerPhaseOffsets: access.paneStatusRows.prefix(paneRowCount)
                 .map(\.shimmerPhaseOffsetForTesting),
             firstPaneStatusTextColor: access.paneStatusRows.first?.textColor,
@@ -344,6 +352,15 @@ extension SidebarWorklaneRowButton {
             }
 
             paneButton.performPrimaryClickForTesting(at: NSPoint(x: badgeFrame.midX, y: badgeFrame.midY))
+        case .firstPaneTaskListClick:
+            guard let paneButton = access.paneRowButtons.first,
+                  let statusRow = access.paneStatusRows.first,
+                  let progressFrame = statusRow.taskProgressFrame(in: paneButton)
+            else {
+                return
+            }
+
+            paneButton.performPrimaryClickForTesting(at: NSPoint(x: progressFrame.midX, y: progressFrame.midY))
         }
     }
 

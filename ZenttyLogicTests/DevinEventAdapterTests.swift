@@ -201,7 +201,14 @@ final class DevinEventAdapterTests: XCTestCase {
 
         XCTAssertEqual(payloads.count, 1)
         XCTAssertEqual(payloads[0].state, .running)
-        XCTAssertEqual(payloads[0].taskProgress, PaneAgentTaskProgress(doneCount: 1, totalCount: 3))
+        XCTAssertEqual(
+            payloads[0].taskProgress,
+            PaneAgentTaskProgress(items: [
+                PaneAgentTaskItem(title: "First", status: .done),
+                PaneAgentTaskItem(title: "Second", status: .inProgress),
+                PaneAgentTaskItem(title: "Third", status: .pending),
+            ])
+        )
     }
 
     // MARK: - Subagents
@@ -277,6 +284,87 @@ final class DevinEventAdapterTests: XCTestCase {
           "tool_use_id": "read_subagent_0",
           "tool_input": {"agent_id": "ab12cd34"},
           "tool_response": {"output": "Subagent ab12cd34 completed."}
+        }
+        """)
+        XCTAssertEqual(stop.first?.subagents?.count, 0)
+    }
+
+    func test_devin_adapter_sidekick_foreground_tracks_lifecycle() throws {
+        let harness = try makeHarness()
+        _ = try harness.payloads(for: #"{"hook_event_name":"SessionStart","session_id":"s-1"}"#)
+
+        let pre = try harness.payloads(for: """
+        {
+          "hook_event_name": "PreToolUse",
+          "session_id": "s-1",
+          "tool_name": "sidekick",
+          "tool_use_id": "toolu_01DAJLo5CmJYtW7NkWCmFA94",
+          "tool_input": {"message": "list the files in the current directory"}
+        }
+        """)
+        XCTAssertEqual(pre.count, 1)
+        XCTAssertEqual(pre[0].subagents?.count, 1)
+        let entry = try XCTUnwrap(pre[0].subagents?.entries.first)
+        XCTAssertEqual(entry.id, "toolu_01DAJLo5CmJYtW7NkWCmFA94")
+        XCTAssertEqual(entry.agentType, "sidekick")
+        XCTAssertEqual(entry.nickname, "Sidekick")
+        XCTAssertNil(entry.model)
+
+        let post = try harness.payloads(for: """
+        {
+          "hook_event_name": "PostToolUse",
+          "session_id": "s-1",
+          "tool_name": "sidekick",
+          "tool_use_id": "toolu_01DAJLo5CmJYtW7NkWCmFA94",
+          "tool_input": {"message": "list the files in the current directory"},
+          "tool_response": {"success": true, "output": "Sidekick finished the handoff. Its full report is delivered in the <subagent_completion_notification> message."}
+        }
+        """)
+        XCTAssertEqual(post.count, 1)
+        XCTAssertEqual(post[0].subagents?.count, 0)
+    }
+
+    func test_devin_adapter_sidekick_background_rekeys_to_agent_id() throws {
+        let harness = try makeHarness()
+        _ = try harness.payloads(for: #"{"hook_event_name":"SessionStart","session_id":"s-1"}"#)
+
+        _ = try harness.payloads(for: """
+        {
+          "hook_event_name": "PreToolUse",
+          "session_id": "s-1",
+          "tool_name": "sidekick",
+          "tool_use_id": "toolu_01D8H4JYWdAWvfj155YUs7XG",
+          "tool_input": {"message": "list the files in the current directory", "block": false}
+        }
+        """)
+        let post = try harness.payloads(for: """
+        {
+          "hook_event_name": "PostToolUse",
+          "session_id": "s-1",
+          "tool_name": "sidekick",
+          "tool_use_id": "toolu_01D8H4JYWdAWvfj155YUs7XG",
+          "tool_input": {"message": "list the files in the current directory", "block": false},
+          "tool_response": {"success": true, "output": "Sidekick handoff started (agent_id=sidekick). The system will inject a <subagent_completion_notification> message containing its report when it finishes."}
+        }
+        """)
+        // The sidekick is alive in the background, re-keyed from the
+        // tool_use_id to its literal agent id so a later read_subagent
+        // completion can retire it.
+        XCTAssertEqual(post.first?.subagents?.count, 1)
+        let entry = try XCTUnwrap(post.first?.subagents?.entries.first)
+        XCTAssertEqual(entry.id, "sidekick")
+        XCTAssertEqual(entry.agentType, "sidekick")
+        XCTAssertEqual(entry.nickname, "Sidekick")
+        XCTAssertNil(entry.model)
+
+        let stop = try harness.payloads(for: """
+        {
+          "hook_event_name": "PostToolUse",
+          "session_id": "s-1",
+          "tool_name": "read_subagent",
+          "tool_use_id": "read_subagent_0",
+          "tool_input": {"agent_id": "sidekick"},
+          "tool_response": {"output": "Subagent sidekick finished."}
         }
         """)
         XCTAssertEqual(stop.first?.subagents?.count, 0)

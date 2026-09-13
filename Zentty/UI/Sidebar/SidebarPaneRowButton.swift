@@ -555,6 +555,7 @@ final class SidebarPaneRowButton: NSButton {
     var onServerPortSelected: ((String) -> Void)?
     weak var statusRowView: SidebarPaneTextRowView?
     var onSubagentBadgeClicked: ((PaneID) -> Void)?
+    var onTaskProgressClicked: ((PaneID) -> Void)?
     var onMoveWorklane: ((SidebarWorklaneMoveDirection) -> Void)?
     var worklaneMoveAvailability: SidebarWorklaneMoveAvailability = .none
     var rightPaneCommandPresentationProvider: (() -> PaneRightCommandPresentation)?
@@ -631,7 +632,11 @@ final class SidebarPaneRowButton: NSButton {
 
     override func mouseDown(with event: NSEvent) {
         let pointInSelf = convert(event.locationInWindow, from: nil)
-        if event.type == .leftMouseDown, openServerIfNeeded(at: pointInSelf) || toggleSubagentDetailsIfNeeded(at: pointInSelf) {
+        if event.type == .leftMouseDown,
+           openServerIfNeeded(at: pointInSelf)
+            || toggleSubagentDetailsIfNeeded(at: pointInSelf)
+            || toggleTaskListDetailsIfNeeded(at: pointInSelf)
+        {
             return
         }
 
@@ -655,7 +660,10 @@ final class SidebarPaneRowButton: NSButton {
 
     @discardableResult
     func performPrimaryClick(at point: NSPoint) -> Bool {
-        if openServerIfNeeded(at: point) || toggleSubagentDetailsIfNeeded(at: point) {
+        if openServerIfNeeded(at: point)
+            || toggleSubagentDetailsIfNeeded(at: point)
+            || toggleTaskListDetailsIfNeeded(at: point)
+        {
             return true
         }
 
@@ -691,6 +699,21 @@ final class SidebarPaneRowButton: NSButton {
         }
 
         onSubagentBadgeClicked?(paneID)
+        return true
+    }
+
+    /// The task progress ring (and its hover reveal) toggles the pane's task
+    /// list instead of selecting the pane, like the subagent badge. Counts-only
+    /// progress reports no frame, so those clicks keep their default behavior.
+    private func toggleTaskListDetailsIfNeeded(at point: NSPoint) -> Bool {
+        guard let statusRowView,
+              let progressFrame = statusRowView.taskProgressFrame(in: self),
+              progressFrame.insetBy(dx: -2, dy: -2).contains(point)
+        else {
+            return false
+        }
+
+        onTaskProgressClicked?(paneID)
         return true
     }
 

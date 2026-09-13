@@ -13,6 +13,11 @@
       "--print",
       "Run this exact shell command: printf ZENTTY_AGENT_BENCH_OK"
     ],
+    "tasks": [
+      "--print",
+      "--no-session",
+      "Use your task list tool (todo) to create a task list with these exact three tasks: Review directory, Identify main language, Suggest one improvement. Mark Review directory completed. Mark Identify main language in progress. Leave Suggest one improvement pending. Then run this exact shell command: printf ZENTTY_AGENT_BENCH_TASKS_OK"
+    ],
     "restore_launch": [
       "-c"
     ]
@@ -26,6 +31,15 @@
       "session_identity": {
         "tracked_pid": true
       }
+    },
+    "tasks": {
+      "required_events": ["session.start", "agent.running", "agent.idle", "session.end"],
+      "expected_task_progress": {"done": 1, "total": 3},
+      "expected_task_items": [
+        {"title": "Review directory", "status": "completed"},
+        {"title": "Identify main language", "status": "in_progress"},
+        {"title": "Suggest one improvement", "status": "pending"}
+      ]
     },
     "restore_launch": {
       "required_events": [],

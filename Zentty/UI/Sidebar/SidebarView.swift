@@ -222,6 +222,7 @@ final class SidebarView: NSView {
     var rightPaneCommandPresentationProvider: (() -> PaneRightCommandPresentation)?
     var moveToWorklaneCatalogProvider: ((PaneID) -> WorklaneDestinationCatalog?)?
     var restoredRerunnableCommandProvider: ((PaneID) -> String?)?
+    var agentListsProvider: (() -> AppConfig.AgentLists)?
     var onCheckForUpdatesRequested: (() -> Void)?
     var onPointerEntered: (() -> Void)?
     var onPointerExited: (() -> Void)?
@@ -262,6 +263,7 @@ final class SidebarView: NSView {
 
     private var worklaneButtons: [SidebarWorklaneRowButton] = []
     private var worklaneSummaries: [WorklaneSidebarSummary] = []
+    private var lastRenderedAgentLists: AppConfig.AgentLists?
     private var canonicalWorklaneSummaries: [WorklaneSidebarSummary] = []
     private var dragPreviewOrder: [WorklaneID]?
     private var dragPreviewDraggedWorklaneID: WorklaneID?
@@ -572,14 +574,17 @@ final class SidebarView: NSView {
     ) {
         reconcileDragPreview(with: summaries)
         let effectiveSummaries = effectiveSummaries(for: summaries)
+        let agentLists = agentListsProvider?() ?? .default
 
         if effectiveSummaries == worklaneSummaries,
            theme == currentTheme,
+           agentLists == lastRenderedAgentLists,
            worklaneButtons.map(\.worklaneID) == effectiveSummaries.map(\.worklaneID) {
             syncWorklaneMoveAvailability()
             syncReorderSpacer()
             return
         }
+        lastRenderedAgentLists = agentLists
 
 #if DEBUG
         renderInvocationCountDebug &+= 1
@@ -686,6 +691,9 @@ final class SidebarView: NSView {
         }
         button.restoredRerunnableCommandProvider = { [weak self] paneID in
             self?.restoredRerunnableCommandProvider?(paneID)
+        }
+        button.agentListsProvider = { [weak self] in
+            self?.agentListsProvider?() ?? .default
         }
         button.onMovePaneToNewWindowRequested = { [weak self] paneID in
             self?.onMovePaneToNewWindowRequested?(worklaneID, paneID)

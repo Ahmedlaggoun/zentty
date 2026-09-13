@@ -61,7 +61,7 @@ Re-run after:
 - any change to `AgyHooksInstaller`, `agyAdapter`, or `AgyCanonicalReEmitter`,
 - any change to `scripts/agent-bench/profiles/agy.json`.
 
-For the devin integration, the gate is `scripts/test-devin-bench`. It runs the full devin scenario sweep — `smoke,session_capture,tools,approval,restore_launch,subagents,subagents_async` — in `--strict` mode and covers the `--config` overlay contract plus subagent lifecycle inferred from `run_subagent` hooks.
+For the devin integration, the gate is `scripts/test-devin-bench`. It runs the full devin scenario sweep — `smoke,session_capture,tools,approval,restore_launch,subagents,subagents_async` — in `--strict` mode and covers the `--config` overlay contract plus subagent lifecycle inferred from `run_subagent` / `sidekick` hooks.
 
 Re-run after:
 - any devin CLI version bump,

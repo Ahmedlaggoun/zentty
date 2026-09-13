@@ -32,6 +32,14 @@
       "--print-timeout",
       "120"
     ],
+    "tasks": [
+      "--print",
+      "--prompt",
+      "Use your task list tool (todo) to create a task list with these exact three tasks: Review directory, Identify main language, Suggest one improvement. Mark Review directory completed. Mark Identify main language in progress. Leave Suggest one improvement pending. Then run this exact shell command: printf ZENTTY_AGENT_BENCH_TASKS_OK",
+      "--dangerously-skip-permissions",
+      "--print-timeout",
+      "90"
+    ],
     "restore_launch": [
       "--continue"
     ],
@@ -61,6 +69,15 @@
         "pre-tool-use",
         "post-tool-use",
         "stop"
+      ]
+    },
+    "tasks": {
+      "required_events": ["session.start", "agent.running"],
+      "expected_task_progress": {"done": 1, "total": 3},
+      "expected_task_items": [
+        {"title": "Review directory", "status": "completed"},
+        {"title": "Identify main language", "status": "in_progress"},
+        {"title": "Suggest one improvement", "status": "pending"}
       ]
     },
     "restore_launch": {

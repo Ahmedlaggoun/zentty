@@ -27,6 +27,14 @@
       "--output-format",
       "json"
     ],
+    "tasks": [
+      "--prompt",
+      "Use your task list tool (todo) to create a task list with these exact three tasks: Review directory, Identify main language, Suggest one improvement. Mark Review directory completed. Mark Identify main language in progress. Leave Suggest one improvement pending. Then run this exact shell command: printf ZENTTY_AGENT_BENCH_TASKS_OK",
+      "--allow-all-tools",
+      "--allow-all-paths",
+      "--output-format",
+      "json"
+    ],
     "restore_launch": [
       "--resume=237d8c32-2a27-4850-8da8-3a110f13682c"
     ]
@@ -44,6 +52,15 @@
     },
     "approval": {
       "required_events": ["session-start", "user-prompt-submitted", "pre-tool-use"]
+    },
+    "tasks": {
+      "required_events": ["session-start", "user-prompt-submitted", "pre-tool-use", "post-tool-use", "session-end"],
+      "expected_task_progress": {"done": 1, "total": 3},
+      "expected_task_items": [
+        {"title": "Review directory", "status": "completed"},
+        {"title": "Identify main language", "status": "in_progress"},
+        {"title": "Suggest one improvement", "status": "pending"}
+      ]
     },
     "restore_launch": {
       "required_events": [],

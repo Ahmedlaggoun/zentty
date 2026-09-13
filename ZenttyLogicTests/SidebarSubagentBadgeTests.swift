@@ -43,7 +43,7 @@ final class SidebarSubagentBadgeTests: AppKitTestCase {
         row.layoutSubtreeIfNeeded()
 
         XCTAssertEqual(selectedPaneIDs, [])
-        XCTAssertEqual(row.expandedSubagentPaneIDsForTesting, [paneID])
+        XCTAssertEqual(row.toggledSubagentPaneIDsForTesting, [paneID])
         XCTAssertEqual(
             row.debugSnapshotForTesting.paneSubagentListTexts,
             [["2 × opus general-purpose", "1 × sonnet codex-review"]]
@@ -63,7 +63,7 @@ final class SidebarSubagentBadgeTests: AppKitTestCase {
         row.performDebugInteractionForTesting(.firstPaneSubagentBadgeClick)
         row.layoutSubtreeIfNeeded()
 
-        XCTAssertEqual(row.expandedSubagentPaneIDsForTesting, [])
+        XCTAssertEqual(row.toggledSubagentPaneIDsForTesting, [])
         XCTAssertEqual(row.debugSnapshotForTesting.paneSubagentListTexts, [[]])
         XCTAssertEqual(row.intrinsicContentSize.height, collapsedHeight, accuracy: 0.001)
     }
@@ -73,12 +73,12 @@ final class SidebarSubagentBadgeTests: AppKitTestCase {
         row.configure(with: makeSummary(subagents: threeSubagents), theme: ZenttyTheme.fallback(for: nil), animated: false)
         row.layoutSubtreeIfNeeded()
         row.performDebugInteractionForTesting(.firstPaneSubagentBadgeClick)
-        XCTAssertEqual(row.expandedSubagentPaneIDsForTesting, [paneID])
+        XCTAssertEqual(row.toggledSubagentPaneIDsForTesting, [paneID])
 
         row.configure(with: makeSummary(subagents: .empty), theme: ZenttyTheme.fallback(for: nil), animated: false)
         row.layoutSubtreeIfNeeded()
 
-        XCTAssertEqual(row.expandedSubagentPaneIDsForTesting, [])
+        XCTAssertEqual(row.toggledSubagentPaneIDsForTesting, [])
         XCTAssertEqual(row.debugSnapshotForTesting.paneSubagentBadgeTexts, [""])
         XCTAssertEqual(row.debugSnapshotForTesting.paneSubagentListTexts, [[]])
     }

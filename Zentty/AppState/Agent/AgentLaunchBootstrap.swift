@@ -984,8 +984,11 @@ enum AgentLaunchBootstrap {
     /// the user's real config merged with the Zentty status hooks, written
     /// under the launch runtime directory and passed via `--config`. Hooks are
     /// collected from every source, so project-level `.devin/` hooks still run.
-    /// Caveat (same tradeoff as the legacy Kimi overlay): settings saved
-    /// mid-session land in the disposable overlay and are lost on next launch.
+    /// Settings saved mid-session land in the disposable overlay, so on every
+    /// `agent-event --adapter=devin` hook call the CLI diffs the overlay
+    /// against `config.launch.json` (the launch snapshot written below) and
+    /// merges the changed leaves — everything except `hooks` — back into the
+    /// source config. See `DevinConfigWriteBack`.
     private static func devinPlan(
         executablePath: String,
         arguments: [String],
@@ -1025,18 +1028,33 @@ enum AgentLaunchBootstrap {
             URL(fileURLWithPath: $0, isDirectory: false, relativeTo: workingDirectoryURL).absoluteURL
         }
             ?? devinUserConfigURL(environment: environment)
+        let overlayData: Data
         if fileManager.isReadableFile(atPath: sourceConfigURL.path),
            let rawData = try? Data(contentsOf: sourceConfigURL),
            let mergedData = try devinMergedConfigJSON(existingData: rawData, cliPath: cliPath) {
-            try mergedData.write(to: overlayConfigURL, options: .atomic)
+            overlayData = mergedData
         } else {
-            try devinBaseConfigJSON(cliPath: cliPath).write(to: overlayConfigURL, options: .atomic)
+            overlayData = try devinBaseConfigJSON(cliPath: cliPath)
         }
+        try overlayData.write(to: overlayConfigURL, options: .atomic)
+        // Launch snapshot for the write-back diff in DevinConfigWriteBack —
+        // must be byte-identical to the overlay Devin starts with.
+        try overlayData.write(
+            to: overlayDirectoryURL.appendingPathComponent(
+                DevinConfigWriteBack.snapshotFileName,
+                isDirectory: false
+            ),
+            options: .atomic
+        )
 
         return AgentLaunchPlan(
             executablePath: executablePath,
             arguments: ["--config", overlayConfigURL.path] + forwardedArguments,
-            setEnvironment: ["ZENTTY_AGENT_TOOL": "devin"],
+            setEnvironment: [
+                "ZENTTY_AGENT_TOOL": "devin",
+                DevinConfigWriteBack.overlayEnvironmentKey: overlayConfigURL.path,
+                DevinConfigWriteBack.sourceEnvironmentKey: sourceConfigURL.path,
+            ],
             unsetEnvironment: [],
             preLaunchActions: []
         )

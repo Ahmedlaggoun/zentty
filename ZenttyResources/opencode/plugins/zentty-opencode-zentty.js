@@ -40,13 +40,17 @@ function normalizedStatus(value) {
   return firstString(value)?.toLowerCase()
 }
 
-function normalizeTaskProgress(doneCount, totalCount) {
+function normalizeTaskProgress(doneCount, totalCount, items) {
   if (!Number.isFinite(totalCount) || totalCount <= 0) return undefined
   const clampedDone = Math.max(0, Math.min(Math.trunc(doneCount ?? 0), Math.trunc(totalCount)))
-  return {
+  const progress = {
     taskProgressDoneCount: clampedDone,
     taskProgressTotalCount: Math.trunc(totalCount),
   }
+  if (Array.isArray(items) && items.length > 0) {
+    progress.taskProgressItems = items
+  }
+  return progress
 }
 
 function isCompletedTodo(todo) {
@@ -54,6 +58,24 @@ function isCompletedTodo(todo) {
   if (todo.completed === true || todo.done === true) return true
   const status = firstString(todo.status, todo.state?.status, todo.state)
   return ["completed", "complete", "done", "finished"].includes((status ?? "").toLowerCase())
+}
+
+function todoItemStatus(todo) {
+  if (!todo || typeof todo !== "object") return "pending"
+  if (todo.completed === true || todo.done === true) return "done"
+  const status = firstString(todo.status, todo.state?.status, todo.state)?.toLowerCase()
+  if (["completed", "complete", "done", "finished", "cancelled"].includes(status)) return "done"
+  if (["in_progress", "in-progress", "inprogress", "active", "doing", "running"].includes(status)) return "in_progress"
+  return "pending"
+}
+
+function todoProgressItems(todos) {
+  return todos.map((todo, index) => {
+    const object = todo && typeof todo === "object" ? todo : {}
+    const id = firstString(object.id, object.taskId, object.task_id)
+    const title = firstString(object.content, object.title, object.subject, object.text) ?? id ?? `Task ${index + 1}`
+    return { id: id ?? title, title, status: todoItemStatus(todo) }
+  })
 }
 
 function extractTodoArray(properties) {
@@ -98,7 +120,7 @@ function resolveTaskProgress(properties) {
   if (!Array.isArray(todos) || todos.length === 0) return undefined
 
   const doneCount = todos.filter(isCompletedTodo).length
-  return normalizeTaskProgress(doneCount, todos.length)
+  return normalizeTaskProgress(doneCount, todos.length, todoProgressItems(todos))
 }
 
 function rememberTaskProgress(sessionID, progress) {
@@ -303,7 +325,11 @@ function toCanonicalEvent(envelope) {
 
   const progress =
     envelope.taskProgressTotalCount > 0
-      ? { done: envelope.taskProgressDoneCount ?? 0, total: envelope.taskProgressTotalCount }
+      ? {
+          done: envelope.taskProgressDoneCount ?? 0,
+          total: envelope.taskProgressTotalCount,
+          ...(envelope.taskProgressItems?.length ? { items: envelope.taskProgressItems } : {}),
+        }
       : undefined
 
   switch (envelope.eventType) {

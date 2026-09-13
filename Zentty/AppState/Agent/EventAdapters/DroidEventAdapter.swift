@@ -47,7 +47,8 @@ extension AgentEventBridge {
                 let taskProgress = try taskStore.updateProgress(
                     sessionID: sessionID,
                     doneCount: todoProgress.doneCount,
-                    totalCount: todoProgress.totalCount
+                    totalCount: todoProgress.totalCount,
+                    items: todoProgress.items
                 )
                 return [lifecyclePayload(target: target, toolName: toolName, state: .running, sessionID: sessionID, cwd: cwd, taskProgress: taskProgress)]
             }
@@ -137,7 +138,8 @@ extension AgentEventBridge {
                 let taskProgress = try taskStore.updateProgress(
                     sessionID: sessionID,
                     doneCount: todoProgress.doneCount,
-                    totalCount: todoProgress.totalCount
+                    totalCount: todoProgress.totalCount,
+                    items: todoProgress.items
                 )
                 return [lifecyclePayload(target: target, toolName: toolName, state: .running, sessionID: sessionID, cwd: cwd, taskProgress: taskProgress)]
             }

@@ -28,6 +28,7 @@ enum AppConfigTOML {
         case restore
         case agentTeams
         case agentCaffeination
+        case agentLists
         case menuBar
         case agentIntegrations
         case agentIntegrationStates
@@ -193,6 +194,11 @@ enum AppConfigTOML {
         lines.append("enabled = \(config.agentCaffeination.enabled)")
 
         lines.append("")
+        lines.append("[agent_lists]")
+        lines.append("always_show_task_lists = \(config.agentLists.alwaysShowTaskLists)")
+        lines.append("always_show_subagent_lists = \(config.agentLists.alwaysShowSubagentLists)")
+
+        lines.append("")
         lines.append("[menu_bar]")
         lines.append("show_status_item = \(config.menuBar.showStatusItem)")
 
@@ -306,6 +312,10 @@ enum AppConfigTOML {
                 section = .agentCaffeination
                 continue
             }
+            if line == "[agent_lists]" {
+                section = .agentLists
+                continue
+            }
             if line == "[menu_bar]" {
                 section = .menuBar
                 continue
@@ -404,6 +414,10 @@ enum AppConfigTOML {
                 }
             case .agentCaffeination:
                 guard decodeAgentCaffeinationAssignment(assignment, into: &config) else {
+                    return nil
+                }
+            case .agentLists:
+                guard decodeAgentListsAssignment(assignment, into: &config) else {
                     return nil
                 }
             case .menuBar:
@@ -931,6 +945,23 @@ enum AppConfigTOML {
         case "enabled":
             guard let value = decodeBool(assignment.value) else { return false }
             config.agentCaffeination.enabled = value
+        default:
+            return true
+        }
+        return true
+    }
+
+    private static func decodeAgentListsAssignment(
+        _ assignment: (key: String, value: String),
+        into config: inout AppConfig
+    ) -> Bool {
+        switch assignment.key {
+        case "always_show_task_lists":
+            guard let value = decodeBool(assignment.value) else { return false }
+            config.agentLists.alwaysShowTaskLists = value
+        case "always_show_subagent_lists":
+            guard let value = decodeBool(assignment.value) else { return false }
+            config.agentLists.alwaysShowSubagentLists = value
         default:
             return true
         }

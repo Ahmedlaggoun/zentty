@@ -157,6 +157,53 @@ final class WorklaneSessionEnvironmentTests: XCTestCase {
         XCTAssertEqual(env["COLORTERM"], "24bit")
     }
 
+    func test_make_routes_kiro_term_through_bundled_wrapper() throws {
+        try XCTSkipIf(
+            AgentStatusHelper.kiroTermWrapperPath() == nil,
+            "Bundled zentty-kiro-term wrapper not available in this test environment"
+        )
+
+        let env = WorklaneSessionEnvironment.make(
+            windowID: windowID,
+            worklaneID: worklaneID,
+            paneID: paneID,
+            processEnvironment: ["PATH": "/usr/bin:/bin"],
+            agentTeamsEnabled: false
+        )
+
+        XCTAssertEqual(env["Q_TERM_PATH"], AgentStatusHelper.kiroTermWrapperPath())
+        XCTAssertNil(env["ZENTTY_ORIGINAL_Q_TERM_PATH"])
+    }
+
+    func test_make_preserves_user_q_term_path_for_wrapper() throws {
+        let kiroTermWrapper = try XCTUnwrap(
+            AgentStatusHelper.kiroTermWrapperPath(),
+            "Bundled zentty-kiro-term wrapper not available in this test environment"
+        )
+
+        let env = WorklaneSessionEnvironment.make(
+            windowID: windowID,
+            worklaneID: worklaneID,
+            paneID: paneID,
+            processEnvironment: [
+                "PATH": "/usr/bin:/bin",
+                "Q_TERM_PATH": "/opt/kiro/kiro-cli-term",
+            ],
+            agentTeamsEnabled: false
+        )
+
+        XCTAssertEqual(env["Q_TERM_PATH"], kiroTermWrapper)
+        XCTAssertEqual(env["ZENTTY_ORIGINAL_Q_TERM_PATH"], "/opt/kiro/kiro-cli-term")
+    }
+
+    func test_template_safe_overrides_drop_q_term_path() {
+        let safe = WorklaneSessionEnvironment.templateSafeOverrides(
+            from: ["Q_TERM_PATH": "/x", "FOO": "bar"]
+        )
+
+        XCTAssertEqual(safe, ["FOO": "bar"])
+    }
+
     func test_make_injects_xdg_even_when_no_prior_xdg_data_dirs() throws {
         let env = WorklaneSessionEnvironment.make(
             windowID: windowID,

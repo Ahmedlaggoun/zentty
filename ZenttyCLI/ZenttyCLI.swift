@@ -1498,6 +1498,13 @@ struct IPCCommand: ParsableCommand {
             throw ValidationError("Unsupported ipc subcommand: \(localSubcommand)")
         }
         let environment = ProcessInfo.processInfo.environment
+        // Devin writes in-session settings changes into the disposable
+        // --config overlay; sync them back to the real config on every hook
+        // event, before the socket guards — persistence must work even when
+        // the app is gone.
+        if localSubcommand == "agent-event", localArguments.contains("--adapter=devin") {
+            DevinConfigWriteBack.syncIfNeeded(environment: environment)
+        }
         guard let socketPath = environment["ZENTTY_INSTANCE_SOCKET"], !socketPath.isEmpty else {
             ipcCLILogger.info("ipc \(localSubcommand, privacy: .public): skipping — ZENTTY_INSTANCE_SOCKET is not set")
             return

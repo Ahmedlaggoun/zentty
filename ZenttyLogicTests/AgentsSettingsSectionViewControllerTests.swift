@@ -40,9 +40,63 @@ final class AgentsSettingsSectionViewControllerTests: AppKitTestCase {
         controller.view.frame = NSRect(x: 0, y: 0, width: 520, height: 600)
         controller.view.layoutSubtreeIfNeeded()
 
-        // 3 global toggles + one integration toggle per known agent.
-        XCTAssertEqual(switches(in: controller.view).count, 3 + AgentIntegrationConsent.allTools.count)
+        // 5 global toggles + one integration toggle per known agent.
+        XCTAssertEqual(switches(in: controller.view).count, 5 + AgentIntegrationConsent.allTools.count)
         XCTAssertGreaterThan(controller.measuredContentHeight(), 0)
+    }
+
+    func test_always_show_task_lists_toggle_persists() {
+        let store = makeConfigStore()
+        let controller = AgentsSettingsSectionViewController(
+            configStore: store,
+            agentTeamsEnableWarningPresenter: { _, completion in completion(.cancel) }
+        )
+        controller.loadViewIfNeeded()
+
+        XCTAssertFalse(controller.isAlwaysShowTaskListsSwitchOn)
+
+        controller.setAlwaysShowTaskListsEnabledForTesting(true)
+
+        XCTAssertTrue(store.current.agentLists.alwaysShowTaskLists)
+        XCTAssertTrue(controller.isAlwaysShowTaskListsSwitchOn)
+        XCTAssertFalse(store.current.agentLists.alwaysShowSubagentLists)
+    }
+
+    func test_always_show_subagent_lists_toggle_persists() {
+        let store = makeConfigStore()
+        let controller = AgentsSettingsSectionViewController(
+            configStore: store,
+            agentTeamsEnableWarningPresenter: { _, completion in completion(.cancel) }
+        )
+        controller.loadViewIfNeeded()
+
+        controller.setAlwaysShowSubagentListsEnabledForTesting(true)
+
+        XCTAssertTrue(store.current.agentLists.alwaysShowSubagentLists)
+        XCTAssertTrue(controller.isAlwaysShowSubagentListsSwitchOn)
+    }
+
+    /// An external config change (another window, or a config-file edit) pushes
+    /// through `apply` and refreshes both switches like `menuBarStatusSwitch`.
+    func test_apply_refreshes_agent_list_switches() {
+        let store = makeConfigStore()
+        let controller = AgentsSettingsSectionViewController(
+            configStore: store,
+            agentTeamsEnableWarningPresenter: { _, completion in completion(.cancel) }
+        )
+        controller.loadViewIfNeeded()
+
+        var config = store.current
+        config.agentLists.alwaysShowTaskLists = true
+        controller.apply(
+            agentTeams: config.agentTeams,
+            agentCaffeination: config.agentCaffeination,
+            agentLists: config.agentLists,
+            menuBar: config.menuBar
+        )
+
+        XCTAssertTrue(controller.isAlwaysShowTaskListsSwitchOn)
+        XCTAssertFalse(controller.isAlwaysShowSubagentListsSwitchOn)
     }
 
     func test_menu_bar_status_toggle_persists() {

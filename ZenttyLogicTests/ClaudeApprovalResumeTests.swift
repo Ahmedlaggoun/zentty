@@ -557,7 +557,7 @@ final class ClaudeApprovalResumeTests: XCTestCase {
         // A write touching another session must carry both legacy records over.
         try store.upsert(sessionID: "session-new", worklaneID: WorklaneID("w"), paneID: PaneID("p"), cwd: nil, pid: nil)
         XCTAssertNotNil(try store.lookup(sessionID: "session-legacy"), "a legacy record must survive the next save")
-        XCTAssertEqual(try store.lookup(sessionID: "session-minimal")?.tasksByID, [:], "a record without tasksByID decodes with the default")
+        XCTAssertEqual(try store.lookup(sessionID: "session-minimal")?.tasks, [], "a record without tasks decodes with the default")
         XCTAssertNotNil(try store.lookup(sessionID: "session-new"))
     }
 
