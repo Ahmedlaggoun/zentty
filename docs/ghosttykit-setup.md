@@ -89,6 +89,18 @@ Then update `scripts/ghosttykit.lock`:
 - `upstream_revision` is the official Ghostty commit used as the base.
 - `repo` stays `https://github.com/dedene/ghostty.git`.
 
+The build also applies `scripts/patches/ghostty-hyperlink-underline.patch` to the locked revision. It converts rendered rows (which include smooth-scroll guard rows) to viewport rows before looking up hyperlink underlines. The patch includes a Ghostty regression test for regex URLs and OSC 8 links with zero, positive, and negative scroll offsets.
+
+When updating the fork, either keep this patch applicable or incorporate the fix and tests into the fork and remove the local patch and its build steps. The build checks patch applicability before applying it.
+
+To run the regression in the patched Ghostty source checkout:
+
+```bash
+zig build test -Dtest-filter='smooth scroll hyperlink' -Demit-macos-app=false
+```
+
+To reproduce visually, run `scripts/repro-hyperlink-underline` inside Zentty. It prints ordinary URLs and OSC 8 links into scrollback. Scroll by a fraction of a text row, then hold Cmd while hovering each link. The underline must follow the link's text row; repeat with smooth scrolling disabled for comparison.
+
 The downstream audit range should stay small:
 
 ```bash
