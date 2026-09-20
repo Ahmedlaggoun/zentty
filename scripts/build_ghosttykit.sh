@@ -111,9 +111,11 @@ if METAL_COMPONENT_INFO="$(xcodebuild -showComponent MetalToolchain 2>/dev/null)
   fi
 fi
 
-BUILD_ENV=()
+# Always keep at least `env` in the array: expanding an empty array with
+# "${BUILD_ENV[@]}" trips `set -u` on macOS's bash 3.2.
+BUILD_ENV=(env)
 if [[ -n "${METAL_TOOLCHAINS}" ]]; then
-  BUILD_ENV=(env "TOOLCHAINS=${METAL_TOOLCHAINS}")
+  BUILD_ENV+=("TOOLCHAINS=${METAL_TOOLCHAINS}")
 fi
 
 has_gettext=0
