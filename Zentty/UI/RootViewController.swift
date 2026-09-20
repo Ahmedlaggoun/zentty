@@ -1918,24 +1918,16 @@ final class RootViewController: NSViewController {
     }
 
     private func performCopyMarkdown() {
+        let pasteboard = NSPasteboard.general
+        let changeCount = pasteboard.changeCount
         CleanCopyPipeline.suppressCallbackCleaning = true
         NSApp.sendAction(#selector(NSText.copy(_:)), to: nil, from: nil)
         CleanCopyPipeline.suppressCallbackCleaning = false
 
-        let pasteboard = NSPasteboard.general
-        guard let raw = pasteboard.string(forType: .string) else {
-            showCopyToast(message: "Copied")
-            return
-        }
-        if MarkdownReformatter.isLikelyMarkdown(raw) {
-            let formatted = MarkdownReformatter.reformat(raw)
-            if formatted != raw {
-                pasteboard.setString(formatted, forType: .string)
-            }
-            showCopyToast(message: "Copied (markdown)")
-        } else {
-            showCopyToast(message: "Copied")
-        }
+        guard pasteboard.changeCount != changeCount,
+              let isMarkdown = TerminalClipboard.reformatMarkdown(in: pasteboard)
+        else { return }
+        showCopyToast(message: isMarkdown ? "Copied (markdown)" : "Copied")
     }
 
     @objc private func handleCleanCopyDidModifyPasteboard() {
