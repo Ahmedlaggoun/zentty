@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+for row in {1..30}; do
+  printf 'Block %s: ordinary URL follows\nhttps://example.com/plain/%s\n' "$row" "$row"
+  printf 'Explicit hyperlink follows\n\033]8;;https://example.com/osc8/%s\033\\OSC 8 hyperlink %s\033]8;;\033\\\n\n' "$row" "$row"
+done
+printf 'Scroll back by part of a row, stop, then hold Cmd and hover each link.\n'
