@@ -766,12 +766,9 @@ final class LibghosttySurface: LibghosttySurfaceControlling, LibghosttySurfaceTe
         case .cellSize(let width, let height):
             hostView?.applyCellSizeUpdate(width: CGFloat(width), height: CGFloat(height))
         case .openURL(let urlString):
-            if let url = URL(string: urlString), url.scheme != nil {
-                NSWorkspace.shared.open(url)
-            } else {
-                let expanded = NSString(string: urlString).standardizingPath
-                NSWorkspace.shared.open(URL(filePath: expanded))
-            }
+            NSWorkspace.shared.open(
+                TerminalOpenURLResolver.resolve(urlString, workingDirectory: metadata.currentWorkingDirectory)
+            )
         case .mouseShape(let shape):
             hostView?.setMouseCursorShape(shape)
         }
