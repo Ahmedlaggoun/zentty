@@ -149,6 +149,46 @@ final class AgentSubagentTrackingTests: XCTestCase {
         XCTAssertEqual(try store.rootSessionID(key: paneKey), "root-1")
     }
 
+    func test_registry_tracked_stop_ignores_unknown_and_consumes_pruned_worker_once() throws {
+        var now = Date(timeIntervalSince1970: 10_000)
+        let lastWrite = now
+        let store = try makeRegistryStore(now: { now }, transcriptModificationDate: { _ in lastWrite })
+        try store.start(key: paneKey, entry: PaneAgentSubagentEntry(id: "worker", transcriptPath: "/t/worker.jsonl"))
+        XCTAssertNil(try store.stopIfTracked(key: paneKey, subagentID: "internal-recap"))
+        XCTAssertEqual(try store.summary(key: paneKey)?.entries.map(\.id), ["worker"])
+
+        now = now.addingTimeInterval(AgentSubagentRegistryStore.transcriptQuietWindow + 1)
+        XCTAssertEqual(try store.summary(key: paneKey), .empty)
+        XCTAssertEqual(try store.stopIfTracked(key: paneKey, subagentID: "worker"), .empty)
+        XCTAssertNil(try store.stopIfTracked(key: paneKey, subagentID: "worker"))
+    }
+
+    func test_registry_tracked_stop_accepts_fresh_completed_transcript() throws {
+        var now = Date(timeIntervalSince1970: 10_000)
+        var lastWrite = now
+        let store = try makeRegistryStore(now: { now }, transcriptModificationDate: { _ in lastWrite })
+        try store.start(key: paneKey, entry: PaneAgentSubagentEntry(id: "worker", transcriptPath: "/t/worker.jsonl"))
+        now = now.addingTimeInterval(AgentSubagentRegistryStore.transcriptQuietWindow + 1)
+        lastWrite = now
+
+        XCTAssertEqual(try store.stopIfTracked(key: paneKey, subagentID: "worker"), .empty)
+        XCTAssertNil(try store.stopIfTracked(key: paneKey, subagentID: "worker"))
+    }
+
+    func test_registry_anonymous_tracked_stop_requires_a_live_worker() throws {
+        var now = Date(timeIntervalSince1970: 10_000)
+        let store = try makeRegistryStore(now: { now })
+        XCTAssertNil(try store.stopIfTracked(key: paneKey, subagentID: nil))
+        XCTAssertNil(try store.stopIfTracked(key: paneKey, subagentID: "  \n"))
+
+        try store.start(key: paneKey, entry: PaneAgentSubagentEntry(id: "first"))
+        now = now.addingTimeInterval(1)
+        try store.start(key: paneKey, entry: PaneAgentSubagentEntry(id: "second"))
+        XCTAssertEqual(try store.stopIfTracked(key: paneKey, subagentID: nil)?.entries.map(\.id), ["second"])
+        XCTAssertEqual(try store.stopIfTracked(key: paneKey, subagentID: " "), .empty)
+        XCTAssertNil(try store.stopIfTracked(key: paneKey, subagentID: nil), "a duplicate anonymous stop must not resume a completed parent")
+    }
+
     func test_registry_retires_entries_whose_transcript_went_quiet() throws {
         var now = Date(timeIntervalSince1970: 10_000)
         var modifiedAt: [String: Date] = [:]

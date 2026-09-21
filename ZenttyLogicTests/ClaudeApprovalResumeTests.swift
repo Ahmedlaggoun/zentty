@@ -85,6 +85,120 @@ final class ClaudeApprovalResumeTests: XCTestCase {
         XCTAssertEqual(reducer.reducedStatus(now: base + 24)?.state, .idle)
     }
 
+    func test_unregistered_background_fork_stop_does_not_restart_completed_turn() throws {
+        // Claude 2.1.276 generates an away recap after the user turn ends.
+        // Its internal fork emits SubagentStop without SubagentStart; it is
+        // not a worker whose result wakes the parent for more work.
+        var reducer = PaneAgentReducerState()
+        let base = Date(timeIntervalSince1970: 1_000)
+        try replay(#"{"hook_event_name":"SessionStart","session_id":"recap"}"#, into: &reducer, at: base)
+        try replay(#"{"hook_event_name":"UserPromptSubmit","session_id":"recap"}"#, into: &reducer, at: base + 1)
+        try replay(#"{"hook_event_name":"Stop","session_id":"recap"}"#, into: &reducer, at: base + 2)
+
+        let stopped = reducer.sessionsByID
+        let payloads = try makePayloads(#"{"hook_event_name":"SubagentStop","session_id":"recap","agent_id":"internal-recap","agent_type":"","agent_transcript_path":"/tmp/absent-recap.jsonl"}"#)
+        XCTAssertTrue(payloads.isEmpty)
+        for payload in payloads { reducer.apply(payload, now: base + 182) }
+        XCTAssertEqual(reducer.sessionsByID, stopped)
+        XCTAssertNotEqual(reducer.reducedStatus(now: base + 182)?.state, .running)
+
+        try replay(#"{"hook_event_name":"UserPromptSubmit","session_id":"recap"}"#, into: &reducer, at: base + 200)
+        XCTAssertEqual(reducer.reducedStatus(now: base + 200)?.state, .running, "the next real prompt must still resume the parent")
+    }
+
+    func test_unregistered_fork_stop_preserves_parent_approval_and_live_worker() throws {
+        var reducer = PaneAgentReducerState()
+        let base = Date(timeIntervalSince1970: 1_000)
+        try replay(#"{"hook_event_name":"SessionStart","session_id":"recap-approval"}"#, into: &reducer, at: base)
+        try replay(#"{"hook_event_name":"SubagentStart","session_id":"recap-approval","agent_id":"worker","agent_type":"general-purpose"}"#, into: &reducer, at: base + 1)
+        try replay(#"{"hook_event_name":"PermissionRequest","session_id":"recap-approval","tool_name":"Bash","message":"Run make?"}"#, into: &reducer, at: base + 2)
+
+        let payloads = try makePayloads(#"{"hook_event_name":"SubagentStop","session_id":"recap-approval","agent_id":"internal-recap","agent_type":""}"#)
+        XCTAssertTrue(payloads.isEmpty)
+        for payload in payloads { reducer.apply(payload, now: base + 3) }
+        XCTAssertEqual(reducer.reducedStatus(now: base + 3)?.state, .needsInput)
+        XCTAssertEqual(try sessionStore.lookup(sessionID: "recap-approval")?.structuredInteractionKind, .approval)
+        let key = AgentSubagentRegistryStore.Key(
+            tool: "claude",
+            worklaneID: WorklaneID("worklane-approval-resume"),
+            paneID: PaneID("pane-approval-resume")
+        )
+        XCTAssertEqual(try subagentStore.summary(key: key)?.entries.map(\.id), ["worker"])
+    }
+
+    func test_registered_worker_stop_resumes_parent_but_duplicate_stop_does_not() throws {
+        var reducer = PaneAgentReducerState()
+        let base = Date(timeIntervalSince1970: 1_000)
+        try replay(#"{"hook_event_name":"SessionStart","session_id":"worker-complete"}"#, into: &reducer, at: base)
+        try replay(#"{"hook_event_name":"SubagentStart","session_id":"worker-complete","agent_id":"worker","agent_type":"general-purpose"}"#, into: &reducer, at: base + 1)
+        try replay(#"{"hook_event_name":"Stop","session_id":"worker-complete"}"#, into: &reducer, at: base + 2)
+        XCTAssertEqual(reducer.reducedStatus(now: base + 2)?.state, .idle)
+
+        let stop = #"{"hook_event_name":"SubagentStop","session_id":"worker-complete","agent_id":"worker","agent_type":"general-purpose"}"#
+        try replay(stop, into: &reducer, at: base + 3)
+        XCTAssertEqual(reducer.reducedStatus(now: base + 3)?.state, .running)
+        XCTAssertEqual(reducer.reducedStatus(now: base + 3)?.subagents, .empty)
+
+        try replay(#"{"hook_event_name":"Stop","session_id":"worker-complete"}"#, into: &reducer, at: base + 4)
+        XCTAssertTrue(try makePayloads(stop).isEmpty)
+        XCTAssertEqual(reducer.reducedStatus(now: base + 5)?.state, .idle)
+    }
+
+    func test_anonymous_stop_without_live_worker_does_not_restart_parent() throws {
+        var reducer = PaneAgentReducerState()
+        let base = Date(timeIntervalSince1970: 1_000)
+        try replay(#"{"hook_event_name":"SessionStart","session_id":"anonymous-stop"}"#, into: &reducer, at: base)
+        try replay(#"{"hook_event_name":"UserPromptSubmit","session_id":"anonymous-stop"}"#, into: &reducer, at: base + 1)
+        try replay(#"{"hook_event_name":"Stop","session_id":"anonymous-stop"}"#, into: &reducer, at: base + 2)
+        let missingID = #"{"hook_event_name":"SubagentStop","session_id":"anonymous-stop"}"#
+        let blankID = #"{"hook_event_name":"SubagentStop","session_id":"anonymous-stop","agent_id":"  "}"#
+        XCTAssertTrue(try makePayloads(missingID).isEmpty)
+        XCTAssertTrue(try makePayloads(blankID).isEmpty)
+        XCTAssertEqual(reducer.reducedStatus(now: base + 3)?.state, .idle)
+
+        try replay(#"{"hook_event_name":"SubagentStart","session_id":"anonymous-stop","agent_id":"worker"}"#, into: &reducer, at: base + 4)
+        try replay(#"{"hook_event_name":"Stop","session_id":"anonymous-stop"}"#, into: &reducer, at: base + 5)
+        try replay(missingID, into: &reducer, at: base + 6)
+        XCTAssertEqual(reducer.reducedStatus(now: base + 6)?.state, .running)
+        XCTAssertEqual(reducer.reducedStatus(now: base + 6)?.subagents, .empty)
+        try replay(#"{"hook_event_name":"Stop","session_id":"anonymous-stop"}"#, into: &reducer, at: base + 7)
+        XCTAssertTrue(try makePayloads(missingID).isEmpty)
+        XCTAssertEqual(reducer.reducedStatus(now: base + 8)?.state, .idle)
+    }
+
+    func test_registered_worker_stop_survives_quiet_transcript_pruning() throws {
+        let base = Date(timeIntervalSince1970: 1_000)
+        var now = base
+        subagentStore = AgentSubagentRegistryStore(
+            stateURL: subagentStore.stateURL,
+            now: { now },
+            transcriptModificationDate: { _ in base }
+        )
+        let key = AgentSubagentRegistryStore.Key(
+            tool: "claude",
+            worklaneID: WorklaneID("worklane-approval-resume"),
+            paneID: PaneID("pane-approval-resume")
+        )
+        for pruneBeforeStop in [false, true] {
+            now = base
+            var reducer = PaneAgentReducerState()
+            try replay(#"{"hook_event_name":"SessionStart","session_id":"quiet-worker"}"#, into: &reducer, at: now)
+            try replay(#"{"hook_event_name":"SubagentStart","session_id":"quiet-worker","agent_id":"worker","agent_transcript_path":"/tmp/quiet-worker.jsonl"}"#, into: &reducer, at: now)
+            try replay(#"{"hook_event_name":"Stop","session_id":"quiet-worker"}"#, into: &reducer, at: now + 1)
+
+            // A long tool can finish after the transcript has been quiet for
+            // 15 minutes. Whether a prior read pruned it or the stop itself
+            // does, this was a real worker and its result can wake the parent.
+            now = base + AgentSubagentRegistryStore.transcriptQuietWindow + 1
+            if pruneBeforeStop { XCTAssertEqual(try subagentStore.summary(key: key), .empty) }
+            let stop = #"{"hook_event_name":"SubagentStop","session_id":"quiet-worker","agent_id":"worker"}"#
+            try replay(stop, into: &reducer, at: now)
+            XCTAssertEqual(reducer.reducedStatus(now: now)?.state, .running)
+            XCTAssertEqual(reducer.reducedStatus(now: now)?.subagents, .empty)
+            XCTAssertTrue(try makePayloads(stop).isEmpty, "a pruned id must be consumed so duplicate stops cannot restart a later completed turn")
+        }
+    }
+
     func test_post_tool_use_failure_after_approval_returns_to_running() throws {
         var reducer = PaneAgentReducerState()
         let base = Date(timeIntervalSince1970: 2_000)
