@@ -2,6 +2,225 @@ import Foundation
 import XCTest
 @testable import Zentty
 
+@MainActor
+final class AgentRootMetadataTests: XCTestCase {
+    private let worklaneID = WorklaneID("metadata-worklane")
+    private let paneID = PaneID("metadata-pane")
+
+    private func temporaryDirectory() throws -> URL {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        return directory
+    }
+
+    private func payload(state: PaneAgentState?, sessionID: String = "root", model: String? = nil, kind: AgentSignalKind = .lifecycle) -> AgentStatusPayload {
+        var payload = AgentStatusPayload(
+            worklaneID: worklaneID, paneID: paneID, signalKind: kind, state: state,
+            origin: .explicitHook, toolName: AgentTool.claudeCode.displayName, text: nil,
+            sessionID: sessionID, artifactKind: nil, artifactLabel: nil, artifactURL: nil
+        )
+        payload.carriesRootMetadata = true
+        payload.agentModel = model
+        return payload
+    }
+
+    func test_current_model_uses_latest_root_response_or_turn_context() {
+        let claude = """
+        {"type":"assistant","message":{"model":"claude-opus-5"}}
+        {"type":"assistant","message":{"model":"claude-sonnet-5"}}
+        {"type":"assistant","isSidechain":true,"message":{"model":"claude-haiku-4-5"}}
+        {"type":"assistant","message":{"model":"<synthetic>"}}
+        """
+        XCTAssertEqual(AgentRootMetadataResolver.currentModel(tool: .claudeCode, transcriptText: claude), "claude-sonnet-5")
+        let codex = """
+        {"type":"turn_context","payload":{"model":"gpt-6-astra"}}
+        {"type":"turn_context","payload":{"model":"gpt-5.6-sol"}}
+        {"type":"turn_context","payload":
+        """
+        XCTAssertEqual(AgentRootMetadataResolver.currentModel(tool: .codex, transcriptText: codex), "gpt-5.6-sol")
+    }
+
+    func test_transcript_fallback_reads_bounded_tail_not_first_model() throws {
+        let path = try temporaryDirectory().appendingPathComponent("session.jsonl")
+        let text = "{\"type\":\"turn_context\",\"payload\":{\"model\":\"old\"}}\n"
+            + String(repeating: " ", count: Int(AgentRootMetadataResolver.maxTranscriptBytes) + 100)
+            + "\n{\"type\":\"turn_context\",\"payload\":{\"model\":\"gpt-6-astra\"}}\n"
+        try text.write(to: path, atomically: true, encoding: .utf8)
+        XCTAssertEqual(AgentRootMetadataResolver.currentModel(tool: .codex, transcriptPath: path.path), "gpt-6-astra")
+    }
+
+    func test_metadata_transport_and_subagent_copy_preserve_facts_without_clear() throws {
+        var value = payload(state: nil, model: "claude-sonnet-5", kind: .agentMetadata)
+        value.agentMetadataPID = 4321
+        value.isClaudeRemoteControlActive = false
+        let restored = try AgentStatusPayload(userInfo: XCTUnwrap(value.notificationUserInfo))
+        XCTAssertEqual(restored, value)
+        XCTAssertEqual(value.with(subagents: .empty).agentModel, value.agentModel)
+        XCTAssertEqual(value.with(subagents: .empty).isClaudeRemoteControlActive, false)
+        XCTAssertFalse(value.clearsStatus)
+    }
+
+    func test_claude_session_start_and_model_switch_report_root_metadata() throws {
+        let directory = try temporaryDirectory()
+        let sessions = ClaudeHookSessionStore(stateURL: directory.appendingPathComponent("claude.json"))
+        let subagents = AgentSubagentRegistryStore(stateURL: directory.appendingPathComponent("children.json"))
+        let environment = ["ZENTTY_WORKLANE_ID": worklaneID.rawValue, "ZENTTY_PANE_ID": paneID.rawValue, "ZENTTY_CLAUDE_PID": "4321", "CLAUDE_CODE_BRIDGE_SESSION_ID": "test-bridge"]
+        let start = try AgentEventBridge.claudeAdapter(
+            data: Data(#"{"hook_event_name":"SessionStart","session_id":"root","model":"claude-opus-5","transcript_path":"/tmp/root.jsonl"}"#.utf8),
+            environment: environment, sessionStore: sessions, subagentStore: subagents
+        )
+        XCTAssertEqual(start.first?.agentModel, "claude-opus-5")
+        XCTAssertEqual(start.first?.isClaudeRemoteControlActive, true)
+        XCTAssertEqual(start.first?.agentTranscriptPath, "/tmp/root.jsonl")
+        let switched = try AgentEventBridge.claudeAdapter(
+            data: Data(#"{"hook_event_name":"PostModelSwitch","session_id":"root","from_model":"claude-opus-5","to_model":"claude-sonnet-5"}"#.utf8),
+            environment: environment, sessionStore: sessions, subagentStore: subagents
+        )
+        XCTAssertEqual(switched.first?.agentModel, "claude-sonnet-5")
+        XCTAssertEqual(switched.first?.signalKind, .agentMetadata)
+        XCTAssertEqual(switched.first?.clearsStatus, false)
+        let child = try AgentEventBridge.claudeAdapter(
+            data: Data(#"{"hook_event_name":"PostModelSwitch","session_id":"root","agent_id":"child","to_model":"claude-haiku-4-5"}"#.utf8),
+            environment: environment, sessionStore: sessions, subagentStore: subagents
+        )
+        XCTAssertTrue(child.isEmpty)
+    }
+
+    func test_codex_model_is_attached_only_to_root_hooks() throws {
+        let directory = try temporaryDirectory()
+        let registry = AgentSubagentRegistryStore(stateURL: directory.appendingPathComponent("children.json"))
+        let environment = ["ZENTTY_WORKLANE_ID": worklaneID.rawValue, "ZENTTY_PANE_ID": paneID.rawValue, "ZENTTY_CODEX_PID": "4321"]
+        let start = try AgentEventBridge.codexAdapter(
+            data: Data(#"{"hook_event_name":"SessionStart","session_id":"root","model":"gpt-6-astra"}"#.utf8),
+            defaultEventName: nil, environment: environment, subagentStore: registry
+        )
+        XCTAssertEqual(start.last?.agentModel, "gpt-6-astra")
+        let child = try AgentEventBridge.codexAdapter(
+            data: Data(#"{"hook_event_name":"SubagentStart","session_id":"child","agent_id":"child","model":"gpt-5.6-sol"}"#.utf8),
+            defaultEventName: nil, environment: environment, subagentStore: registry
+        )
+        XCTAssertEqual(child.first?.carriesRootMetadata, false)
+        XCTAssertNil(child.first?.agentModel)
+    }
+
+    func test_model_switch_while_idle_preserves_status_and_reducer_clocks() {
+        let store = WorklaneStore()
+        store.replaceWorklanes([WorklaneState(id: worklaneID, title: nil, paneStripState: PaneStripState(panes: [PaneState(id: paneID, title: "shell")], focusedPaneID: paneID))])
+        store.applyAgentStatusPayload(payload(state: .running, model: "claude-opus-5"))
+        store.applyAgentStatusPayload(payload(state: .idle))
+        let before = store.worklanes[0].auxiliaryStateByPaneID[paneID]!
+        store.applyAgentStatusPayload(payload(state: nil, model: "claude-sonnet-5", kind: .agentMetadata))
+        let after = store.worklanes[0].auxiliaryStateByPaneID[paneID]!
+        XCTAssertEqual(after.agentStatus, before.agentStatus)
+        XCTAssertEqual(after.agentReducerState, before.agentReducerState)
+        XCTAssertEqual(after.presentation.agentModel, "claude-sonnet-5")
+        XCTAssertEqual(after.presentation.runtimePhase, .idle)
+    }
+
+    func test_new_session_does_not_inherit_model_and_late_switch_cannot_revive_cleared_root() {
+        var raw = PaneRawState()
+        raw.observeAgentMetadata(payload(state: .starting, model: "claude-opus-5"))
+        raw.observeAgentMetadata(payload(state: .running, sessionID: "child", model: "claude-haiku-4-5"))
+        XCTAssertEqual(raw.agentMetadata?.model, "claude-opus-5")
+        raw.observeAgentMetadata(payload(state: .starting, sessionID: "new-root"))
+        XCTAssertNil(raw.agentMetadata?.model)
+        raw.observeAgentMetadata(payload(state: nil, sessionID: "new-root"))
+        raw.observeAgentMetadata(payload(state: nil, sessionID: "new-root", model: "claude-sonnet-5", kind: .agentMetadata))
+        XCTAssertNil(raw.agentMetadata)
+    }
+
+    func test_explicit_unknown_model_clears_old_selection_and_resolves_only_new_response_while_idle() throws {
+        let path = try temporaryDirectory().appendingPathComponent("root.jsonl")
+        let oldResponse = #"{"type":"assistant","message":{"model":"claude-opus-5"}}"# + "\n"
+        let newResponse = #"{"type":"assistant","message":{"model":"claude-sonnet-5"}}"# + "\n"
+        for unknown in ["default", "auto", "inherit"] {
+            try oldResponse.write(to: path, atomically: true, encoding: .utf8)
+            let store = WorklaneStore()
+            store.replaceWorklanes([WorklaneState(id: worklaneID, title: nil, paneStripState: PaneStripState(panes: [PaneState(id: paneID, title: "shell")], focusedPaneID: paneID))])
+            var start = payload(state: .running, model: "claude-opus-5")
+            start.agentTranscriptPath = path.path
+            store.applyAgentStatusPayload(start)
+            store.applyAgentStatusPayload(payload(state: .idle))
+            let before = store.worklanes[0].auxiliaryStateByPaneID[paneID]!
+            XCTAssertEqual(before.presentation.agentModel, "claude-opus-5", "omitted model preserves known selection")
+
+            store.applyAgentStatusPayload(payload(state: nil, model: unknown, kind: .agentMetadata))
+            store.clearStaleAgentSessions()
+            let unknownState = store.worklanes[0].auxiliaryStateByPaneID[paneID]!
+            XCTAssertNil(unknownState.presentation.agentModel, "\(unknown) must not reuse the prior transcript response")
+            XCTAssertEqual(unknownState.raw.agentMetadata?.modelWasReportedByHook, false)
+            XCTAssertEqual(unknownState.agentStatus, before.agentStatus)
+            XCTAssertEqual(unknownState.agentReducerState, before.agentReducerState)
+
+            try (oldResponse + newResponse).write(to: path, atomically: true, encoding: .utf8)
+            store.clearStaleAgentSessions()
+            let resolved = store.worklanes[0].auxiliaryStateByPaneID[paneID]!
+            XCTAssertEqual(resolved.presentation.agentModel, "claude-sonnet-5")
+            XCTAssertEqual(resolved.presentation.runtimePhase, .idle)
+            XCTAssertEqual(resolved.agentStatus, before.agentStatus)
+            XCTAssertEqual(resolved.agentReducerState, before.agentReducerState)
+        }
+    }
+
+    func test_remote_control_refresh_requires_matching_live_record_and_detects_disconnect() throws {
+        let home = try temporaryDirectory()
+        let path = AgentRootMetadataResolver.claudeSessionPath(pid: 4321, homeDirectory: home.path)
+        try FileManager.default.createDirectory(at: URL(fileURLWithPath: path).deletingLastPathComponent(), withIntermediateDirectories: true)
+        func writeRecord(_ text: String) throws { try text.write(toFile: path, atomically: true, encoding: .utf8) }
+        var metadata = PaneAgentMetadata(tool: .claudeCode, sessionID: "root", pid: 4321)
+        try writeRecord(#"{"pid":4321,"sessionId":"other","bridgeSessionId":"test"}"#)
+        XCTAssertTrue(metadata.refresh(isProcessAlive: { _ in true }, homeDirectory: home.path))
+        XCTAssertFalse(metadata.isClaudeRemoteControlActive)
+        try writeRecord(#"{"pid":4321,"sessionId":"root","bridgeSessionId":"test"}"#)
+        XCTAssertTrue(metadata.refresh(isProcessAlive: { _ in true }, homeDirectory: home.path))
+        XCTAssertTrue(metadata.isClaudeRemoteControlActive)
+        let cached = metadata
+        XCTAssertTrue(metadata.refresh(isProcessAlive: { _ in true }, homeDirectory: home.path))
+        XCTAssertEqual(metadata, cached)
+        try writeRecord(#"{"pid":4321,"sessionId":"root"}"#)
+        XCTAssertTrue(metadata.refresh(isProcessAlive: { _ in true }, homeDirectory: home.path))
+        XCTAssertFalse(metadata.isClaudeRemoteControlActive)
+        XCTAssertFalse(metadata.refresh(isProcessAlive: { _ in false }, homeDirectory: home.path))
+        try writeRecord(String(repeating: "x", count: Int(AgentRootMetadataResolver.maxSessionBytes) + 1))
+        XCTAssertFalse(AgentRootMetadataResolver.claudeRemoteControlActive(path: path, pid: 4321, sessionID: "root"))
+    }
+
+    func test_explicit_model_survives_older_transcript_and_compaction() throws {
+        let path = try temporaryDirectory().appendingPathComponent("root.jsonl")
+        try #"{"type":"assistant","message":{"model":"claude-opus-5"}}"#.write(to: path, atomically: true, encoding: .utf8)
+        var raw = PaneRawState()
+        var start = payload(state: .starting, model: "claude-sonnet-5")
+        start.agentTranscriptPath = path.path
+        raw.observeAgentMetadata(start)
+        XCTAssertTrue(raw.agentMetadata!.refresh(isProcessAlive: { _ in true }))
+        XCTAssertEqual(raw.agentMetadata?.model, "claude-sonnet-5")
+        raw.observeAgentMetadata(payload(state: .starting))
+        XCTAssertEqual(raw.agentMetadata?.model, "claude-sonnet-5")
+    }
+
+    func test_remote_shell_keeps_hook_metadata_without_probing_local_pid_or_files() {
+        var metadata = PaneAgentMetadata(tool: .claudeCode, sessionID: "remote-root", pid: 4321, model: "claude-opus-5", isClaudeRemoteControlActive: true)
+        XCTAssertTrue(metadata.refresh(isProcessAlive: { _ in XCTFail("Remote PID must not be probed locally"); return false }, localRuntimeFilesAvailable: false))
+        XCTAssertTrue(metadata.isClaudeRemoteControlActive)
+        XCTAssertEqual(metadata.model, "claude-opus-5")
+    }
+
+    func test_codex_new_turn_updates_model_but_old_resume_history_cannot_override_selection() throws {
+        let path = try temporaryDirectory().appendingPathComponent("root.jsonl")
+        let oldTurn = #"{"type":"turn_context","payload":{"model":"gpt-5.5"}}"# + "\n"
+        try oldTurn.write(to: path, atomically: true, encoding: .utf8)
+        var metadata = PaneAgentMetadata(tool: .codex, sessionID: "root", pid: nil, model: "gpt-6-astra", transcriptPath: path.path)
+        metadata.modelWasReportedByHook = true
+        metadata.transcriptModelOffset = UInt64(oldTurn.utf8.count)
+        XCTAssertTrue(metadata.refresh(isProcessAlive: { _ in true }))
+        XCTAssertEqual(metadata.model, "gpt-6-astra")
+        try (oldTurn + #"{"type":"turn_context","payload":{"model":"gpt-5.6-sol"}}"# + "\n").write(to: path, atomically: true, encoding: .utf8)
+        XCTAssertTrue(metadata.refresh(isProcessAlive: { _ in true }))
+        XCTAssertEqual(metadata.model, "gpt-5.6-sol")
+    }
+}
+
 final class AgentSubagentTrackingTests: XCTestCase {
     private let environment: [String: String] = [
         "ZENTTY_WORKLANE_ID": "worklane-main",

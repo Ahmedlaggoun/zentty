@@ -14,6 +14,7 @@ enum WorklaneRowTextRow: Equatable {
     case status
     case panePrimary(Int)
     case paneDetail(Int)
+    case paneAgentInfo(Int)
     case paneStatus(Int)
     case paneServer(Int)
     case paneTaskList(Int)
@@ -128,7 +129,7 @@ struct WorklaneRowLayoutMetrics: Equatable {
         var paneIndices = Set<Int>()
         for row in visibleRows {
             switch row {
-            case .panePrimary(let i), .paneDetail(let i), .paneStatus(let i), .paneServer(let i), .paneTaskList(let i), .paneSubagents(let i):
+            case .panePrimary(let i), .paneDetail(let i), .paneAgentInfo(let i), .paneStatus(let i), .paneServer(let i), .paneTaskList(let i), .paneSubagents(let i):
                 paneIndices.insert(i)
             default:
                 break
@@ -158,7 +159,7 @@ struct WorklaneRowLayoutMetrics: Equatable {
             return statusLineHeight
         case .panePrimary:
             return primaryLineHeight
-        case .paneDetail:
+        case .paneDetail, .paneAgentInfo:
             return detailLineHeight
         case .paneStatus:
             return statusLineHeight
@@ -305,6 +306,10 @@ struct SidebarWorklaneRowLayout: Equatable {
 
                 if shouldShowContextPrefix && index == 0 {
                     rows.append(.contextPrefix)
+                }
+
+                if paneRow.showsAgentInfo {
+                    rows.append(.paneAgentInfo(index))
                 }
 
                 if paneRowShowsMetadataRow(paneRow, availableWidth: availableWidth) {
@@ -707,6 +712,8 @@ struct SidebarWorklaneRowLayout: Equatable {
                         switch next {
                         case .paneDetail(let i) where i == index:
                             paneRows.append(.paneDetail(i))
+                        case .paneAgentInfo(let i) where i == index:
+                            paneRows.append(.paneAgentInfo(i))
                         case .contextPrefix where index == 0:
                             paneRows.append(.contextPrefix)
                             contextPrefixConsumed = true
@@ -724,7 +731,7 @@ struct SidebarWorklaneRowLayout: Equatable {
                     }
                     groups.append(.pane(index: index, rows: paneRows))
                 }
-            case .paneDetail, .paneStatus, .paneServer, .paneTaskList, .paneSubagents:
+            case .paneDetail, .paneAgentInfo, .paneStatus, .paneServer, .paneTaskList, .paneSubagents:
                 break
             case .contextPrefix:
                 if contextPrefixConsumed == false {
@@ -758,7 +765,7 @@ private extension WorklaneRowLayoutMetrics {
         var paneIndices = Set<Int>()
         for row in visibleRows {
             switch row {
-            case .panePrimary(let i), .paneDetail(let i), .paneStatus(let i), .paneServer(let i), .paneTaskList(let i), .paneSubagents(let i):
+            case .panePrimary(let i), .paneDetail(let i), .paneAgentInfo(let i), .paneStatus(let i), .paneServer(let i), .paneTaskList(let i), .paneSubagents(let i):
                 paneIndices.insert(i)
             default:
                 break

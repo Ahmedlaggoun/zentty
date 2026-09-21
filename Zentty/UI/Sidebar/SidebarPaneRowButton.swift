@@ -554,6 +554,7 @@ final class SidebarPaneRowButton: NSButton {
     weak var serverRowView: SidebarPaneServerRowView?
     var onServerPortSelected: ((String) -> Void)?
     weak var statusRowView: SidebarPaneTextRowView?
+    weak var agentInfoRowView: SidebarPaneAgentInfoView?
     var onSubagentBadgeClicked: ((PaneID) -> Void)?
     var onTaskProgressClicked: ((PaneID) -> Void)?
     var onMoveWorklane: ((SidebarWorklaneMoveDirection) -> Void)?
@@ -566,10 +567,15 @@ final class SidebarPaneRowButton: NSButton {
 
     private let contentStack = NSStackView()
     private var contentViews: [NSView] = []
+    private var agentInfoWidthConstraint: NSLayoutConstraint?
     private var isHovered = false
     private var trackingArea: NSTrackingArea?
     private var hoverBackgroundColor: NSColor = .clear
     private var pressedBackgroundColor: NSColor = .clear
+    private var selectedBackgroundColor: NSColor = .clear
+    private var selectionColor: NSColor = .clear
+    private let selectionIndicator = CALayer()
+    private var isSelectedPane = false
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -594,6 +600,9 @@ final class SidebarPaneRowButton: NSButton {
         layer?.cornerRadius = ShellMetrics.sidebarPaneButtonCornerRadius
         layer?.cornerCurve = .continuous
         layer?.masksToBounds = true
+        selectionIndicator.cornerRadius = 1.5
+        selectionIndicator.isHidden = true
+        layer?.addSublayer(selectionIndicator)
         translatesAutoresizingMaskIntoConstraints = false
         setButtonType(.momentaryChange)
 
@@ -691,6 +700,13 @@ final class SidebarPaneRowButton: NSButton {
     /// The subagent badge toggles its detail list instead of selecting the
     /// pane, mirroring how server ports open without a pane switch.
     private func toggleSubagentDetailsIfNeeded(at point: NSPoint) -> Bool {
+        if let agentInfoRowView,
+           agentInfoRowView.canExpandAgents,
+           !agentInfoRowView.isHidden,
+           agentInfoRowView.agentCountFrame(in: self).insetBy(dx: -2, dy: -2).contains(point) {
+            onSubagentBadgeClicked?(paneID)
+            return true
+        }
         guard let statusRowView,
               let badgeFrame = statusRowView.subagentBadgeFrame(in: self),
               badgeFrame.insetBy(dx: -2, dy: -2).contains(point)
@@ -721,6 +737,10 @@ final class SidebarPaneRowButton: NSButton {
         if contentViews.elementsEqual(allViews, by: { $0 === $1 }) == false {
             contentViews = allViews
             contentStack.setViews(allViews, in: .top)
+            agentInfoWidthConstraint?.isActive = false
+            agentInfoWidthConstraint = allViews.first(where: { $0 is SidebarPaneAgentInfoView })?
+                .widthAnchor.constraint(equalTo: contentStack.widthAnchor)
+            agentInfoWidthConstraint?.isActive = true
 #if DEBUG
             contentStackReplacementCountForTesting &+= 1
 #endif
@@ -737,10 +757,25 @@ final class SidebarPaneRowButton: NSButton {
         }
     }
 
-    func updateTheme(hoverColor: NSColor, pressedColor: NSColor) {
+    func updateTheme(
+        hoverColor: NSColor,
+        pressedColor: NSColor,
+        selectedColor: NSColor = .clear,
+        selectionColor: NSColor = .clear,
+        isSelected: Bool = false
+    ) {
         hoverBackgroundColor = hoverColor
         pressedBackgroundColor = pressedColor
+        selectedBackgroundColor = selectedColor
+        self.selectionColor = selectionColor
+        isSelectedPane = isSelected
+        state = isSelected ? .on : .off
         updateHoverAppearance()
+    }
+
+    override func layout() {
+        super.layout()
+        selectionIndicator.frame = CGRect(x: 0, y: 5, width: 3, height: max(0, bounds.height - 10))
     }
 
     var contentMinXForTesting: CGFloat {
@@ -836,10 +871,16 @@ final class SidebarPaneRowButton: NSButton {
             color = pressedBackgroundColor
         } else if isHovered {
             color = hoverBackgroundColor
+        } else if isSelectedPane {
+            color = selectedBackgroundColor
         } else {
             color = .clear
         }
         layer?.backgroundColor = color.cgColor
+        layer?.borderColor = selectionColor.cgColor
+        layer?.borderWidth = isSelectedPane ? 1 : 0
+        selectionIndicator.backgroundColor = selectionColor.cgColor
+        selectionIndicator.isHidden = !isSelectedPane
     }
 
 #if DEBUG

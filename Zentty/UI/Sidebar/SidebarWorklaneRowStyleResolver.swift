@@ -230,6 +230,9 @@ enum SidebarWorklaneRowStyleResolver {
     ) -> NSColor {
         let focusedBaseColor = isActive ? activeTextColor : inactiveTextColor
         if isWorking {
+            if theme.sidebarGlassAppearance == .light {
+                return focusedBaseColor.withAlphaComponent(isFocused ? 0.78 : 0.68)
+            }
             let emphasis = workingTextHighlightColor(
                 isActive: isActive,
                 inactiveTextColor: inactiveTextColor

@@ -47,6 +47,7 @@ final class SidebarPaneRowRenderer {
 
     private(set) var panePrimaryRows: [SidebarPanePrimaryRowView] = []
     private(set) var paneDetailLabels: [SidebarStaticLabel] = []
+    private(set) var paneAgentInfoRows: [SidebarPaneAgentInfoView] = []
     private(set) var paneStatusRows: [SidebarPaneTextRowView] = []
     private(set) var paneServerRows: [SidebarPaneServerRowView] = []
     private(set) var paneTaskListRows: [SidebarPaneTaskListView] = []
@@ -109,18 +110,22 @@ final class SidebarPaneRowRenderer {
                 lineCount: 1
             )
             panePrimaryRows[index].configureRemoteIndicator(
-                isRemote: panePresentation.isRemotePane,
+                isRemote: false,
                 label: panePresentation.remotePaneLabel
             )
             panePrimaryRows[index].setShimmerPhaseOffset(panePhaseOffset)
 
             paneDetailLabels[index].stringValue = paneRow.detailText ?? ""
+            paneAgentInfoRows[index].configure(row: paneRow)
+            paneAgentInfoRows[index].onExpandAgents = {
+                callbacks.onToggleSubagentDetails?(paneRow.paneID)
+            }
 
             paneStatusRows[index].configure(
                 text: panePresentation.statusDisplayText,
                 symbolName: panePresentation.statusSymbolName,
                 taskProgress: paneRow.taskProgress,
-                subagents: panePresentation.subagents,
+                subagents: paneRow.agentName == nil ? panePresentation.subagents : nil,
                 subagentsExpanded: panePresentation.showsSubagentDetails,
                 trailingText: panePresentation.statusTrailingLayout.isVisible ? paneRow.trailingText : nil,
                 trailingWidth: panePresentation.statusTrailingLayout.width,
@@ -163,6 +168,7 @@ final class SidebarPaneRowRenderer {
             button.onWorklaneDragRequested = callbacks.onWorklaneDragRequested
             button.serverRowView = paneServerRows[index]
             button.statusRowView = paneStatusRows[index]
+            button.agentInfoRowView = paneAgentInfoRows[index]
             button.onSubagentBadgeClicked = callbacks.onToggleSubagentDetails
             button.onTaskProgressClicked = callbacks.onToggleTaskListDetails
             button.onServerPortSelected = callbacks.onServerPortSelected
@@ -197,6 +203,10 @@ final class SidebarPaneRowRenderer {
                     lineHeight: ShellMetrics.sidebarStatusLineHeight
                 )
             )
+        }
+
+        while paneAgentInfoRows.count < count {
+            paneAgentInfoRows.append(SidebarPaneAgentInfoView())
         }
 
         while paneServerRows.count < count {
@@ -253,6 +263,7 @@ final class SidebarWorklaneRowContentRenderer {
     struct PaneRows {
         let primaryRows: [NSView]
         let detailLabels: [NSView]
+        let agentInfoRows: [NSView]
         let statusRows: [NSView]
         let serverRows: [NSView]
         let taskListRows: [NSView]
@@ -305,6 +316,7 @@ final class SidebarWorklaneRowContentRenderer {
             views.append(labels.contextPrefixLabel)
         }
         views.append(contentsOf: [
+            paneRows.agentInfoRows[index],
             paneRows.statusRows[index],
             paneRows.serverRows[index],
             paneRows.taskListRows[index],
@@ -350,6 +362,8 @@ final class SidebarWorklaneRowContentRenderer {
             paneRows.primaryRows[index]
         case .paneDetail(let index):
             paneRows.detailLabels[index]
+        case .paneAgentInfo(let index):
+            paneRows.agentInfoRows[index]
         case .paneStatus(let index):
             paneRows.statusRows[index]
         case .paneServer(let index):

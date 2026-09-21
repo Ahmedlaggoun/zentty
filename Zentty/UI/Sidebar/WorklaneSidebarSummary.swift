@@ -35,6 +35,17 @@ struct WorklaneSidebarPaneRow: Equatable {
     let serverPorts: [WorklaneSidebarServerPort]
     let isRemotePane: Bool
     let remotePaneLabel: String?
+    let agentName: String?
+    let agentModel: String?
+    let isClaudeRemoteControlActive: Bool
+
+    var showsAgentInfo: Bool {
+        agentName != nil || isRemotePane || isClaudeRemoteControlActive
+    }
+
+    var activeAgentCount: Int {
+        (agentName != nil && isWorking ? 1 : 0) + (subagents?.count ?? 0)
+    }
 
     init(
         paneID: PaneID,
@@ -55,7 +66,10 @@ struct WorklaneSidebarPaneRow: Equatable {
         subagents: PaneAgentSubagentSummary? = nil,
         serverPorts: [WorklaneSidebarServerPort] = [],
         isRemotePane: Bool = false,
-        remotePaneLabel: String? = nil
+        remotePaneLabel: String? = nil,
+        agentName: String? = nil,
+        agentModel: String? = nil,
+        isClaudeRemoteControlActive: Bool = false
     ) {
         self.paneID = paneID
         self.primaryText = primaryText
@@ -76,6 +90,9 @@ struct WorklaneSidebarPaneRow: Equatable {
         self.serverPorts = serverPorts
         self.isRemotePane = isRemotePane
         self.remotePaneLabel = remotePaneLabel
+        self.agentName = agentName
+        self.agentModel = agentModel
+        self.isClaudeRemoteControlActive = isClaudeRemoteControlActive
     }
 }
 

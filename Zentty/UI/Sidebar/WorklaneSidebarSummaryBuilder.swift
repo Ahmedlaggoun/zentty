@@ -289,7 +289,10 @@ enum WorklaneSidebarSummaryBuilder {
                 subagents: paneContext.presentation.subagents,
                 serverPorts: serverPorts(for: paneContext.paneID, serverContext: serverContext),
                 isRemotePane: paneContext.presentation.isRemotePane,
-                remotePaneLabel: remotePaneLabel(for: paneContext.presentation)
+                remotePaneLabel: remotePaneLabel(for: paneContext.presentation),
+                agentName: paneContext.presentation.recognizedTool?.displayName,
+                agentModel: paneContext.presentation.agentModel,
+                isClaudeRemoteControlActive: paneContext.presentation.isClaudeRemoteControlActive
             )
         }
     }

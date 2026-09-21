@@ -637,8 +637,8 @@ final class SidebarWorklaneRowButtonTests: AppKitTestCase {
         )
         XCTAssertEqual(ShellMetrics.sidebarPaneRowHorizontalInset, 6)
         XCTAssertEqual(ShellMetrics.sidebarPaneRowVerticalInset, 6)
-        XCTAssertEqual(ShellMetrics.sidebarPaneButtonHorizontalInset, 6)
-        XCTAssertEqual(ShellMetrics.sidebarPaneButtonVerticalInset, 3.5, accuracy: 0.001)
+        XCTAssertEqual(ShellMetrics.sidebarPaneButtonHorizontalInset, 12)
+        XCTAssertEqual(ShellMetrics.sidebarPaneButtonVerticalInset, 7, accuracy: 0.001)
         XCTAssertEqual(
             paneRowCornerRadius,
             ChromeGeometry.innerRadius(

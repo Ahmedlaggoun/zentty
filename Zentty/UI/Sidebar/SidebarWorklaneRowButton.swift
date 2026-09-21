@@ -41,6 +41,7 @@ final class SidebarWorklaneRowButton: NSButton {
     )
     private var panePrimaryRows: [SidebarPanePrimaryRowView] { paneRowRenderer.panePrimaryRows }
     private var paneDetailLabels: [SidebarStaticLabel] { paneRowRenderer.paneDetailLabels }
+    private var paneAgentInfoRows: [SidebarPaneAgentInfoView] { paneRowRenderer.paneAgentInfoRows }
     private var paneStatusRows: [SidebarPaneTextRowView] { paneRowRenderer.paneStatusRows }
     private var paneServerRows: [SidebarPaneServerRowView] { paneRowRenderer.paneServerRows }
     private var paneTaskListRows: [SidebarPaneTaskListView] { paneRowRenderer.paneTaskListRows }
@@ -1004,10 +1005,17 @@ final class SidebarWorklaneRowButton: NSButton {
             worklaneColor: summary.color,
             theme: currentTheme
         )
-        for button in paneRowButtons {
+        let paneSelectionColor = (summary.color?.tint(alpha: 1) ?? currentTheme.paneBorderFocused)
+            .withAlphaComponent(1)
+        for (index, button) in paneRowButtons.enumerated() {
             button.updateTheme(
                 hoverColor: paneRowInteractionColors.hover,
-                pressedColor: paneRowInteractionColors.pressed
+                pressedColor: paneRowInteractionColors.pressed,
+                selectedColor: paneSelectionColor.withAlphaComponent(0.16),
+                selectionColor: paneSelectionColor,
+                isSelected: summary.isActive
+                    && summary.paneRows.indices.contains(index)
+                    && summary.paneRows[index].isFocused
             )
         }
 
@@ -1142,6 +1150,7 @@ final class SidebarWorklaneRowButton: NSButton {
                 theme: currentTheme
             )
             paneDetailLabels[index].textColor = detailColor
+            paneAgentInfoRows[index].applyColors(text: detailColor, connected: currentTheme.statusReady)
             paneTaskListRows[index].applyColors(
                 primary: primaryColor,
                 secondary: detailColor,
@@ -1249,6 +1258,7 @@ final class SidebarWorklaneRowButton: NSButton {
         SidebarWorklaneRowContentRenderer.PaneRows(
             primaryRows: panePrimaryRows,
             detailLabels: paneDetailLabels,
+            agentInfoRows: paneAgentInfoRows,
             statusRows: paneStatusRows,
             serverRows: paneServerRows,
             taskListRows: paneTaskListRows,

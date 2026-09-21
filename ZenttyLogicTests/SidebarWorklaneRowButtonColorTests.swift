@@ -4,6 +4,149 @@ import XCTest
 
 @MainActor
 final class SidebarWorklaneRowButtonColorTests: AppKitTestCase {
+    func test_narrow_pane_keeps_connection_icons_and_count_click_inside_row() throws {
+        let pane = WorklaneSidebarPaneRow(
+            paneID: PaneID("narrow"), primaryText: "Mastro — Fix invoice totals",
+            trailingText: nil, detailText: "…/Mastro", statusText: "Running",
+            attentionState: .running, isFocused: true, isWorking: true,
+            subagents: PaneAgentSubagentSummary(entries: [PaneAgentSubagentEntry(id: "worker", model: "claude-opus-5")]),
+            isRemotePane: true, remotePaneLabel: "server.example",
+            agentName: "Claude Code", agentModel: "claude-opus-5", isClaudeRemoteControlActive: true
+        )
+        let row = makeRow(width: 180, height: 220)
+        var selections = 0
+        row.onPaneSelected = { _ in selections += 1 }
+        row.configure(with: makeSummary(color: nil, isActive: true, paneRows: [pane]),
+                      theme: makeTheme(dark: true, emphasis: .subtle), animated: false)
+        row.layoutSubtreeIfNeeded()
+        func descendants(_ view: NSView) -> [NSView] {
+            view.subviews.flatMap { [$0] + descendants($0) }
+        }
+        let views = descendants(row)
+        let info = try XCTUnwrap(views.compactMap { $0 as? SidebarPaneAgentInfoView }.first)
+        let button = try XCTUnwrap(views.compactMap { $0 as? SidebarPaneRowButton }.first)
+        let countFrame = info.agentCountFrame(in: button)
+        XCTAssertGreaterThanOrEqual(countFrame.minX, ShellMetrics.sidebarPaneButtonHorizontalInset - 0.5)
+        XCTAssertLessThanOrEqual(countFrame.maxX, button.bounds.maxX - ShellMetrics.sidebarPaneButtonHorizontalInset + 0.5)
+        let count = try XCTUnwrap(descendants(info).compactMap { $0 as? NSButton }.first)
+        XCTAssertEqual(count.title, "2")
+        XCTAssertEqual(descendants(info).compactMap { $0 as? NSImageView }.filter { !$0.isHidden && $0.toolTip != nil }.count, 2)
+        button.performPrimaryClickForTesting(at: NSPoint(x: countFrame.midX, y: countFrame.midY))
+        XCTAssertEqual(selections, 0)
+        XCTAssertTrue(row.toggledSubagentPaneIDsForTesting.contains(pane.paneID))
+    }
+
+    func test_working_pane_detail_stays_legible_on_light_selection() {
+        let theme = makeTheme(dark: false, emphasis: .subtle)
+        let color = SidebarWorklaneRowStyleResolver.paneDetailTextColor(
+            isFocused: true, isWorking: true, isActive: true,
+            activeTextColor: theme.sidebarButtonActiveText,
+            inactiveTextColor: theme.secondaryText, theme: theme
+        )
+        let surface = theme.sidebarButtonActiveBackground.composited(over: theme.windowBackground)
+        XCTAssertGreaterThanOrEqual(color.composited(over: surface).contrastRatio(against: surface), 4.5)
+    }
+
+    func test_agent_info_keeps_model_connections_and_active_count_separate_from_status() throws {
+        let workers = PaneAgentSubagentSummary(entries: [
+            PaneAgentSubagentEntry(id: "worker-1", model: "claude-sonnet-5"),
+            PaneAgentSubagentEntry(id: "worker-2", model: "claude-opus-5"),
+        ])
+        func summary(working: Bool, remote: Bool, subagents: PaneAgentSubagentSummary?) -> WorklaneSidebarPaneRow {
+            WorklaneSidebarPaneRow(
+                paneID: PaneID("agent"), primaryText: "Mastro — Fix invoices",
+                trailingText: nil, detailText: "…/Mastro", statusText: working ? "Running" : "Ready",
+                attentionState: working ? .running : .ready, isFocused: true, isWorking: working,
+                subagents: subagents, isRemotePane: remote, remotePaneLabel: "server.example",
+                agentName: "Claude Code", agentModel: "claude-opus-5", isClaudeRemoteControlActive: remote
+            )
+        }
+        let running = summary(working: true, remote: true, subagents: workers)
+        XCTAssertEqual(running.activeAgentCount, 3)
+        XCTAssertEqual(summary(working: false, remote: false, subagents: workers).activeAgentCount, 2)
+        XCTAssertEqual(summary(working: false, remote: false, subagents: .empty).activeAgentCount, 0)
+        let info = SidebarPaneAgentInfoView(frame: NSRect(x: 0, y: 0, width: 260, height: 18))
+        info.configure(row: running)
+        info.layoutSubtreeIfNeeded()
+        func descendants(_ view: NSView) -> [NSView] {
+            view.subviews.flatMap { [$0] + descendants($0) }
+        }
+        let children = descendants(info)
+        XCTAssertTrue(children.contains { ($0 as? NSTextField)?.stringValue == "Claude Code · Opus 5" })
+        let icons = children.compactMap { $0 as? NSImageView }.filter { $0.toolTip != nil }
+        XCTAssertEqual(icons.filter { !$0.isHidden }.count, 2)
+        XCTAssertTrue(icons.contains { $0.toolTip == "Claude Remote Control active" })
+        XCTAssertTrue(icons.contains { $0.toolTip == "SSH connection · server.example" })
+        let count = try XCTUnwrap(children.compactMap { $0 as? NSButton }.first)
+        XCTAssertEqual(count.title, "3 active")
+        var expansions = 0
+        info.onExpandAgents = { expansions += 1 }
+        count.performClick(nil)
+        XCTAssertEqual(expansions, 1)
+        let countFrame = info.agentCountFrame(in: info)
+        XCTAssertLessThanOrEqual(countFrame.maxX, info.bounds.maxX + 0.5)
+        XCTAssertGreaterThanOrEqual(countFrame.minX, 0)
+
+        info.configure(row: summary(working: false, remote: false, subagents: .empty))
+        XCTAssertTrue(icons.allSatisfy(\.isHidden))
+        XCTAssertEqual(count.title, "0 active")
+        count.performClick(nil)
+        XCTAssertEqual(expansions, 1, "an empty count must not open phantom workers")
+        XCTAssertEqual(SidebarPaneAgentInfoView.modelDisplayName("gpt-6-astra"), "GPT-6 Astra")
+        XCTAssertEqual(SidebarPaneAgentInfoView.modelDisplayName("claude-opus-4-6-20260101"), "Opus 4.6")
+        XCTAssertEqual(SidebarPaneAgentInfoView.modelDisplayName("custom/model-v2"), "custom/model-v2")
+    }
+
+    func test_pane_selection_moves_with_focus_and_clears_in_inactive_worklane() throws {
+        for dark in [true, false] {
+            let row = makeRow(height: 180)
+            let theme = makeTheme(dark: dark, emphasis: .subtle)
+            func configure(active: Bool, firstFocused: Bool) {
+                let second = makePaneRow(isFocused: !firstFocused, paneID: PaneID("second-pane"))
+                row.configure(
+                    with: makeSummary(
+                        color: nil, isActive: active,
+                        paneRows: [makePaneRow(isFocused: firstFocused), second]
+                    ),
+                    theme: theme, animated: false
+                )
+            }
+            func paneButtons(in view: NSView) -> [SidebarPaneRowButton] {
+                view.subviews.flatMap { child in
+                    if let button = child as? SidebarPaneRowButton { return [button] }
+                    return paneButtons(in: child)
+                }
+            }
+
+            configure(active: true, firstFocused: true)
+            let buttons = paneButtons(in: row)
+            XCTAssertEqual(buttons.count, 2)
+            let first = try XCTUnwrap(buttons.first)
+            let second = try XCTUnwrap(buttons.last)
+            XCTAssertEqual(first.state, .on)
+            XCTAssertGreaterThan(first.layer?.borderWidth ?? 0, 0)
+            XCTAssertGreaterThan(first.layer?.backgroundColor?.alpha ?? 0, 0)
+            XCTAssertEqual(second.state, .off)
+            XCTAssertEqual(second.layer?.borderWidth, 0)
+
+            // Pointer movement must not erase the persistent selection outline.
+            first.mouseEntered(with: NSEvent())
+            first.mouseExited(with: NSEvent())
+            XCTAssertGreaterThan(first.layer?.borderWidth ?? 0, 0)
+            XCTAssertGreaterThan(first.layer?.backgroundColor?.alpha ?? 0, 0)
+
+            configure(active: true, firstFocused: false)
+            XCTAssertEqual(first.state, .off)
+            XCTAssertEqual(first.layer?.borderWidth, 0)
+            XCTAssertEqual(second.state, .on)
+            XCTAssertGreaterThan(second.layer?.borderWidth ?? 0, 0)
+
+            configure(active: false, firstFocused: false)
+            XCTAssertEqual(second.state, .off)
+            XCTAssertEqual(second.layer?.borderWidth, 0)
+        }
+    }
+
     func test_style_resolver_tint_uses_hover_alpha_only_when_pane_row_is_not_hovered() {
         let tint = SidebarWorklaneRowStyleResolver.tintColor(
             worklaneColor: .red,
@@ -419,9 +562,9 @@ final class SidebarWorklaneRowButtonColorTests: AppKitTestCase {
         )
     }
 
-    private func makePaneRow(isFocused: Bool) -> WorklaneSidebarPaneRow {
+    private func makePaneRow(isFocused: Bool, paneID: PaneID = PaneID("pane-agent")) -> WorklaneSidebarPaneRow {
         WorklaneSidebarPaneRow(
-            paneID: PaneID("pane-agent"),
+            paneID: paneID,
             primaryText: "Claude Code",
             trailingText: "main",
             detailText: ".../zentty",

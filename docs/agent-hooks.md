@@ -34,6 +34,14 @@ By default, `notify` also adds the item to Zentty's notification inbox and uses 
 
 `notify` is intentionally pane-local. It fails when required pane routing variables such as `ZENTTY_PANE_TOKEN`, `ZENTTY_WORKLANE_ID`, or `ZENTTY_PANE_ID` are missing.
 
+## Pane Agent Details
+
+Agent panes show the tool and reported model separately from the task title and status. The connection icons distinguish SSH from Claude Remote Control. The per-pane active count includes the main agent only while it is working, plus its live subagents; clicking the count opens the existing subagent details. Narrow sidebars shorten the count to a number and retain full descriptions in tooltips.
+
+Claude's `SessionStart.model` and `PostModelSwitch.to_model` provide the selected session model. Codex uses a reported hook model or the newest root `turn_context` in a bounded transcript tail. An explicit unresolved model clears the previous label until a newer response supplies it. Subagent hooks cannot replace the root identity or model.
+
+Remote Control is distinct from an SSH shell. Claude hook environments expose `CLAUDE_CODE_BRIDGE_SESSION_ID` while Remote Control is active; only the connection boolean is displayed. Matching local session records refresh that boolean through the existing two-second agent sweep, including idle connect/disconnect changes. Remote SSH sessions use hook reports and do not probe unrelated local PIDs or files. Metadata changes do not change lifecycle state, activity clocks, or completion indicators. Unknown model data is left unlabelled, with a tooltip explaining that it has not been reported.
+
 ## Claude Code
 
 Register the same command for these Claude hook events:
@@ -49,6 +57,7 @@ Register the same command for these Claude hook events:
 - `TaskCompleted`
 - `SubagentStart`
 - `SubagentStop`
+- `PostModelSwitch`
 
 Example config snippet:
 
@@ -171,9 +180,9 @@ Claude hook execution is best effort. If the Claude adapter fails internally, Ze
 
 ### Subagents
 
-`SubagentStart` / `SubagentStop` maintain a per-pane registry of running subagents (`AgentSubagentRegistryStore`, shared with Codex and Grok). The sidebar shows the count as a badge next to the status icon; clicking it unfolds a list grouped by model and agent type.
+`SubagentStart` / `SubagentStop` maintain a per-pane registry of running subagents (`AgentSubagentRegistryStore`, shared with Codex and Grok). Agent panes include those workers in the active count beside the model; clicking it unfolds a list grouped by model and agent type.
 
-No hook payload carries the model, so Zentty resolves it from the files Claude writes next to the subagent transcript: `agent-<id>.meta.json` (present at spawn, holds `model` only when the parent chose one explicitly) or the first assistant line of `agent-<id>.jsonl`. `SubagentStart` arrives before either exists, so hooks fired from inside the subagent (`PreToolUse`, `PostToolUse`, …, recognizable by `agent_id`) retry the lookup and carry the refreshed set. The parent's `Stop` broadcasts an explicit empty set, and entries older than six hours are dropped in case a `SubagentStop` never arrived.
+For Claude subagents, Zentty resolves the model from the files written next to the subagent transcript: `agent-<id>.meta.json` (present at spawn, holds `model` only when the parent chose one explicitly) or the first assistant line of `agent-<id>.jsonl`. `SubagentStart` arrives before either exists, so hooks fired from inside the subagent (`PreToolUse`, `PostToolUse`, …, recognizable by `agent_id`) retry the lookup and carry the refreshed set. The parent's `Stop` broadcasts an explicit empty set, and entries older than six hours are dropped in case a `SubagentStop` never arrived.
 
 The agent-bench `subagents` scenario is the regression check for this pipeline.
 

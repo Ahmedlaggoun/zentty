@@ -198,8 +198,8 @@ enum ShellMetrics {
     static let footerHeight: CGFloat = sidebarCreateWorklaneButtonHeight
     static let sidebarPaneRowHorizontalInset: CGFloat = 6
     static let sidebarPaneRowVerticalInset: CGFloat = 6
-    static let sidebarPaneButtonHorizontalInset: CGFloat = 6
-    static let sidebarPaneButtonVerticalInset: CGFloat = 3.5
+    static let sidebarPaneButtonHorizontalInset: CGFloat = 12
+    static let sidebarPaneButtonVerticalInset: CGFloat = 7
     static let sidebarPaneButtonCornerRadius: CGFloat = ChromeGeometry.innerRadius(
         outerRadius: sidebarRowCornerRadius,
         inset: sidebarPaneRowHorizontalInset

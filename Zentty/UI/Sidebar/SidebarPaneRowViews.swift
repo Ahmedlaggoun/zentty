@@ -35,6 +35,135 @@ final class SidebarPrimaryTextContainerView: NSView {
     }
 }
 
+/// Stable agent identity and connection information, separate from task status.
+@MainActor
+final class SidebarPaneAgentInfoView: NSView {
+    private let identityLabel = SidebarStaticLabel()
+    private let sshIcon = NSImageView()
+    private let remoteControlIcon = NSImageView()
+    private let countButton = NSButton(title: "", target: nil, action: nil)
+    private let stack = NSStackView()
+    private(set) var canExpandAgents = false
+    private var activeAgentCount = 0
+    var onExpandAgents: (() -> Void)?
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        translatesAutoresizingMaskIntoConstraints = false
+        identityLabel.font = ShellMetrics.sidebarDetailFont()
+        identityLabel.lineBreakMode = .byTruncatingTail
+        identityLabel.maximumNumberOfLines = 1
+        identityLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        identityLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        countButton.isBordered = false
+        countButton.bezelStyle = .inline
+        countButton.font = .monospacedDigitSystemFont(ofSize: 10, weight: .medium)
+        countButton.image = NSImage(systemSymbolName: "person.2", accessibilityDescription: nil)?
+            .withSymbolConfiguration(.init(pointSize: 10, weight: .medium))
+        countButton.imagePosition = .imageLeading
+        countButton.target = self
+        countButton.action = #selector(expandAgents)
+        countButton.setContentCompressionResistancePriority(.required, for: .horizontal)
+        countButton.setContentHuggingPriority(.required, for: .horizontal)
+        configureIcon(sshIcon, symbol: "network")
+        configureIcon(remoteControlIcon, symbol: "antenna.radiowaves.left.and.right")
+        stack.orientation = .horizontal
+        stack.alignment = .centerY
+        stack.distribution = .fill
+        stack.spacing = 7
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        [identityLabel, sshIcon, remoteControlIcon, countButton].forEach(stack.addArrangedSubview)
+        addSubview(stack)
+        NSLayoutConstraint.activate([
+            heightAnchor.constraint(equalToConstant: ShellMetrics.sidebarDetailLineHeight),
+            stack.leadingAnchor.constraint(equalTo: leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: trailingAnchor),
+            stack.centerYAnchor.constraint(equalTo: centerYAnchor),
+        ])
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    private func configureIcon(_ icon: NSImageView, symbol: String) {
+        icon.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?
+            .withSymbolConfiguration(.init(pointSize: 11, weight: .medium))
+        icon.imageScaling = .scaleProportionallyDown
+        icon.translatesAutoresizingMaskIntoConstraints = false
+        icon.setAccessibilityRole(.image)
+        NSLayoutConstraint.activate([
+            icon.widthAnchor.constraint(equalToConstant: 13),
+            icon.heightAnchor.constraint(equalToConstant: 13),
+        ])
+    }
+
+    func configure(row: WorklaneSidebarPaneRow) {
+        identityLabel.stringValue = [row.agentName, row.agentModel.map(Self.modelDisplayName)]
+            .compactMap { $0 }.joined(separator: " · ")
+        identityLabel.toolTip = row.agentName.map { name in
+            name + " · " + (row.agentModel ?? "Model not reported yet")
+        }
+        sshIcon.isHidden = !row.isRemotePane
+        let sshLabel = "SSH connection" + (row.remotePaneLabel.map { " · " + $0 } ?? "")
+        sshIcon.toolTip = sshLabel
+        sshIcon.setAccessibilityLabel(sshLabel)
+        remoteControlIcon.isHidden = !row.isClaudeRemoteControlActive
+        remoteControlIcon.toolTip = "Claude Remote Control active"
+        remoteControlIcon.setAccessibilityLabel("Claude Remote Control active")
+        let workers = row.subagents?.count ?? 0
+        canExpandAgents = workers > 0
+        activeAgentCount = row.activeAgentCount
+        countButton.isHidden = row.agentName == nil
+        updateCountTitle()
+        let root = row.isWorking && row.agentName != nil ? 1 : 0
+        let detail = "\(root) main agent working · \(workers) running subagents"
+        countButton.toolTip = detail + (canExpandAgents ? "\nClick for subagent details" : "")
+        countButton.setAccessibilityLabel("\(row.activeAgentCount) active agents. " + detail)
+        countButton.setAccessibilityRole(canExpandAgents ? .button : .staticText)
+    }
+
+    func applyColors(text: NSColor, connected: NSColor) {
+        identityLabel.textColor = text
+        sshIcon.contentTintColor = text
+        remoteControlIcon.contentTintColor = connected
+        countButton.contentTintColor = text
+    }
+
+    func agentCountFrame(in view: NSView) -> NSRect {
+        view.convert(countButton.bounds, from: countButton)
+    }
+
+    override func layout() {
+        updateCountTitle()
+        super.layout()
+    }
+
+    private func updateCountTitle() {
+        let countTitle = bounds.width < 220 ? String(activeAgentCount) : "\(activeAgentCount) active"
+        if countButton.title != countTitle { countButton.title = countTitle }
+    }
+
+    @objc private func expandAgents() {
+        if canExpandAgents { onExpandAgents?() }
+    }
+
+    static func modelDisplayName(_ model: String) -> String {
+        if model.hasPrefix("claude-") {
+            return String(model.dropFirst("claude-".count))
+                .replacingOccurrences(of: "-[0-9]{8}$", with: "", options: .regularExpression)
+                .replacingOccurrences(of: "(?<=[0-9])-(?=[0-9])", with: ".", options: .regularExpression)
+                .replacingOccurrences(of: "-", with: " ").capitalized
+        }
+        if model.hasPrefix("gpt-") {
+            let parts = model.dropFirst(4).split(separator: "-", maxSplits: 1)
+            return "GPT-" + parts.map(String.init).enumerated().map { index, part in
+                index == 0 ? part : part.replacingOccurrences(of: "-", with: " ").capitalized
+            }.joined(separator: " ")
+        }
+        return model
+    }
+}
+
 @MainActor
 final class SidebarTaskProgressIndicatorView: NSView {
     private static let sideLength = SidebarTaskProgressIndicatorMetrics.sideLength
