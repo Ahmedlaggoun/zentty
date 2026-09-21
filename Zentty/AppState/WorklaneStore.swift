@@ -400,6 +400,7 @@ final class WorklaneStore {
     private let readyStatusDebounceInterval: TimeInterval
     let nonRepositoryRetryInterval: TimeInterval
     let currentDateProvider: @MainActor () -> Date
+    let foregroundAgentResolver: ((Int32) -> PaneForegroundAgentSnapshot?)?
     private let scheduleReadyStatusTask: ReadyStatusScheduler
     let codexQuestionResolver: CodexQuestionResolver
     let codexResolver: CodexToolStatusResolver
@@ -489,6 +490,7 @@ final class WorklaneStore {
         readyStatusDebounceInterval: TimeInterval = 0.25,
         nonRepositoryRetryInterval: TimeInterval = 5,
         currentDateProvider: @escaping @MainActor () -> Date = Date.init,
+        foregroundAgentResolver: ((Int32) -> PaneForegroundAgentSnapshot?)? = nil,
         readyStatusScheduler: @escaping ReadyStatusScheduler = WorklaneStore.defaultReadyStatusScheduler,
         codexQuestionResolver: @escaping CodexQuestionResolver = { request in
             CodexTranscriptQuestionExtractor.question(fromTranscriptPath: request.transcriptPath)
@@ -509,6 +511,7 @@ final class WorklaneStore {
         self.readyStatusDebounceInterval = readyStatusDebounceInterval
         self.nonRepositoryRetryInterval = nonRepositoryRetryInterval
         self.currentDateProvider = currentDateProvider
+        self.foregroundAgentResolver = foregroundAgentResolver
         self.scheduleReadyStatusTask = readyStatusScheduler
         self.codexQuestionResolver = codexQuestionResolver
         self.codexResolver = CodexToolStatusResolver(now: currentDateProvider)
