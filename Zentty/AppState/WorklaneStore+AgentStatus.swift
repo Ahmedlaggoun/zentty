@@ -10,16 +10,33 @@ private let codexRestartLogger = Logger(subsystem: "be.zenjoy.zentty", category:
 final class AgentSessionSweepContext {
     private let processAliveResolver: (Int32) -> Bool
     private let workingDirectoryResolver: (Int32) -> String?
+    private let foregroundAgentResolver: (Int32) -> PaneForegroundAgentSnapshot?
     private var processAliveByPID: [Int32: Bool] = [:]
     private var workingDirectoryByPID: [Int32: String] = [:]
     private var missingWorkingDirectoryPIDs: Set<Int32> = []
+    private var foregroundByRootPID: [Int32: PaneForegroundAgentSnapshot] = [:]
+    private var unreadableForegroundRootPIDs: Set<Int32> = []
 
     init(
         processAliveResolver: @escaping (Int32) -> Bool = WorklaneStore.defaultIsProcessAlive(pid:),
-        workingDirectoryResolver: @escaping (Int32) -> String? = ProcessCWDResolver.workingDirectory(for:)
+        workingDirectoryResolver: @escaping (Int32) -> String? = ProcessCWDResolver.workingDirectory(for:),
+        foregroundAgentResolver: ((Int32) -> PaneForegroundAgentSnapshot?)? = nil
     ) {
         self.processAliveResolver = processAliveResolver
         self.workingDirectoryResolver = workingDirectoryResolver
+        let probe = PaneForegroundAgentProbe()
+        self.foregroundAgentResolver = foregroundAgentResolver ?? probe.scan(rootPID:)
+    }
+
+    func foregroundAgent(rootPID: Int32) -> PaneForegroundAgentSnapshot? {
+        if let cached = foregroundByRootPID[rootPID] { return cached }
+        if unreadableForegroundRootPIDs.contains(rootPID) { return nil }
+        guard let value = foregroundAgentResolver(rootPID) else {
+            unreadableForegroundRootPIDs.insert(rootPID)
+            return nil
+        }
+        foregroundByRootPID[rootPID] = value
+        return value
     }
 
     func isProcessAlive(pid: Int32) -> Bool {
@@ -376,6 +393,17 @@ extension WorklaneStore {
             previousWorklane: previousWorklane,
             nextWorklane: worklane
         )
+
+        var ownershipState = worklane.auxiliaryStateByPaneID[payload.paneID, default: PaneAuxiliaryState()]
+        refreshForegroundAgent(in: &ownershipState.raw, context: AgentSessionSweepContext(foregroundAgentResolver: foregroundAgentResolver))
+        worklane.auxiliaryStateByPaneID[payload.paneID] = ownershipState
+        guard ownershipState.raw.acceptsForegroundAgentPayload(payload) else {
+            recomputePresentation(for: payload.paneID, in: &worklane)
+            worklanes[worklaneIndex] = worklane
+            let impacts = auxiliaryInvalidation(for: payload.paneID, previousWorklane: previousWorklane, nextWorklane: worklane)
+            if !impacts.isEmpty { notify(.auxiliaryStateUpdated(worklane.id, payload.paneID, impacts)) }
+            return
+        }
 
         worklane.auxiliaryStateByPaneID[payload.paneID, default: PaneAuxiliaryState()].raw.observeAgentMetadata(payload)
         if payload.signalKind == .agentMetadata {
@@ -1204,7 +1232,16 @@ extension WorklaneStore {
     }
 
     func clearStaleAgentSessions() {
-        clearStaleAgentSessions(sweepContext: AgentSessionSweepContext())
+        clearStaleAgentSessions(sweepContext: AgentSessionSweepContext(foregroundAgentResolver: foregroundAgentResolver))
+    }
+
+    private func refreshForegroundAgent(in raw: inout PaneRawState, context: AgentSessionSweepContext) {
+        guard raw.shellContext?.scope != .remote, raw.foregroundSSHDestination == nil else {
+            raw.foregroundAgentSnapshot = nil
+            return
+        }
+        guard let rootPID = raw.paneRootPID, let snapshot = context.foregroundAgent(rootPID: rootPID) else { return }
+        raw.reconcileForegroundAgent(snapshot)
     }
 
     func clearStaleAgentSessions(sweepContext: AgentSessionSweepContext) {
@@ -1214,7 +1251,14 @@ extension WorklaneStore {
             let previousWorklane = worklane
             var changedPaneIDs = Set<PaneID>()
 
-            for (paneID, aux) in worklane.auxiliaryStateByPaneID {
+            for (paneID, previousAux) in worklane.auxiliaryStateByPaneID {
+                var aux = previousAux
+                refreshForegroundAgent(in: &aux.raw, context: sweepContext)
+                if aux != previousAux {
+                    worklane.auxiliaryStateByPaneID[paneID] = aux
+                    changedPaneIDs.insert(paneID)
+                    recomputePresentation(for: paneID, in: &worklane)
+                }
                 if var metadata = aux.raw.agentMetadata {
                     let remainsLive = metadata.refresh(
                         isProcessAlive: sweepContext.isProcessAlive(pid:),

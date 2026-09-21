@@ -6,8 +6,8 @@ import XCTest
 final class SidebarWorklaneRowButtonColorTests: AppKitTestCase {
     func test_narrow_pane_keeps_connection_icons_and_count_click_inside_row() throws {
         let pane = WorklaneSidebarPaneRow(
-            paneID: PaneID("narrow"), primaryText: "Mastro — Fix invoice totals",
-            trailingText: nil, detailText: "…/Mastro", statusText: "Running",
+            paneID: PaneID("narrow"), primaryText: "demo — Fix invoice totals",
+            trailingText: nil, detailText: "…/demo", statusText: "Running",
             attentionState: .running, isFocused: true, isWorking: true,
             subagents: PaneAgentSubagentSummary(entries: [PaneAgentSubagentEntry(id: "worker", model: "claude-opus-5")]),
             isRemotePane: true, remotePaneLabel: "server.example",
@@ -54,8 +54,8 @@ final class SidebarWorklaneRowButtonColorTests: AppKitTestCase {
         ])
         func summary(working: Bool, remote: Bool, subagents: PaneAgentSubagentSummary?) -> WorklaneSidebarPaneRow {
             WorklaneSidebarPaneRow(
-                paneID: PaneID("agent"), primaryText: "Mastro — Fix invoices",
-                trailingText: nil, detailText: "…/Mastro", statusText: working ? "Running" : "Ready",
+                paneID: PaneID("agent"), primaryText: "demo — Fix invoices",
+                trailingText: nil, detailText: "…/demo", statusText: working ? "Running" : "Ready",
                 attentionState: working ? .running : .ready, isFocused: true, isWorking: working,
                 subagents: subagents, isRemotePane: remote, remotePaneLabel: "server.example",
                 agentName: "Claude Code", agentModel: "claude-opus-5", isClaudeRemoteControlActive: remote

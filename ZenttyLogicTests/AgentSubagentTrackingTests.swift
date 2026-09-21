@@ -221,6 +221,323 @@ final class AgentRootMetadataTests: XCTestCase {
     }
 }
 
+final class PaneForegroundAgentProbeTests: XCTestCase {
+    private func process(_ parent: Int32, _ group: Int32, _ foreground: Int32, _ name: String) -> PaneForegroundProcessInfo {
+        PaneForegroundProcessInfo(parentPID: parent, processGroupID: group, foregroundProcessGroupID: foreground, terminalDevice: 1, name: name)
+    }
+
+    func test_node_wrapper_is_owned_but_nested_and_background_agents_are_not() throws {
+        let processes: [Int32: PaneForegroundProcessInfo] = [
+            10: process(1, 10, 20, "zsh"),
+            20: process(10, 20, 20, "node"),
+            21: process(20, 20, 20, "codex"),
+            30: process(21, 20, 20, "claude"),
+            31: process(21, 20, 20, "codex"),
+            40: process(10, 40, 20, "claude"),
+        ]
+        var reads: [Int32: Int] = [:]
+        let probe = PaneForegroundAgentProbe(treePIDs: { _ in Array(processes.keys) }, processInfo: { pid in
+            reads[pid, default: 0] += 1
+            return processes[pid]
+        })
+        let owner = try XCTUnwrap(probe.scan(rootPID: 10)?.agent)
+        XCTAssertEqual(owner.tool, .codex)
+        XCTAssertEqual(owner.pid, 21)
+        XCTAssertEqual(owner.launchPIDs, [20, 21])
+        XCTAssertTrue(owner.owns(tool: .codex, pid: 20))
+        XCTAssertFalse(owner.owns(tool: .codex, pid: 31))
+        _ = probe.scan(rootPID: 10)
+        XCTAssertTrue(reads.values.allSatisfy { $0 == 1 })
+    }
+
+    func test_claude_owns_its_nested_codex_helper() {
+        let processes: [Int32: PaneForegroundProcessInfo] = [
+            10: process(1, 10, 20, "zsh"),
+            20: process(10, 20, 20, "claude"),
+            21: process(20, 20, 20, "node"),
+            22: process(21, 20, 20, "codex"),
+        ]
+        let probe = PaneForegroundAgentProbe(treePIDs: { _ in Array(processes.keys) }, processInfo: { processes[$0] })
+        XCTAssertEqual(probe.scan(rootPID: 10)?.agent?.tool, .claudeCode)
+        XCTAssertEqual(probe.scan(rootPID: 10)?.agent?.launchPIDs, [20])
+    }
+
+    func test_native_claude_versioned_executable_is_recognized_without_changing_process_name() {
+        var native = process(10, 20, 20, "2.1.278")
+        native.executablePath = "/Users/test/.local/share/claude/versions/2.1.278"
+        XCTAssertEqual(native.recognizedAgentTool, .claudeCode)
+        XCTAssertEqual(native.name, "2.1.278")
+        for path in [
+            "/Users/test/.local/share/other/versions/2.1.278",
+            "/Users/test/projects/claude/versions/2.1.278",
+            "/Users/test/.local/share/claude/versions/2.1.999",
+            "/tmp/2.1.278",
+        ] {
+            native.executablePath = path
+            XCTAssertNil(native.recognizedAgentTool, path)
+        }
+        native.executablePath = nil
+        XCTAssertNil(native.recognizedAgentTool)
+    }
+
+    func test_versioned_native_claude_owns_its_nested_codex_helper() {
+        var native = process(10, 20, 20, "2.1.278")
+        native.executablePath = "/Users/test/.local/share/claude/versions/2.1.278"
+        let processes: [Int32: PaneForegroundProcessInfo] = [
+            10: process(1, 10, 20, "zsh"),
+            20: native,
+            21: process(20, 20, 20, "node"),
+            22: process(21, 20, 20, "codex"),
+        ]
+        let probe = PaneForegroundAgentProbe(treePIDs: { _ in Array(processes.keys) }, processInfo: { processes[$0] })
+        XCTAssertEqual(probe.scan(rootPID: 10)?.agent?.tool, .claudeCode)
+        XCTAssertEqual(probe.scan(rootPID: 10)?.agent?.pid, 20)
+        XCTAssertEqual(probe.scan(rootPID: 10)?.agent?.launchPIDs, [20])
+    }
+
+    func test_unreadable_versioned_executable_does_not_promote_nested_helper() {
+        let processes: [Int32: PaneForegroundProcessInfo] = [
+            10: process(1, 10, 20, "zsh"),
+            20: process(10, 20, 20, "2.1.278"),
+            21: process(20, 20, 20, "codex"),
+        ]
+        let probe = PaneForegroundAgentProbe(treePIDs: { _ in Array(processes.keys) }, processInfo: { processes[$0] })
+        XCTAssertNil(probe.scan(rootPID: 10), "Without the versioned executable path, the parent may be Claude")
+    }
+
+    func test_shell_foreground_does_not_select_background_agent() throws {
+        let processes: [Int32: PaneForegroundProcessInfo] = [
+            10: process(1, 10, 10, "zsh"),
+            20: process(10, 20, 10, "codex"),
+        ]
+        let probe = PaneForegroundAgentProbe(treePIDs: { _ in Array(processes.keys) }, processInfo: { processes[$0] })
+        XCTAssertNil(try XCTUnwrap(probe.scan(rootPID: 10)).agent)
+        XCTAssertNil(probe.scan(rootPID: 99), "Unreadable process state must remain unknown")
+    }
+
+    func test_unreadable_foreground_child_is_unknown_not_an_empty_job() {
+        let root = process(1, 10, 20, "zsh")
+        let probe = PaneForegroundAgentProbe(
+            treePIDs: { _ in [10, 20] },
+            processInfo: { $0 == 10 ? root : nil }
+        )
+        XCTAssertNil(probe.scan(rootPID: 10))
+    }
+
+    func test_missing_parent_cannot_promote_a_readable_helper_to_owner() {
+        let processes: [Int32: PaneForegroundProcessInfo] = [
+            10: process(1, 10, 20, "zsh"),
+            30: process(20, 20, 20, "codex"),
+        ]
+        for listed: [Int32] in [[10, 20, 30], [10, 30]] {
+            let probe = PaneForegroundAgentProbe(treePIDs: { _ in listed }, processInfo: { processes[$0] })
+            XCTAssertNil(probe.scan(rootPID: 10), "the unreadable or missing parent may own this helper")
+        }
+    }
+}
+
+@MainActor
+final class PaneAgentOwnershipTests: XCTestCase {
+    private let worklaneID = WorklaneID("owner-worklane")
+    private let paneID = PaneID("owner-pane")
+
+    private func snapshot(_ tool: AgentTool, pid: Int32, launchPIDs: Set<Int32>? = nil) -> PaneForegroundAgentSnapshot {
+        let launchPIDs = launchPIDs ?? [pid]
+        return PaneForegroundAgentSnapshot(agent: PaneForegroundAgent(tool: tool, pid: pid, launchPIDs: launchPIDs), foregroundPIDs: launchPIDs)
+    }
+
+    private func makeStore(resolver: @escaping (Int32) -> PaneForegroundAgentSnapshot?) -> WorklaneStore {
+        let store = WorklaneStore(foregroundAgentResolver: resolver)
+        store.replaceWorklanes([WorklaneState(
+            id: worklaneID, title: nil,
+            paneStripState: PaneStripState(panes: [PaneState(id: paneID, title: "Project — Current task")], focusedPaneID: paneID),
+            auxiliaryStateByPaneID: [paneID: PaneAuxiliaryState(paneRootPID: 10)]
+        )])
+        return store
+    }
+
+    private func payload(_ tool: AgentTool, session: String, pid: Int32, state: PaneAgentState, model: String? = nil, subagents: PaneAgentSubagentSummary? = nil) -> AgentStatusPayload {
+        var payload = AgentStatusPayload(
+            worklaneID: worklaneID, paneID: paneID, state: state, origin: .explicitHook,
+            toolName: tool.displayName, text: nil, confidence: .explicit, sessionID: session,
+            subagents: subagents, artifactKind: nil, artifactLabel: nil, artifactURL: nil
+        )
+        payload.carriesRootMetadata = true
+        payload.agentMetadataPID = pid
+        payload.agentModel = model
+        return payload
+    }
+
+    private func state(_ store: WorklaneStore) -> PaneAuxiliaryState {
+        store.worklanes[0].auxiliaryStateByPaneID[paneID]!
+    }
+
+    private func sweep(_ store: WorklaneStore, snapshot: PaneForegroundAgentSnapshot?) {
+        store.clearStaleAgentSessions(sweepContext: AgentSessionSweepContext(
+            processAliveResolver: { _ in true }, workingDirectoryResolver: { _ in nil },
+            foregroundAgentResolver: { _ in snapshot }
+        ))
+    }
+
+    func test_exiting_and_launching_other_agent_replaces_status_model_and_subagents_in_both_directions() {
+        for (oldTool, newTool) in [(AgentTool.claudeCode, AgentTool.codex), (.codex, .claudeCode)] {
+            for oldState in [PaneAgentState.running, .needsInput, .idle, .unresolvedStop] {
+                var foreground = snapshot(oldTool, pid: 20)
+                let store = makeStore { _ in foreground }
+                store.applyAgentStatusPayload(payload(oldTool, session: "old", pid: 20, state: .running, model: "old-model", subagents: .init(entries: [.init(id: "old-child")])))
+                store.applyAgentStatusPayload(payload(oldTool, session: "old", pid: 20, state: oldState))
+                store.updateMetadata(paneID: paneID, metadata: TerminalMetadata(title: oldTool.displayName))
+                foreground = snapshot(newTool, pid: 30)
+
+                store.applyAgentStatusPayload(payload(newTool, session: "new", pid: 30, state: .starting, model: "new-model"))
+
+                XCTAssertEqual(state(store).presentation.recognizedTool, newTool, "\(oldTool) \(oldState)")
+                XCTAssertEqual(state(store).agentStatus?.sessionID, "new")
+                XCTAssertEqual(state(store).presentation.agentModel, "new-model")
+                XCTAssertNil(state(store).presentation.subagents)
+                XCTAssertFalse(state(store).raw.showsReadyStatus)
+                XCTAssertEqual(Set(state(store).agentReducerState.sessionsByID.keys), ["new"])
+                store.applyAgentStatusPayload(payload(newTool, session: "new", pid: 30, state: .running))
+                store.applyAgentStatusPayload(payload(newTool, session: "new", pid: 30, state: .idle))
+                XCTAssertEqual(state(store).agentStatus?.sessionID, "new", "Old unresolved stop must not return after completion")
+            }
+        }
+    }
+
+    func test_unhooked_replacement_uses_foreground_agent_despite_stale_title() {
+        for (oldTool, newTool) in [(AgentTool.claudeCode, AgentTool.codex), (.codex, .claudeCode)] {
+            let old = snapshot(oldTool, pid: 20)
+            let store = makeStore { _ in old }
+            store.applyAgentStatusPayload(payload(oldTool, session: "old", pid: 20, state: .running, model: "old-model", subagents: .init(entries: [.init(id: "old-child")])))
+            store.updateMetadata(paneID: paneID, metadata: TerminalMetadata(title: oldTool.displayName))
+
+            sweep(store, snapshot: snapshot(newTool, pid: 30))
+
+            XCTAssertEqual(state(store).presentation.recognizedTool, newTool)
+            XCTAssertNil(state(store).agentStatus)
+            XCTAssertNil(state(store).presentation.agentModel)
+            XCTAssertNil(state(store).presentation.subagents)
+            XCTAssertFalse(state(store).raw.showsReadyStatus)
+        }
+    }
+
+    func test_node_wrapper_hooks_keep_model_across_sweeps_and_nested_helpers_cannot_replace_it() {
+        let owner = snapshot(.codex, pid: 21, launchPIDs: [20, 21])
+        let store = makeStore { _ in owner }
+        store.applyAgentStatusPayload(payload(.codex, session: "root", pid: 20, state: .running, model: "gpt-root"))
+        let before = state(store)
+        sweep(store, snapshot: owner)
+        XCTAssertEqual(state(store).raw.agentMetadata, before.raw.agentMetadata)
+        for tool in [AgentTool.codex, .claudeCode] {
+            store.applyAgentStatusPayload(payload(tool, session: "helper", pid: 30, state: .starting, model: "helper-model"))
+            store.applyAgentStatusPayload(payload(tool, session: "helper", pid: 30, state: .running))
+            XCTAssertEqual(state(store).agentStatus?.sessionID, "root")
+            XCTAssertEqual(state(store).presentation.recognizedTool, .codex)
+            XCTAssertEqual(state(store).presentation.agentModel, "gpt-root")
+        }
+    }
+
+    func test_claude_pid_attach_replaces_codex_before_first_prompt() {
+        var foreground = snapshot(.codex, pid: 20)
+        let store = makeStore { _ in foreground }
+        store.applyAgentStatusPayload(payload(.codex, session: "old", pid: 20, state: .needsInput, model: "old-model"))
+        foreground = snapshot(.claudeCode, pid: 30)
+        var start = AgentStatusPayload(
+            worklaneID: worklaneID, paneID: paneID, signalKind: .pid, state: nil,
+            pid: 30, pidEvent: .attach, origin: .explicitHook, toolName: "Claude Code", text: nil,
+            sessionID: "new", artifactKind: nil, artifactLabel: nil, artifactURL: nil
+        )
+        start.carriesRootMetadata = true
+        start.agentMetadataPID = 30
+        start.agentModel = "new-model"
+        store.applyAgentStatusPayload(start)
+        XCTAssertEqual(state(store).presentation.recognizedTool, .claudeCode)
+        XCTAssertEqual(state(store).agentStatus?.sessionID, "new")
+        XCTAssertEqual(state(store).presentation.agentModel, "new-model")
+    }
+
+    func test_native_child_approval_still_surfaces_without_replacing_root_identity() {
+        let owner = snapshot(.claudeCode, pid: 20)
+        let store = makeStore { _ in owner }
+        store.applyAgentStatusPayload(payload(.claudeCode, session: "root", pid: 20, state: .running, model: "root-model"))
+        store.applyAgentStatusPayload(AgentStatusPayload(
+            worklaneID: worklaneID, paneID: paneID, state: .needsInput, origin: .explicitHook,
+            toolName: "Claude Code", text: "Allow write?", interactionKind: .approval, confidence: .explicit,
+            sessionID: "child", parentSessionID: "root", artifactKind: nil, artifactLabel: nil, artifactURL: nil
+        ))
+        XCTAssertEqual(state(store).agentStatus?.sessionID, "child")
+        XCTAssertEqual(state(store).presentation.runtimePhase, .needsInput)
+        XCTAssertEqual(state(store).presentation.agentModel, "root-model")
+    }
+
+    func test_return_to_shell_clears_old_identity_even_when_title_does_not_change() {
+        let old = snapshot(.claudeCode, pid: 20)
+        let store = makeStore { _ in old }
+        store.applyAgentStatusPayload(payload(.claudeCode, session: "old", pid: 20, state: .running, model: "old-model"))
+        store.updateMetadata(paneID: paneID, metadata: TerminalMetadata(title: "Claude Code"))
+        sweep(store, snapshot: PaneForegroundAgentSnapshot(agent: nil, foregroundPIDs: [10]))
+        XCTAssertNil(state(store).presentation.recognizedTool)
+        XCTAssertNil(state(store).agentStatus)
+        XCTAssertNil(state(store).presentation.agentModel)
+    }
+
+    func test_failed_foreground_inspection_preserves_current_owner_and_metadata() {
+        let owner = snapshot(.claudeCode, pid: 20)
+        let store = makeStore { _ in owner }
+        store.applyAgentStatusPayload(payload(.claudeCode, session: "root", pid: 20, state: .running, model: "root-model"))
+        let before = state(store)
+        sweep(store, snapshot: nil)
+        XCTAssertEqual(state(store).raw.foregroundAgentSnapshot, before.raw.foregroundAgentSnapshot)
+        XCTAssertEqual(state(store).raw.agentMetadata, before.raw.agentMetadata)
+        XCTAssertEqual(state(store).agentStatus, before.agentStatus)
+    }
+
+    func test_remote_shell_does_not_use_local_foreground_processes() {
+        let store = makeStore { _ in XCTFail("Remote PID must not be inspected locally"); return nil }
+        var worklane = store.worklanes[0]
+        worklane.auxiliaryStateByPaneID[paneID]?.raw.shellContext = PaneShellContext(scope: .remote, path: "/project", home: nil, user: nil, host: "server")
+        store.replaceWorklanes([worklane])
+        store.applyAgentStatusPayload(payload(.codex, session: "remote", pid: 20, state: .running, model: "remote-model"))
+        store.clearStaleAgentSessions()
+        XCTAssertEqual(state(store).presentation.recognizedTool, .codex)
+        XCTAssertEqual(state(store).presentation.agentModel, "remote-model")
+    }
+
+    func test_entering_remote_shell_releases_previous_local_owner_before_remote_hooks() {
+        let local = snapshot(.claudeCode, pid: 20)
+        var isRemote = false
+        let store = makeStore { _ in
+            XCTAssertFalse(isRemote, "The remote shell must not be inspected locally")
+            return local
+        }
+        store.applyAgentStatusPayload(payload(.claudeCode, session: "local", pid: 20, state: .running, model: "local-model"))
+        store.applyAgentStatusPayload(AgentStatusPayload(
+            worklaneID: worklaneID, paneID: paneID, signalKind: .paneContext, state: nil,
+            paneContext: PaneShellContext(scope: .remote, path: "/project", home: nil, user: nil, host: "server"),
+            toolName: nil, text: nil, artifactKind: nil, artifactLabel: nil, artifactURL: nil
+        ))
+        isRemote = true
+        store.applyAgentStatusPayload(payload(.codex, session: "remote", pid: 30, state: .starting, model: "remote-model"))
+        XCTAssertNil(state(store).raw.foregroundAgentSnapshot)
+        XCTAssertEqual(state(store).presentation.recognizedTool, .codex)
+        XCTAssertEqual(state(store).presentation.agentModel, "remote-model")
+        XCTAssertEqual(state(store).agentStatus?.sessionID, "remote")
+    }
+
+    func test_sweep_caches_foreground_lookup_for_each_root_including_failures() {
+        var calls: [Int32: Int] = [:]
+        let context = AgentSessionSweepContext(foregroundAgentResolver: { pid in
+            calls[pid, default: 0] += 1
+            return pid == 10 ? self.snapshot(.codex, pid: 20) : nil
+        })
+        for _ in 0..<2 {
+            _ = context.foregroundAgent(rootPID: 10)
+            _ = context.foregroundAgent(rootPID: 99)
+        }
+        XCTAssertEqual(calls, [10: 1, 99: 1])
+    }
+}
+
 final class AgentSubagentTrackingTests: XCTestCase {
     private let environment: [String: String] = [
         "ZENTTY_WORKLANE_ID": "worklane-main",
