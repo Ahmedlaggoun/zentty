@@ -404,6 +404,60 @@ final class PaneAgentOwnershipTests: XCTestCase {
         }
     }
 
+    func test_payload_burst_reuses_one_foreground_scan_but_a_tool_switch_still_lands() {
+        // The clock never advances, so the TTL never expires. Any correctness here
+        // comes from the forced re-scan, not from the cache quietly refreshing.
+        let frozen = Date(timeIntervalSince1970: 1_000)
+        var scans = 0
+        var foreground = snapshot(.claudeCode, pid: 20)
+        let store = WorklaneStore(
+            currentDateProvider: { frozen },
+            foregroundAgentResolver: { _ in scans += 1; return foreground }
+        )
+        store.replaceWorklanes([WorklaneState(
+            id: worklaneID, title: nil,
+            paneStripState: PaneStripState(panes: [PaneState(id: paneID, title: "Project — Current task")], focusedPaneID: paneID),
+            auxiliaryStateByPaneID: [paneID: PaneAuxiliaryState(paneRootPID: 10)]
+        )])
+
+        for _ in 0 ..< 8 {
+            store.applyAgentStatusPayload(payload(.claudeCode, session: "s", pid: 20, state: .running))
+        }
+        XCTAssertEqual(scans, 1, "a burst of accepted payloads must not rewalk the process tree")
+
+        // Codex replaces Claude. The cached probe still says Claude owns the pane,
+        // so without the forced re-scan this payload would be dropped silently.
+        foreground = snapshot(.codex, pid: 30)
+        store.applyAgentStatusPayload(payload(.codex, session: "next", pid: 30, state: .starting))
+
+        XCTAssertEqual(scans, 2, "a rejected payload must trigger exactly one fresh scan")
+        XCTAssertEqual(state(store).presentation.recognizedTool, .codex, "the new agent must not be discarded")
+        XCTAssertEqual(state(store).agentStatus?.sessionID, "next")
+    }
+
+    func test_foreground_scan_repeats_once_the_cache_window_has_passed() {
+        var now = Date(timeIntervalSince1970: 1_000)
+        var scans = 0
+        let foreground = snapshot(.claudeCode, pid: 20)
+        let store = WorklaneStore(
+            currentDateProvider: { now },
+            foregroundAgentResolver: { _ in scans += 1; return foreground },
+            foregroundAgentContextTTL: 1
+        )
+        store.replaceWorklanes([WorklaneState(
+            id: worklaneID, title: nil,
+            paneStripState: PaneStripState(panes: [PaneState(id: paneID, title: "Project — Current task")], focusedPaneID: paneID),
+            auxiliaryStateByPaneID: [paneID: PaneAuxiliaryState(paneRootPID: 10)]
+        )])
+
+        store.applyAgentStatusPayload(payload(.claudeCode, session: "s", pid: 20, state: .running))
+        XCTAssertEqual(scans, 1)
+
+        now = now.addingTimeInterval(2)
+        store.applyAgentStatusPayload(payload(.claudeCode, session: "s", pid: 20, state: .running))
+        XCTAssertEqual(scans, 2, "the cache must expire so ownership cannot go stale indefinitely")
+    }
+
     func test_unhooked_replacement_uses_foreground_agent_despite_stale_title() {
         for (oldTool, newTool) in [(AgentTool.claudeCode, AgentTool.codex), (.codex, .claudeCode)] {
             let old = snapshot(oldTool, pid: 20)

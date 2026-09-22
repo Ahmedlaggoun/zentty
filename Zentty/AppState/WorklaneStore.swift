@@ -401,6 +401,12 @@ final class WorklaneStore {
     let nonRepositoryRetryInterval: TimeInterval
     let currentDateProvider: @MainActor () -> Date
     let foregroundAgentResolver: ((Int32) -> PaneForegroundAgentSnapshot?)?
+    /// Resolving the foreground agent walks the pane's whole process tree, so a
+    /// burst of hooks from one turn would repeat it on the main actor. The probe
+    /// cache is reused for `foregroundAgentContextTTL`, and any payload the cache
+    /// would reject forces a fresh scan before it is dropped.
+    var cachedForegroundAgentContext: (context: AgentSessionSweepContext, stamp: Date)?
+    let foregroundAgentContextTTL: TimeInterval
     private let scheduleReadyStatusTask: ReadyStatusScheduler
     let codexQuestionResolver: CodexQuestionResolver
     let codexResolver: CodexToolStatusResolver
@@ -491,6 +497,7 @@ final class WorklaneStore {
         nonRepositoryRetryInterval: TimeInterval = 5,
         currentDateProvider: @escaping @MainActor () -> Date = Date.init,
         foregroundAgentResolver: ((Int32) -> PaneForegroundAgentSnapshot?)? = nil,
+        foregroundAgentContextTTL: TimeInterval = 1,
         readyStatusScheduler: @escaping ReadyStatusScheduler = WorklaneStore.defaultReadyStatusScheduler,
         codexQuestionResolver: @escaping CodexQuestionResolver = { request in
             CodexTranscriptQuestionExtractor.question(fromTranscriptPath: request.transcriptPath)
@@ -512,6 +519,7 @@ final class WorklaneStore {
         self.nonRepositoryRetryInterval = nonRepositoryRetryInterval
         self.currentDateProvider = currentDateProvider
         self.foregroundAgentResolver = foregroundAgentResolver
+        self.foregroundAgentContextTTL = foregroundAgentContextTTL
         self.scheduleReadyStatusTask = readyStatusScheduler
         self.codexQuestionResolver = codexQuestionResolver
         self.codexResolver = CodexToolStatusResolver(now: currentDateProvider)

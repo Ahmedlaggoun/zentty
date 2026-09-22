@@ -395,7 +395,12 @@ extension WorklaneStore {
         )
 
         var ownershipState = worklane.auxiliaryStateByPaneID[payload.paneID, default: PaneAuxiliaryState()]
-        refreshForegroundAgent(in: &ownershipState.raw, context: AgentSessionSweepContext(foregroundAgentResolver: foregroundAgentResolver))
+        refreshForegroundAgent(in: &ownershipState.raw, context: foregroundAgentContext())
+        if !ownershipState.raw.acceptsForegroundAgentPayload(payload) {
+            // A cached probe can predate a tool switch, and dropping a payload is
+            // silent. Pay for one fresh scan rather than lose a new agent's start.
+            refreshForegroundAgent(in: &ownershipState.raw, context: foregroundAgentContext(forcingRefresh: true))
+        }
         worklane.auxiliaryStateByPaneID[payload.paneID] = ownershipState
         guard ownershipState.raw.acceptsForegroundAgentPayload(payload) else {
             recomputePresentation(for: payload.paneID, in: &worklane)
@@ -1233,6 +1238,19 @@ extension WorklaneStore {
 
     func clearStaleAgentSessions() {
         clearStaleAgentSessions(sweepContext: AgentSessionSweepContext(foregroundAgentResolver: foregroundAgentResolver))
+    }
+
+    /// Shared by every payload inside one agent turn. Without it each hook walked
+    /// the pane's entire process tree synchronously on the main actor.
+    func foregroundAgentContext(forcingRefresh: Bool = false) -> AgentSessionSweepContext {
+        let now = currentDateProvider()
+        if !forcingRefresh, let cached = cachedForegroundAgentContext,
+           now.timeIntervalSince(cached.stamp) < foregroundAgentContextTTL {
+            return cached.context
+        }
+        let context = AgentSessionSweepContext(foregroundAgentResolver: foregroundAgentResolver)
+        cachedForegroundAgentContext = (context, now)
+        return context
     }
 
     private func refreshForegroundAgent(in raw: inout PaneRawState, context: AgentSessionSweepContext) {
