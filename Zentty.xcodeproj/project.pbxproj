@@ -499,6 +499,7 @@
 		C48A3F29901F1422CD1FD7BC /* WorklanePeekSelectionStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9D0A8D1F663DD3E708212FD /* WorklanePeekSelectionStateTests.swift */; };
 		C4D51A818FD7098556DE2638 /* CodexToolStatusResolver+Title.swift in Sources */ = {isa = PBXBuildFile; fileRef = C70D781663BFAF38E678D72F /* CodexToolStatusResolver+Title.swift */; };
 		C4F35E741F4A20FEA6E0B5C4 /* ZenttyCLI.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4D4F4075E849631130D781E1 /* ZenttyCLI.swift */; };
+		C530F789365A940F39172220 /* LibghosttyViewKeyEquivalentTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E48B7C90DB11EF660E8488A7 /* LibghosttyViewKeyEquivalentTests.swift */; };
 		C5472B502864FDAF36E08684 /* PaneCommandExecutor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9E5374262D4ED03A210B05CA /* PaneCommandExecutor.swift */; };
 		C57C067DB3163F1B09E7E72F /* PresentationReducerContext.swift in Sources */ = {isa = PBXBuildFile; fileRef = 058230B7588E412C374895C9 /* PresentationReducerContext.swift */; };
 		C57DE7B45F0BEFFDC8EC7371 /* MenuBarStatusPillView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D6996377692DF2C92D7428A5 /* MenuBarStatusPillView.swift */; };
@@ -1275,6 +1276,7 @@
 		E33FF8DDD0088600F542E4B1 /* AppMenuBuilderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppMenuBuilderTests.swift; sourceTree = "<group>"; };
 		E455660542BED764C4FCF49E /* AmpPluginInstaller.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AmpPluginInstaller.swift; sourceTree = "<group>"; };
 		E469BF2F5A021DBF256E8D20 /* PaneStripStateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PaneStripStateTests.swift; sourceTree = "<group>"; };
+		E48B7C90DB11EF660E8488A7 /* LibghosttyViewKeyEquivalentTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibghosttyViewKeyEquivalentTests.swift; sourceTree = "<group>"; };
 		E4C05F7BE9ED093DD4CC4CA4 /* SidebarActiveWorklaneAutoScrollerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidebarActiveWorklaneAutoScrollerTests.swift; sourceTree = "<group>"; };
 		E58967CFFAB97F7D24A62733 /* WorklaneContextFormatterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorklaneContextFormatterTests.swift; sourceTree = "<group>"; };
 		E5BD40F90473F37867AB07AF /* WorklaneStoreOpenWithTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorklaneStoreOpenWithTests.swift; sourceTree = "<group>"; };
@@ -2228,6 +2230,7 @@
 				CCC0F177C0A82F2B0F3EEEA5 /* LibghosttySurfaceScrollHostViewTests.swift */,
 				57CF2D04183C614FB5439EB3 /* LibghosttyViewDragDropTests.swift */,
 				127750B71156F3E2EA9DF608 /* LibghosttyViewIMETests.swift */,
+				E48B7C90DB11EF660E8488A7 /* LibghosttyViewKeyEquivalentTests.swift */,
 				7FB9D05A6887CB439CE0E066 /* LibghosttyViewMiddleClickTests.swift */,
 				E0253BE7E0C15D8168A3491D /* LibghosttyViewScrollRoutingTests.swift */,
 				764043625341719F0B16B3AD /* MarkdownReformatterTests.swift */,
@@ -2687,6 +2690,7 @@
 				FD8C4C1A52364128ABA52568 /* LibghosttySurfaceScrollHostViewTests.swift in Sources */,
 				AF6C18AB558A8952DC241DEE /* LibghosttyViewDragDropTests.swift in Sources */,
 				D2B34381D9A8359047DA35FE /* LibghosttyViewIMETests.swift in Sources */,
+				C530F789365A940F39172220 /* LibghosttyViewKeyEquivalentTests.swift in Sources */,
 				F1A423CE593B1A50B31AC4BD /* LibghosttyViewMiddleClickTests.swift in Sources */,
 				0D16861AE92EDD029878BCBA /* LibghosttyViewScrollRoutingTests.swift in Sources */,
 				627CF78C67998226D6EB770B /* MarkdownReformatterTests.swift in Sources */,
