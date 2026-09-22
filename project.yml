@@ -181,8 +181,8 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: be.zenjoy.zentty
-        CURRENT_PROJECT_VERSION: 921
-        MARKETING_VERSION: 0.3.3
+        CURRENT_PROJECT_VERSION: 931
+        MARKETING_VERSION: 0.3.4
         VERSIONING_SYSTEM: apple-generic
         INFOPLIST_FILE: Zentty/Info.plist
         SPARKLE_FEED_URL: ""
