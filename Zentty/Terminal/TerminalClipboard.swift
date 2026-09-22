@@ -27,6 +27,17 @@ enum TerminalClipboard {
 
     // MARK: - Public
 
+    /// Returns whether the selection was recognized as Markdown, or nil when no text exists.
+    static func reformatMarkdown(in pasteboard: NSPasteboard) -> Bool? {
+        guard let raw = pasteboard.string(forType: .string) else { return nil }
+        let isMarkdown = MarkdownReformatter.isLikelyMarkdown(raw)
+        let text = isMarkdown ? MarkdownReformatter.reformat(raw) : raw
+        // Rich representations can take precedence over Markdown text in destination apps.
+        pasteboard.clearContents()
+        pasteboard.setString(text, forType: .string)
+        return isMarkdown
+    }
+
     static func pastedString(from pasteboard: NSPasteboard) -> String? {
         if !fileURLs(from: pasteboard).isEmpty {
             return nil
