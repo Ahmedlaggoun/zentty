@@ -387,6 +387,23 @@ connect_existing_betterdisplay() {
   betterdisplay_request set -tagID="$tag_id" -connected=on >/dev/null 2>&1
 }
 
+# macOS remembers the last arrangement for a display pair. If the test screen
+# was ever mirrored onto the built-in display, every reconnect restores that
+# hardware mirror and the laptop screen shows the test display. Break the
+# mirror right after connecting; the unmirrored layout is what macOS then
+# remembers for the next run.
+unmirror_betterdisplay() {
+  local tag_id="$1" builtin_uuid target_uuid
+  if [[ -n "${ZENTTY_TEST_MAIN_DISPLAY_COMMAND:-}" ]]; then
+    return 0
+  fi
+  builtin_uuid="$(/usr/bin/swift "$display_state_helper" builtin-display-uuid 2>/dev/null || true)"
+  for target_uuid in "$builtin_uuid" "$original_main_display_uuid"; do
+    [[ -n "$target_uuid" ]] || continue
+    betterdisplay_request set -tagID="$tag_id" -mirror=off -targetUUID="$target_uuid" >/dev/null 2>&1 || true
+  done
+}
+
 resolve_registered_betterdisplay() {
   local registration_plan registration_status line kind record_fields tag_id display_id
   local canonical_tag_id=""
@@ -469,6 +486,7 @@ ensure_betterdisplay() {
       return 1
     fi
     wait_for_screen
+    unmirror_betterdisplay "$active_display_tag_id"
     active_display_name="$(matched_screen_name || print -r -- "$display_name")"
     print -r -- "Connected existing BetterDisplay virtual display '${active_display_name}'. It will be disconnected by the last test run using it."
     return 0
@@ -488,6 +506,7 @@ ensure_betterdisplay() {
   fi
   required_betterdisplay_request set -tagID="$active_display_tag_id" -connected=on
   wait_for_screen
+  unmirror_betterdisplay "$active_display_tag_id"
   active_display_name="$(matched_screen_name || print -r -- "$display_name")"
 }
 

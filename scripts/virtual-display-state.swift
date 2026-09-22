@@ -80,18 +80,21 @@ func topologyStatus(screenName: String, expectedMainDisplayID: CGDirectDisplayID
         return "missing"
     }
 
+    // A hardware-mirrored display drops out of the active list, so walk the
+    // online list and also honor the mirror-set flag on every display.
     var displayCount: UInt32 = 0
-    guard CGGetActiveDisplayList(0, nil, &displayCount) == .success else {
+    guard CGGetOnlineDisplayList(0, nil, &displayCount) == .success else {
         return "invalid"
     }
 
-    var activeDisplays = [CGDirectDisplayID](repeating: 0, count: Int(displayCount))
-    guard CGGetActiveDisplayList(displayCount, &activeDisplays, &displayCount) == .success else {
+    var onlineDisplays = [CGDirectDisplayID](repeating: 0, count: Int(displayCount))
+    guard CGGetOnlineDisplayList(displayCount, &onlineDisplays, &displayCount) == .success else {
         return "invalid"
     }
 
     let mirrorsAnotherDisplay = CGDisplayMirrorsDisplay(testDisplay) != kCGNullDirectDisplay
-    let isMirrorSource = activeDisplays.contains {
+        || CGDisplayIsInMirrorSet(testDisplay) != 0
+    let isMirrorSource = onlineDisplays.contains {
         $0 != testDisplay && CGDisplayMirrorsDisplay($0) == testDisplay
     }
 
@@ -120,6 +123,13 @@ case "main-display-identity":
         exit(2)
     }
     print("\(uuid)\t\(displayID)")
+
+case "builtin-display-uuid":
+    let builtin = NSScreen.screens.compactMap(screenDisplayID).first { CGDisplayIsBuiltin($0) != 0 }
+    guard let builtin, let uuid = displayUUID(builtin) else {
+        exit(1)
+    }
+    print(uuid)
 
 case "display-id-for-uuid":
     guard arguments.count == 3,
