@@ -2237,6 +2237,30 @@ final class LibghosttyView: NSView, TerminalFocusReporting, TerminalViewportDiag
         return true
     }
 
+    /// macOS 26 binds Control+Return to a system "Show contextual menu" key equivalent.
+    /// AppKit offers it here before `keyDown`; left unclaimed, it pops this view's
+    /// context menu and the terminal never sees Ctrl+Enter. Claim it for the terminal
+    /// (Ghostty does the same) so TUIs that bind Ctrl+Enter keep working.
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        guard event.type == .keyDown,
+              Self.isControlReturnKeyEquivalent(event),
+              window?.firstResponder === self
+        else {
+            return super.performKeyEquivalent(with: event)
+        }
+
+        keyDown(with: event)
+        return true
+    }
+
+    private static func isControlReturnKeyEquivalent(_ event: NSEvent) -> Bool {
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        guard flags.contains(.control), !flags.contains(.command) else {
+            return false
+        }
+        return event.keyCode == 36 || event.keyCode == 76
+    }
+
     override func keyDown(with event: NSEvent) {
         recordTerminalInputBreadcrumb(
             message: "key",
