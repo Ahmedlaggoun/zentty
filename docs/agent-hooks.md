@@ -171,7 +171,7 @@ Claude hook execution is best effort. If the Claude adapter fails internally, Ze
 
 ### Subagents
 
-`SubagentStart` / `SubagentStop` maintain a per-pane registry of running subagents (`AgentSubagentRegistryStore`, shared with Codex and Grok). The sidebar shows the count as a badge next to the status icon; clicking it unfolds a list grouped by model and agent type.
+`SubagentStart` / `SubagentStop` maintain a per-pane registry of running subagents (`AgentSubagentRegistryStore`, shared with Codex and Grok). The sidebar shows the count as a badge next to the status icon; clicking it unfolds a list grouped by model and agent type. Unknown and duplicate worker-stop events cannot resume an already completed parent.
 
 No hook payload carries the model, so Zentty resolves it from the files Claude writes next to the subagent transcript: `agent-<id>.meta.json` (present at spawn, holds `model` only when the parent chose one explicitly) or the first assistant line of `agent-<id>.jsonl`. `SubagentStart` arrives before either exists, so hooks fired from inside the subagent (`PreToolUse`, `PostToolUse`, …, recognizable by `agent_id`) retry the lookup and carry the refreshed set. The parent's `Stop` broadcasts an explicit empty set, and entries older than six hours are dropped in case a `SubagentStop` never arrived.
 

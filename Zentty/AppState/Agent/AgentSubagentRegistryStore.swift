@@ -180,11 +180,34 @@ final class AgentSubagentRegistryStore {
     /// not misattributed, and must not take a live sibling with it.
     @discardableResult
     func stop(key: Key, subagentID: String?, retireOldestWhenUnknown: Bool = false) throws -> PaneAgentSubagentSummary {
+        try stop(key: key, subagentID: subagentID, retireOldestWhenUnknown: retireOldestWhenUnknown, requiresTrackedID: false) ?? .empty
+    }
+
+    /// Internal Claude forks emit a stop without a start. Distinguish them
+    /// from registered workers atomically, including workers retired by the
+    /// quiet-transcript heuristic while a long tool was still finishing.
+    /// Recovery uses the existing bounded history of 32 pruned ids: older
+    /// forgotten workers wait for real parent activity to signal a resume.
+    /// Anonymous stops can only retire a currently registered worker.
+    func stopIfTracked(key: Key, subagentID: String?) throws -> PaneAgentSubagentSummary? {
+        try stop(key: key, subagentID: subagentID, retireOldestWhenUnknown: false, requiresTrackedID: true)
+    }
+
+    private func stop(
+        key: Key,
+        subagentID: String?,
+        retireOldestWhenUnknown: Bool,
+        requiresTrackedID: Bool
+    ) throws -> PaneAgentSubagentSummary? {
         try withLockedState { state in
             var entry = state.panes[key.rawValue] ?? PaneEntry()
+            let subagentID = normalizedOptional(subagentID)
+            if requiresTrackedID, let subagentID,
+               entry.subagentsByID[subagentID] == nil, !entry.wasPruned(subagentID) {
+                return nil
+            }
             prune(&entry, key: key)
             var removedID: String?
-            let subagentID = normalizedOptional(subagentID)
             if let subagentID, entry.subagentsByID.removeValue(forKey: subagentID) != nil {
                 removedID = subagentID
             } else if subagentID == nil || (retireOldestWhenUnknown && !entry.wasPruned(subagentID)),
@@ -193,6 +216,15 @@ final class AgentSubagentRegistryStore {
                 // longest-running subagent.
                 entry.subagentsByID.removeValue(forKey: oldest.key)
                 removedID = oldest.key
+            }
+            if requiresTrackedID, subagentID == nil, removedID == nil {
+                state.panes[key.rawValue] = entry
+                return nil
+            }
+            if requiresTrackedID, let subagentID {
+                // A remembered worker can wake its parent once; a repeated
+                // stop after the parent finishes must not wake it again.
+                entry.forgetPruned(subagentID)
             }
             entry.updatedAt = now().timeIntervalSince1970
             state.panes[key.rawValue] = entry

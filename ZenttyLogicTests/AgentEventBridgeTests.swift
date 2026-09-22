@@ -1994,14 +1994,11 @@ final class AgentEventBridgeTests: XCTestCase {
         XCTAssertEqual(payloads[0].lifecycleEvent, .update)
     }
 
-    func test_claude_adapter_subagent_stop_is_regular_update() throws {
+    func test_claude_adapter_anonymous_subagent_stop_without_worker_is_ignored() throws {
         let json = #"{"hook_event_name": "SubagentStop", "session_id": "cs1"}"#
         let payloads = try claudeAdapterPayloads(data: json.data(using: .utf8)!, environment: claudeEnvironment())
 
-        // A subagent finishing is not the parent's turn ending: the parent
-        // still has to consume the result, so the pane stays running.
-        XCTAssertEqual(payloads[0].state, .running)
-        XCTAssertEqual(payloads[0].lifecycleEvent, .update)
+        XCTAssertTrue(payloads.isEmpty, "an unregistered anonymous stop is not evidence that the parent resumed")
     }
 
     func test_claude_adapter_user_prompt_submit_sets_running() throws {

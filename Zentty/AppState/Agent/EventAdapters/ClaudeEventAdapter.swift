@@ -466,16 +466,21 @@ extension AgentEventBridge {
 
         case "SubagentStop":
             let target = try claudeResolvedTarget(for: input, environment: environment, sessionStore: sessionStore)
+            let key = claudeSubagentKey(target)
+            let existing = try claudeLookupRecord(for: input, sessionStore: sessionStore)
+            let subagentID = claudeSubagentID(for: input, sessionTranscriptPath: existing?.transcriptPath)
+            guard let subagents = try subagentStore.stopIfTracked(key: key, subagentID: subagentID) else {
+                // Claude's internal forks (for example an away recap) emit
+                // SubagentStop without SubagentStart. Their completion does
+                // not resume the parent or answer its pending prompt. The
+                // same applies to a duplicate worker stop.
+                return []
+            }
             if let sessionID = input.sessionID {
                 try sessionStore.clearInteractionContext(sessionID: sessionID, keepsPreToolUseSlots: true)
             }
             // The parent keeps working (it still has to read the subagent's
             // result), so this is a running update, not an idle transition.
-            let existing = try claudeLookupRecord(for: input, sessionStore: sessionStore)
-            let subagents = try subagentStore.stop(
-                key: claudeSubagentKey(target),
-                subagentID: claudeSubagentID(for: input, sessionTranscriptPath: existing?.transcriptPath)
-            )
             return [claudeLifecyclePayload(
                 target: target, state: .running, cwd: input.cwd ?? existing?.cwd,
                 interactionKind: .none, confidence: .explicit, sessionID: input.sessionID,
