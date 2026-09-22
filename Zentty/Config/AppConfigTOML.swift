@@ -57,6 +57,7 @@ enum AppConfigTOML {
         lines.append("focus_follows_mouse = \(config.panes.focusFollowsMouse)")
         lines.append("focus_follows_mouse_delay = \(encode(string: config.panes.focusFollowsMouseDelay.rawValue))")
         lines.append("focus_on_1password_prompt = \(config.panes.focusOnOnePasswordPrompt)")
+        lines.append("return_after_1password_prompt = \(config.panes.returnAfterOnePasswordPrompt)")
         lines.append("")
 
         if config.appearance != .default {
@@ -675,6 +676,11 @@ enum AppConfigTOML {
                 return false
             }
             config.panes.focusOnOnePasswordPrompt = value
+        case "return_after_1password_prompt":
+            guard let value = decodeBool(assignment.value) else {
+                return false
+            }
+            config.panes.returnAfterOnePasswordPrompt = value
         default:
             return true
         }

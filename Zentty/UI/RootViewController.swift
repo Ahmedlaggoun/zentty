@@ -1645,6 +1645,14 @@ final class RootViewController: NSViewController {
         showToast(message: "1Password request from \(processName) in this pane", duration: 4)
     }
 
+    /// Reverse of `revealPaneForOnePasswordPrompt`, once the prompt has closed.
+    func restoreFocusAfterOnePasswordPrompt(worklaneID: WorklaneID, paneID: PaneID) {
+        worklaneStore.selectWorklaneAndFocusPane(worklaneID: worklaneID, paneID: paneID)
+        view.layoutSubtreeIfNeeded()
+        runtimeRegistry.runtime(for: paneID)?.forceViewportSync()
+        showToast(message: "Back to your previous pane", duration: 2)
+    }
+
     private func navigateToNotification(_ notification: AppNotification) {
         if notification.windowID == windowID {
             navigateToPane(worklaneID: notification.worklaneID, paneID: notification.paneID)

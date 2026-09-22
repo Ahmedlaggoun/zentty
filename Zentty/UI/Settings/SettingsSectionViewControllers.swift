@@ -188,6 +188,7 @@ final class PaneLayoutSettingsSectionViewController: SettingsScrollableSectionVi
     private let smoothScrollingSwitch = NSSwitch()
     private let focusFollowsMouseSwitch = NSSwitch()
     private let focusOnOnePasswordPromptSwitch = NSSwitch()
+    private let returnAfterOnePasswordPromptSwitch = NSSwitch()
     private let focusFollowsMouseDelayControl = NSSegmentedControl(
         labels: AppConfig.Panes.FocusFollowsMouseDelay.allCases.map(\.title),
         trackingMode: .selectOne,
@@ -343,6 +344,8 @@ final class PaneLayoutSettingsSectionViewController: SettingsScrollableSectionVi
         smoothScrollingSwitch.state = panes.smoothScrollingEnabled ? .on : .off
         focusFollowsMouseSwitch.state = panes.focusFollowsMouse ? .on : .off
         focusOnOnePasswordPromptSwitch.state = panes.focusOnOnePasswordPrompt ? .on : .off
+        returnAfterOnePasswordPromptSwitch.state = panes.returnAfterOnePasswordPrompt ? .on : .off
+        returnAfterOnePasswordPromptSwitch.isEnabled = panes.focusOnOnePasswordPrompt
         let selectedDelaySegment = AppConfig.Panes.FocusFollowsMouseDelay.allCases.firstIndex(of: panes.focusFollowsMouseDelay)
         assert(selectedDelaySegment != nil, "Focus-follows-mouse delay must have a matching segment")
         focusFollowsMouseDelayControl.selectedSegment = selectedDelaySegment ?? 0
@@ -551,6 +554,15 @@ final class PaneLayoutSettingsSectionViewController: SettingsScrollableSectionVi
         )
         contentStack.addArrangedSubview(onePasswordRow)
         onePasswordRow.widthAnchor.constraint(equalTo: contentStack.widthAnchor).isActive = true
+
+        let onePasswordReturnRow = makeSwitchRow(
+            title: "Return to previous pane after 1Password prompt",
+            subtitle: "Once the request is approved or dismissed, go back to the pane you were in.",
+            toggle: returnAfterOnePasswordPromptSwitch,
+            action: #selector(handleReturnAfterOnePasswordPromptChanged(_:))
+        )
+        contentStack.addArrangedSubview(onePasswordReturnRow)
+        onePasswordReturnRow.widthAnchor.constraint(equalTo: contentStack.widthAnchor).isActive = true
 
         SettingsFormBuilder.separator(addedTo: contentStack)
 
@@ -857,6 +869,14 @@ final class PaneLayoutSettingsSectionViewController: SettingsScrollableSectionVi
         guard !isApplyingPanes else { return }
         try? configStore.update {
             $0.panes.focusOnOnePasswordPrompt = sender.state == .on
+        }
+    }
+
+    @objc
+    private func handleReturnAfterOnePasswordPromptChanged(_ sender: NSSwitch) {
+        guard !isApplyingPanes else { return }
+        try? configStore.update {
+            $0.panes.returnAfterOnePasswordPrompt = sender.state == .on
         }
     }
 

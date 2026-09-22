@@ -878,6 +878,19 @@ final class MainWindowController: NSObject, NSWindowDelegate {
         )
     }
 
+    /// Puts the user back where they were before a 1Password prompt pulled
+    /// them to another pane. The prompt is gone by now, so this may make the
+    /// window key when Zentty is the active app; it never activates Zentty.
+    func restoreFocusAfterOnePasswordPrompt(worklaneID: WorklaneID, paneID: PaneID) {
+        if !window.isVisible || window.isMiniaturized {
+            return
+        }
+        if !window.isKeyWindow, NSApp.isActive, !Self.isHostedTestMode {
+            window.makeKeyAndOrderFront(nil)
+        }
+        rootViewController.restoreFocusAfterOnePasswordPrompt(worklaneID: worklaneID, paneID: paneID)
+    }
+
     func containsWorklane(_ worklaneID: WorklaneID) -> Bool {
         rootViewController.containsWorklane(worklaneID)
     }
