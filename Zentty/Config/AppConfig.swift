@@ -147,6 +147,8 @@ struct AppConfig: Equatable, Sendable {
         var focusFollowsMouseDelay: FocusFollowsMouseDelay
         /// Jump to the pane whose process made 1Password prompt for approval.
         var focusOnOnePasswordPrompt: Bool
+        /// Jump back to the previous pane once that 1Password prompt closes.
+        var returnAfterOnePasswordPrompt: Bool
 
         static let minimumInactiveOpacity: CGFloat = 0.6
         static let maximumInactiveOpacity: CGFloat = 1.0
@@ -159,7 +161,8 @@ struct AppConfig: Equatable, Sendable {
             smoothScrollingEnabled: Bool = false,
             focusFollowsMouse: Bool = false,
             focusFollowsMouseDelay: FocusFollowsMouseDelay = .short,
-            focusOnOnePasswordPrompt: Bool = true
+            focusOnOnePasswordPrompt: Bool = true,
+            returnAfterOnePasswordPrompt: Bool = true
         ) {
             self.showLabels = showLabels
             self.showBorders = showBorders
@@ -169,6 +172,7 @@ struct AppConfig: Equatable, Sendable {
             self.focusFollowsMouse = focusFollowsMouse
             self.focusFollowsMouseDelay = focusFollowsMouseDelay
             self.focusOnOnePasswordPrompt = focusOnOnePasswordPrompt
+            self.returnAfterOnePasswordPrompt = returnAfterOnePasswordPrompt
         }
 
         static let `default` = Panes(
@@ -179,7 +183,8 @@ struct AppConfig: Equatable, Sendable {
             smoothScrollingEnabled: false,
             focusFollowsMouse: false,
             focusFollowsMouseDelay: .short,
-            focusOnOnePasswordPrompt: true
+            focusOnOnePasswordPrompt: true,
+            returnAfterOnePasswordPrompt: true
         )
     }
 
@@ -580,7 +585,8 @@ extension AppConfig.Panes {
             smoothScrollingEnabled: smoothScrollingEnabled,
             focusFollowsMouse: focusFollowsMouse,
             focusFollowsMouseDelay: focusFollowsMouseDelay,
-            focusOnOnePasswordPrompt: focusOnOnePasswordPrompt
+            focusOnOnePasswordPrompt: focusOnOnePasswordPrompt,
+            returnAfterOnePasswordPrompt: returnAfterOnePasswordPrompt
         )
     }
 }

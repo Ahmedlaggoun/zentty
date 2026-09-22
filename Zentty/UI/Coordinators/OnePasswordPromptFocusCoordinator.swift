@@ -9,6 +9,17 @@ struct OnePasswordPromptWindow: Hashable, Sendable {
     let ownerName: String
 }
 
+/// Where the user was before a 1Password prompt pulled them to another pane.
+struct OnePasswordPromptFocusLocation: Equatable, Sendable {
+    let windowID: WindowID
+    let worklaneID: WorklaneID
+    let paneID: PaneID
+
+    func matches(_ source: OnePasswordPromptPaneSource) -> Bool {
+        windowID == source.windowID && worklaneID == source.worklaneID && paneID == source.paneID
+    }
+}
+
 protocol OnePasswordPromptWindowSnapshotting: Sendable {
     func onScreenWindows() -> [OnePasswordPromptWindow]
 }
@@ -43,14 +54,37 @@ struct DarwinOnePasswordPromptWindowSnapshotter: OnePasswordPromptWindowSnapshot
 /// Every trigger is gated by attribution: a new window only causes a jump when
 /// some pane really holds a live 1Password request, so the generic Touch ID
 /// host is a safe trigger too.
+///
+/// Once the prompt is answered (approved or dismissed both close its window)
+/// the coordinator can jump back to where the user was. The return waits for
+/// every prompt window it saw to leave the screen plus a short grace period,
+/// because the Touch ID sheet closes about a second before 1Password's own
+/// approval panel opens. For `op` requests it additionally waits for the
+/// client process to exit, and gives up when the process keeps running, since
+/// then the pane is doing real work (`op run`) rather than waiting on a prompt.
+/// The return is skipped when the user has meanwhile moved to another pane.
 @MainActor
 final class OnePasswordPromptFocusCoordinator {
     struct Hooks {
         let isEnabled: () -> Bool
+        /// Whether to jump back to the previous pane once the prompt closes.
+        var isReturnEnabled: () -> Bool = { false }
         let sources: () -> [OnePasswordPromptPaneSource]
         /// Whether the pane is already the focused pane of its own window.
         let isPaneFocused: (OnePasswordPromptPaneSource) -> Bool
         let reveal: (OnePasswordPromptCandidate) -> Void
+        /// The pane the user is currently in, across all windows.
+        var currentFocus: () -> OnePasswordPromptFocusLocation? = { nil }
+        var restoreFocus: (OnePasswordPromptFocusLocation) -> Void = { _ in }
+    }
+
+    private struct PendingReturn {
+        let origin: OnePasswordPromptFocusLocation
+        var candidate: OnePasswordPromptCandidate?
+        /// Prompt windows seen since the trigger; the return waits for all of them to go.
+        var promptWindowIDs: Set<Int>
+        /// When the last prompt window left the screen.
+        var clearedAt: Date?
     }
 
     /// Window owners whose new windows can be an approval prompt.
@@ -68,6 +102,12 @@ final class OnePasswordPromptFocusCoordinator {
     private let scanExecutor: (@escaping @Sendable () -> Void) -> Void
     private let now: () -> Date
     private let isOnePasswordRunning: () -> Bool
+    private let isProcessAlive: (Int32) -> Bool
+    /// How long every prompt window must stay gone before jumping back.
+    private let returnGrace: TimeInterval
+    /// How long after the grace an `op` client may keep running before the return is abandoned.
+    private let returnProcessTimeout: TimeInterval
+    private var pendingReturn: PendingReturn?
     private var timer: Timer?
     private var knownWindowIDs: Set<Int>?
     private var ticksUntilPresenceCheck = 0
@@ -83,6 +123,11 @@ final class OnePasswordPromptFocusCoordinator {
         snapshotter: any OnePasswordPromptWindowSnapshotting = DarwinOnePasswordPromptWindowSnapshotter(),
         pollInterval: TimeInterval = 0.25,
         minimumInterval: TimeInterval = 0.75,
+        returnGrace: TimeInterval = 1.5,
+        returnProcessTimeout: TimeInterval = 3,
+        isProcessAlive: @escaping (Int32) -> Bool = { pid in
+            kill(pid, 0) == 0 || errno != ESRCH
+        },
         isOnePasswordRunning: @escaping () -> Bool = {
             !NSRunningApplication.runningApplications(
                 withBundleIdentifier: OnePasswordPromptFocusCoordinator.onePasswordBundleIdentifier
@@ -98,6 +143,9 @@ final class OnePasswordPromptFocusCoordinator {
         self.snapshotter = snapshotter
         self.pollInterval = pollInterval
         self.minimumInterval = minimumInterval
+        self.returnGrace = returnGrace
+        self.returnProcessTimeout = returnProcessTimeout
+        self.isProcessAlive = isProcessAlive
         self.isOnePasswordRunning = isOnePasswordRunning
         self.scanExecutor = scanExecutor
         self.now = now
@@ -120,11 +168,13 @@ final class OnePasswordPromptFocusCoordinator {
         timer = nil
         knownWindowIDs = nil
         ticksUntilPresenceCheck = 0
+        pendingReturn = nil
     }
 
     private func poll() {
         guard hooks.isEnabled() else {
             knownWindowIDs = nil
+            pendingReturn = nil
             return
         }
         if ticksUntilPresenceCheck == 0 {
@@ -152,13 +202,64 @@ final class OnePasswordPromptFocusCoordinator {
         let newPromptWindows = windows.filter {
             !knownWindowIDs.contains($0.id) && Self.promptWindowOwners.contains($0.ownerName)
         }
+        let newPromptWindowIDs = Set(newPromptWindows.map(\.id))
+        if pendingReturn != nil {
+            pendingReturn?.promptWindowIDs.formUnion(newPromptWindowIDs)
+            settlePendingReturn(onScreenIDs: currentIDs)
+        }
         guard let trigger = newPromptWindows.first else {
             return false
         }
-        return startScan(reason: trigger.ownerName)
+        return startScan(reason: trigger.ownerName, promptWindowIDs: newPromptWindowIDs)
     }
 
-    private func startScan(reason: String) -> Bool {
+    /// Advances the jump-back state machine with one window-list sample.
+    private func settlePendingReturn(onScreenIDs: Set<Int>) {
+        guard var pending = pendingReturn else { return }
+        guard hooks.isReturnEnabled() else {
+            pendingReturn = nil
+            return
+        }
+        // The scan has not attributed a pane yet; nothing to return from.
+        guard let candidate = pending.candidate else { return }
+
+        if !pending.promptWindowIDs.isDisjoint(with: onScreenIDs) {
+            pending.clearedAt = nil
+            pendingReturn = pending
+            return
+        }
+        let timestamp = now()
+        guard let clearedAt = pending.clearedAt else {
+            pending.clearedAt = timestamp
+            pendingReturn = pending
+            return
+        }
+        let sinceCleared = timestamp.timeIntervalSince(clearedAt)
+        guard sinceCleared >= returnGrace else {
+            pendingReturn = pending
+            return
+        }
+        if candidate.kind == .cli, isProcessAlive(candidate.pid) {
+            if sinceCleared >= returnGrace + returnProcessTimeout {
+                Self.logger.info(
+                    "op pid=\(candidate.pid, privacy: .public) still running after the prompt closed; not jumping back"
+                )
+                pendingReturn = nil
+            } else {
+                pendingReturn = pending
+            }
+            return
+        }
+        pendingReturn = nil
+        guard hooks.isPaneFocused(candidate.source) else {
+            Self.logger.debug("User left the 1Password request pane; not jumping back")
+            return
+        }
+        Self.logger.info("1Password prompt closed; returning to the previous pane")
+        hooks.restoreFocus(pending.origin)
+    }
+
+    private func startScan(reason: String, promptWindowIDs: Set<Int>) -> Bool {
         let timestamp = now()
         if let lastHandledAt, timestamp.timeIntervalSince(lastHandledAt) < minimumInterval {
             Self.logger.debug("New \(reason, privacy: .public) window within the debounce window; ignoring")
@@ -180,6 +281,7 @@ final class OnePasswordPromptFocusCoordinator {
 
         scanGeneration += 1
         let generation = scanGeneration
+        beginPendingReturn(promptWindowIDs: promptWindowIDs)
         let attributor = self.attributor
         scanExecutor { [weak self] in
             let candidate = attributor.bestCandidate(in: scannable)
@@ -190,15 +292,49 @@ final class OnePasswordPromptFocusCoordinator {
         return true
     }
 
+    /// Remembers where the user is before a reveal. A follow-up prompt window
+    /// for a request we are already tracking (Touch ID sheet, then the
+    /// approval panel) keeps the original origin.
+    private func beginPendingReturn(promptWindowIDs: Set<Int>) {
+        guard hooks.isReturnEnabled() else {
+            pendingReturn = nil
+            return
+        }
+        if let pending = pendingReturn, pending.candidate != nil {
+            pendingReturn?.promptWindowIDs.formUnion(promptWindowIDs)
+            pendingReturn?.clearedAt = nil
+            return
+        }
+        guard let origin = hooks.currentFocus() else {
+            pendingReturn = nil
+            return
+        }
+        pendingReturn = PendingReturn(origin: origin, candidate: nil, promptWindowIDs: promptWindowIDs)
+    }
+
     private func finishScan(generation: Int, candidate: OnePasswordPromptCandidate?) {
         guard generation == scanGeneration else { return }
         guard let candidate else {
             Self.logger.debug("No pane holds a live 1Password request")
+            if pendingReturn?.candidate == nil {
+                pendingReturn = nil
+            }
             return
         }
         if hooks.isPaneFocused(candidate.source) {
             Self.logger.debug("1Password request pane already focused pid=\(candidate.pid, privacy: .public)")
+            if pendingReturn?.candidate == nil {
+                pendingReturn = nil
+            }
             return
+        }
+        if var pending = pendingReturn, pending.candidate == nil {
+            if pending.origin.matches(candidate.source) {
+                pendingReturn = nil
+            } else {
+                pending.candidate = candidate
+                pendingReturn = pending
+            }
         }
         Self.logger.info(
             "Revealing pane for 1Password request process=\(candidate.processName, privacy: .public) pid=\(candidate.pid, privacy: .public)"

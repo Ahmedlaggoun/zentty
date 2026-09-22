@@ -4,8 +4,15 @@ import XCTest
 @MainActor
 final class OnePasswordPromptFocusCoordinatorTests: XCTestCase {
     private var revealed: [OnePasswordPromptCandidate] = []
+    private var restored: [OnePasswordPromptFocusLocation] = []
     private var focusedPaneID: PaneID?
+    private var returnEnabled = true
+    private var alivePIDs: Set<Int32> = []
     private var clock = Date(timeIntervalSince1970: 1_000)
+
+    private let origin = OnePasswordPromptFocusLocation(windowID: WindowID("w"), worklaneID: WorklaneID("l"), paneID: PaneID("origin"))
+    private let prompt = OnePasswordPromptWindow(id: 9, ownerName: "1Password")
+    private let touchID = OnePasswordPromptWindow(id: 8, ownerName: "UserNotificationCenter")
 
     private let baseline = [
         OnePasswordPromptWindow(id: 1, ownerName: "Finder"),
@@ -98,6 +105,152 @@ final class OnePasswordPromptFocusCoordinatorTests: XCTestCase {
         XCTAssertFalse(coordinator.handleWindowSnapshot(baseline + [OnePasswordPromptWindow(id: 9, ownerName: "1Password")]))
     }
 
+    // MARK: - Jump back
+
+    func test_returns_to_origin_after_prompt_window_closes_and_grace_passes() async {
+        focusedPaneID = origin.paneID
+        let coordinator = makeCoordinator(opPIDs: [100: 101])
+        await triggerPrompt(coordinator)
+        XCTAssertEqual(revealed.count, 1)
+        focusedPaneID = PaneID("a")
+
+        coordinator.handleWindowSnapshot(baseline)
+        XCTAssertTrue(restored.isEmpty, "Must wait for the grace period")
+        clock = clock.addingTimeInterval(1)
+        coordinator.handleWindowSnapshot(baseline)
+        XCTAssertTrue(restored.isEmpty)
+        clock = clock.addingTimeInterval(1)
+        coordinator.handleWindowSnapshot(baseline)
+
+        XCTAssertEqual(restored, [origin])
+        coordinator.handleWindowSnapshot(baseline)
+        XCTAssertEqual(restored.count, 1, "Returns once")
+    }
+
+    func test_does_not_return_while_prompt_window_is_still_on_screen() async {
+        focusedPaneID = origin.paneID
+        let coordinator = makeCoordinator(opPIDs: [100: 101])
+        await triggerPrompt(coordinator)
+        focusedPaneID = PaneID("a")
+
+        clock = clock.addingTimeInterval(30)
+        coordinator.handleWindowSnapshot(baseline + [prompt])
+
+        XCTAssertTrue(restored.isEmpty)
+    }
+
+    func test_touch_id_handoff_to_approval_panel_does_not_bounce() async {
+        focusedPaneID = origin.paneID
+        let coordinator = makeCoordinator(opPIDs: [100: 101])
+        coordinator.handleWindowSnapshot(baseline)
+        coordinator.handleWindowSnapshot(baseline + [touchID])
+        await Task.yield()
+        XCTAssertEqual(revealed.count, 1)
+        focusedPaneID = PaneID("a")
+
+        // Touch ID sheet goes away, approval panel arrives a moment later.
+        clock = clock.addingTimeInterval(0.5)
+        coordinator.handleWindowSnapshot(baseline)
+        clock = clock.addingTimeInterval(0.5)
+        coordinator.handleWindowSnapshot(baseline + [prompt])
+        await Task.yield()
+        clock = clock.addingTimeInterval(5)
+        coordinator.handleWindowSnapshot(baseline + [prompt])
+        XCTAssertTrue(restored.isEmpty, "Approval panel is still up")
+        XCTAssertEqual(revealed.count, 1, "The second window belongs to the same request")
+
+        coordinator.handleWindowSnapshot(baseline)
+        clock = clock.addingTimeInterval(2)
+        coordinator.handleWindowSnapshot(baseline)
+
+        XCTAssertEqual(restored, [origin])
+    }
+
+    func test_does_not_return_when_user_moved_to_another_pane() async {
+        focusedPaneID = origin.paneID
+        let coordinator = makeCoordinator(opPIDs: [100: 101])
+        await triggerPrompt(coordinator)
+        focusedPaneID = PaneID("somewhere-else")
+
+        coordinator.handleWindowSnapshot(baseline)
+        clock = clock.addingTimeInterval(2)
+        coordinator.handleWindowSnapshot(baseline)
+
+        XCTAssertTrue(restored.isEmpty)
+    }
+
+    func test_waits_for_op_to_exit_then_returns() async {
+        focusedPaneID = origin.paneID
+        alivePIDs = [101]
+        let coordinator = makeCoordinator(opPIDs: [100: 101])
+        await triggerPrompt(coordinator)
+        focusedPaneID = PaneID("a")
+
+        coordinator.handleWindowSnapshot(baseline)
+        clock = clock.addingTimeInterval(2)
+        coordinator.handleWindowSnapshot(baseline)
+        XCTAssertTrue(restored.isEmpty, "op is still running")
+
+        alivePIDs = []
+        clock = clock.addingTimeInterval(0.5)
+        coordinator.handleWindowSnapshot(baseline)
+
+        XCTAssertEqual(restored, [origin])
+    }
+
+    func test_gives_up_when_op_keeps_running_after_prompt_closed() async {
+        focusedPaneID = origin.paneID
+        alivePIDs = [101]
+        let coordinator = makeCoordinator(opPIDs: [100: 101])
+        await triggerPrompt(coordinator)
+        focusedPaneID = PaneID("a")
+
+        coordinator.handleWindowSnapshot(baseline)
+        clock = clock.addingTimeInterval(6)
+        coordinator.handleWindowSnapshot(baseline)
+        alivePIDs = []
+        clock = clock.addingTimeInterval(1)
+        coordinator.handleWindowSnapshot(baseline)
+
+        XCTAssertTrue(restored.isEmpty)
+    }
+
+    func test_no_return_when_disabled() async {
+        focusedPaneID = origin.paneID
+        returnEnabled = false
+        let coordinator = makeCoordinator(opPIDs: [100: 101])
+        await triggerPrompt(coordinator)
+        XCTAssertEqual(revealed.count, 1)
+        focusedPaneID = PaneID("a")
+
+        coordinator.handleWindowSnapshot(baseline)
+        clock = clock.addingTimeInterval(2)
+        coordinator.handleWindowSnapshot(baseline)
+
+        XCTAssertTrue(restored.isEmpty)
+    }
+
+    func test_no_return_when_nothing_was_revealed() async {
+        focusedPaneID = origin.paneID
+        let coordinator = makeCoordinator(opPIDs: [:], sources: [
+            OnePasswordPromptPaneSource(windowID: WindowID("w"), worklaneID: WorklaneID("l"), paneID: PaneID("a"), rootPID: 100)
+        ])
+        await triggerPrompt(coordinator)
+        XCTAssertTrue(revealed.isEmpty)
+
+        coordinator.handleWindowSnapshot(baseline)
+        clock = clock.addingTimeInterval(2)
+        coordinator.handleWindowSnapshot(baseline)
+
+        XCTAssertTrue(restored.isEmpty)
+    }
+
+    private func triggerPrompt(_ coordinator: OnePasswordPromptFocusCoordinator) async {
+        coordinator.handleWindowSnapshot(baseline)
+        coordinator.handleWindowSnapshot(baseline + [prompt])
+        await Task.yield()
+    }
+
     private func makeCoordinator(
         opPIDs: [Int32: Int32],
         sources: [OnePasswordPromptPaneSource]? = nil
@@ -114,12 +267,20 @@ final class OnePasswordPromptFocusCoordinatorTests: XCTestCase {
         return OnePasswordPromptFocusCoordinator(
             hooks: .init(
                 isEnabled: { true },
+                isReturnEnabled: { [unowned self] in returnEnabled },
                 sources: { sources ?? defaultSources },
                 isPaneFocused: { [unowned self] source in source.paneID == focusedPaneID },
-                reveal: { [unowned self] in revealed.append($0) }
+                reveal: { [unowned self] in revealed.append($0) },
+                currentFocus: { [unowned self] in
+                    focusedPaneID.map {
+                        OnePasswordPromptFocusLocation(windowID: WindowID("w"), worklaneID: WorklaneID("l"), paneID: $0)
+                    }
+                },
+                restoreFocus: { [unowned self] in restored.append($0) }
             ),
             attributor: OnePasswordPromptAttributor(processProvider: provider),
             snapshotter: StubSnapshotter(),
+            isProcessAlive: { [unowned self] pid in alivePIDs.contains(pid) },
             scanExecutor: { $0() },
             now: { [unowned self] in clock }
         )

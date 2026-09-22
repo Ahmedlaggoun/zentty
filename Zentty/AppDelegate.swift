@@ -815,6 +815,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 isEnabled: { [weak self] in
                     self?.configStore.current.panes.focusOnOnePasswordPrompt ?? false
                 },
+                isReturnEnabled: { [weak self] in
+                    self?.configStore.current.panes.returnAfterOnePasswordPrompt ?? false
+                },
                 sources: { [weak self] in
                     self?.onePasswordPromptPaneSources() ?? []
                 },
@@ -825,8 +828,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 },
                 reveal: { [weak self] candidate in
                     self?.revealPaneForOnePasswordPrompt(candidate)
+                },
+                currentFocus: { [weak self] in
+                    self?.currentOnePasswordPromptFocusLocation()
+                },
+                restoreFocus: { [weak self] location in
+                    self?.restoreFocusAfterOnePasswordPrompt(location)
                 }
             )
+        )
+    }
+
+    private func currentOnePasswordPromptFocusLocation() -> OnePasswordPromptFocusLocation? {
+        guard let controller = keyWindowController,
+              let worklane = controller.worklaneStore.activeWorklane,
+              let paneID = worklane.paneStripState.focusedPaneID else {
+            return nil
+        }
+        return OnePasswordPromptFocusLocation(
+            windowID: controller.windowID,
+            worklaneID: worklane.id,
+            paneID: paneID
+        )
+    }
+
+    private func restoreFocusAfterOnePasswordPrompt(_ location: OnePasswordPromptFocusLocation) {
+        guard let controller = windowControllers.values.first(where: { $0.windowID == location.windowID }),
+              controller.containsPane(worklaneID: location.worklaneID, paneID: location.paneID) else {
+            return
+        }
+        controller.restoreFocusAfterOnePasswordPrompt(
+            worklaneID: location.worklaneID,
+            paneID: location.paneID
         )
     }
 
