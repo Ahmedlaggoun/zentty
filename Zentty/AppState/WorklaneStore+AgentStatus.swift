@@ -377,6 +377,17 @@ extension WorklaneStore {
             nextWorklane: worklane
         )
 
+        worklane.auxiliaryStateByPaneID[payload.paneID, default: PaneAuxiliaryState()].raw.observeAgentMetadata(payload)
+        if payload.signalKind == .agentMetadata {
+            recomputePresentation(for: payload.paneID, in: &worklane)
+            worklanes[worklaneIndex] = worklane
+            let impacts = auxiliaryInvalidation(for: payload.paneID, previousWorklane: previousWorklane, nextWorklane: worklane)
+            if !impacts.isEmpty {
+                notify(.auxiliaryStateUpdated(worklane.id, payload.paneID, impacts))
+            }
+            return
+        }
+
         if payload.clearsStatus {
             var auxiliaryState = worklane.auxiliaryStateByPaneID[payload.paneID, default: PaneAuxiliaryState()]
             auxiliaryState.agentReducerState = AgentStatusReconciliation.seededReducerState(auxiliaryState.agentReducerState, from: auxiliaryState.agentStatus)
@@ -731,7 +742,7 @@ extension WorklaneStore {
                     in: &worklane
                 )
             }
-        case .paneRootPID:
+        case .agentMetadata, .paneRootPID:
             break
         case .paneContext:
             guard let paneContext = payload.paneContext else {
@@ -972,11 +983,13 @@ extension WorklaneStore {
             || auxiliaryState.raw.codexCurrentRunHasObservedActivity
             || auxiliaryState.raw.lastDesktopNotificationText != nil
             || auxiliaryState.raw.codexTranscriptContext != nil
+            || auxiliaryState.raw.agentMetadata != nil
         else {
             return
         }
 
         auxiliaryState.agentStatus = nil
+        auxiliaryState.raw.agentMetadata = nil
         auxiliaryState.agentReducerState = PaneAgentReducerState()
         auxiliaryState.terminalProgress = nil
         auxiliaryState.raw.wantsReadyStatus = false
@@ -1151,7 +1164,7 @@ extension WorklaneStore {
             return state == .starting || state == .running || state == .needsInput
         case .pid:
             return payload.pidEvent == .attach
-        case .shellState, .paneRootPID, .paneContext:
+        case .agentMetadata, .shellState, .paneRootPID, .paneContext:
             return false
         }
     }
@@ -1202,6 +1215,18 @@ extension WorklaneStore {
             var changedPaneIDs = Set<PaneID>()
 
             for (paneID, aux) in worklane.auxiliaryStateByPaneID {
+                if var metadata = aux.raw.agentMetadata {
+                    let remainsLive = metadata.refresh(
+                        isProcessAlive: sweepContext.isProcessAlive(pid:),
+                        localRuntimeFilesAvailable: aux.raw.shellContext?.scope != .remote && aux.raw.foregroundSSHDestination == nil
+                    )
+                    let refreshed = remainsLive ? metadata : nil
+                    if refreshed != aux.raw.agentMetadata {
+                        worklane.auxiliaryStateByPaneID[paneID]?.raw.agentMetadata = refreshed
+                        changedPaneIDs.insert(paneID)
+                        recomputePresentation(for: paneID, in: &worklane)
+                    }
+                }
                 if !aux.agentReducerState.sessionsByID.isEmpty {
                     var reducerState = aux.agentReducerState
                     reducerState.sweep(now: now, isProcessAlive: sweepContext.isProcessAlive(pid:))
