@@ -578,6 +578,83 @@ final class PaneAgentOwnershipTests: XCTestCase {
         XCTAssertEqual(state(store).agentStatus?.sessionID, "remote")
     }
 
+    // Node- and Python-hosted agents (Gemini, Kilo, Pi, Vibe, …) show up as
+    // `node` / `python3.x`, so the probe sees a foreground job it cannot name.
+    // That is unknown ownership, not an empty pane.
+    private let unnamedForegroundJob = PaneForegroundAgentSnapshot(agent: nil, foregroundPIDs: [20])
+    private let shellAtPrompt = PaneForegroundAgentSnapshot(agent: nil, foregroundPIDs: [10])
+
+    private func unattributedPayload(_ toolName: String, state: PaneAgentState, origin: AgentSignalOrigin = .explicitHook) -> AgentStatusPayload {
+        AgentStatusPayload(
+            worklaneID: worklaneID, paneID: paneID, state: state, origin: origin,
+            toolName: toolName, text: nil, confidence: .explicit, sessionID: "s1",
+            artifactKind: nil, artifactLabel: nil, artifactURL: nil
+        )
+    }
+
+    private func attach(_ tool: AgentTool, pid: Int32) -> AgentStatusPayload {
+        AgentStatusPayload(
+            worklaneID: worklaneID, paneID: paneID, signalKind: .pid, state: nil, pid: pid, pidEvent: .attach,
+            origin: .explicitHook, toolName: tool.displayName, text: nil, sessionID: "s1",
+            artifactKind: nil, artifactLabel: nil, artifactURL: nil
+        )
+    }
+
+    func test_unnamed_foreground_agent_hook_without_pid_is_applied() {
+        let foreground = unnamedForegroundJob
+        let store = makeStore { _ in foreground }
+        store.applyAgentStatusPayload(unattributedPayload("Mistral Vibe", state: .running))
+        XCTAssertEqual(state(store).agentStatus?.state, .running)
+        XCTAssertEqual(state(store).presentation.recognizedTool, .vibe)
+    }
+
+    func test_cli_agent_signal_for_custom_tool_is_applied() {
+        let foreground = unnamedForegroundJob
+        let store = makeStore { _ in foreground }
+        store.applyAgentStatusPayload(unattributedPayload("deploy-bot", state: .running, origin: .compatibility))
+        XCTAssertEqual(state(store).agentStatus?.state, .running)
+    }
+
+    func test_unnamed_foreground_agent_keeps_status_across_sweeps() {
+        let foreground = unnamedForegroundJob
+        let store = makeStore { _ in foreground }
+        store.applyAgentStatusPayload(unattributedPayload("Mistral Vibe", state: .running))
+        sweep(store, snapshot: foreground)
+        sweep(store, snapshot: foreground)
+        XCTAssertEqual(state(store).agentStatus?.state, .running)
+        XCTAssertEqual(state(store).presentation.recognizedTool, .vibe)
+    }
+
+    func test_unnamed_foreground_job_still_recognizes_agent_from_title() {
+        let foreground = unnamedForegroundJob
+        let store = makeStore { _ in foreground }
+        store.updateMetadata(paneID: paneID, metadata: TerminalMetadata(title: "Gemini"))
+        sweep(store, snapshot: foreground)
+        XCTAssertEqual(state(store).presentation.recognizedTool, .gemini)
+    }
+
+    func test_node_hosted_agent_with_pid_is_retired_when_it_leaves_the_foreground() {
+        var foreground = unnamedForegroundJob
+        let store = makeStore { _ in foreground }
+        store.applyAgentStatusPayload(attach(.gemini, pid: 20))
+        store.applyAgentStatusPayload(unattributedPayload("Gemini", state: .running))
+        sweep(store, snapshot: foreground)
+        XCTAssertEqual(state(store).agentStatus?.state, .running)
+
+        foreground = shellAtPrompt
+        sweep(store, snapshot: foreground)
+        XCTAssertNil(state(store).agentStatus)
+        XCTAssertNil(state(store).presentation.recognizedTool)
+    }
+
+    func test_late_hook_from_exited_agent_is_rejected_by_its_pid() {
+        let foreground = shellAtPrompt
+        let store = makeStore { _ in foreground }
+        store.applyAgentStatusPayload(payload(.claudeCode, session: "old", pid: 20, state: .running))
+        XCTAssertNil(state(store).agentStatus)
+        XCTAssertNil(state(store).presentation.recognizedTool)
+    }
+
     func test_sweep_caches_foreground_lookup_for_each_root_including_failures() {
         var calls: [Int32: Int] = [:]
         let context = AgentSessionSweepContext(foregroundAgentResolver: { pid in

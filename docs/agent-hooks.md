@@ -38,7 +38,7 @@ By default, `notify` also adds the item to Zentty's notification inbox and uses 
 
 Zentty tracks which agent owns a pane, the model that agent reports, and whether Claude Remote Control is connected. This section covers how that metadata is resolved. Nothing in the sidebar renders it yet.
 
-A pane's main agent follows the outermost foreground process, so switching tools retires the previous agent's state instead of leaving its name attached to the pane. Node-wrapped Codex and native Claude version executables both resolve to their agent. When process inspection returns nothing usable, the known owner is kept rather than cleared.
+A pane's main agent follows the outermost foreground process, so switching tools retires the previous agent's state instead of leaving its name attached to the pane. Node-wrapped Codex and native Claude version executables both resolve to their agent. When process inspection returns nothing usable, the known owner is kept rather than cleared. Agents that run as `node` or `python` cannot be named from the process table, so an unnamed foreground job counts as unknown ownership: their hooks and `zentty ipc agent-signal` still apply, and their state is retired only once the PID they reported leaves the foreground job.
 
 Claude's `SessionStart.model` and `PostModelSwitch.to_model` provide the selected session model. Codex uses a reported hook model or the newest root `turn_context` in a bounded transcript tail. An explicit unresolved model clears the previous value until a newer response supplies it. Subagent hooks cannot replace the root identity or model. An unknown model is left unset rather than guessed.
 

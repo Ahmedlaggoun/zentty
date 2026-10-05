@@ -328,10 +328,18 @@ struct PaneRawState: Equatable, Sendable {
         } else {
             changedOwner = previousOwner != nil && owner == nil
         }
-        let mismatchedStatus = storedTool.map { tool in
-            owner?.owns(tool: tool, pid: storedPID) != true
-        } ?? false
-        let statusHasWrongTool = agentStatus.map { $0.tool != owner?.tool } ?? false
+        let mismatchedStatus: Bool
+        let statusHasWrongTool: Bool
+        if let owner {
+            mismatchedStatus = storedTool.map { owner.owns(tool: $0, pid: storedPID) != true } ?? false
+            statusHasWrongTool = agentStatus.map { $0.tool != owner.tool } ?? false
+        } else {
+            // An unnamed foreground job (`node`, `python`, a script) is unknown
+            // ownership, not an empty pane. Only a stored PID that has left the
+            // foreground proves the stored agent is gone.
+            mismatchedStatus = storedPID.map { !snapshot.foregroundPIDs.contains($0) } ?? false
+            statusHasWrongTool = false
+        }
         if changedOwner || mismatchedStatus || statusHasWrongTool {
             let matchingMetadata = agentMetadata.flatMap { metadata in
                 owner?.owns(tool: metadata.tool, pid: metadata.pid) == true ? metadata : nil
@@ -362,9 +370,10 @@ struct PaneRawState: Equatable, Sendable {
               let snapshot = foregroundAgentSnapshot else { return true }
         let pid = payload.agentMetadataPID ?? payload.pid
         guard let owner = snapshot.agent else {
-            // The wrapper can report its launch before exec gives it a
-            // recognizable process name. Only a real foreground PID may do so.
-            return pid.map(snapshot.foregroundPIDs.contains) == true
+            // No named owner: hooks without a PID (node/python-hosted agents,
+            // `zentty ipc agent-signal`) are accepted. A PID outside the
+            // foreground job is a late hook from an agent that already exited.
+            return pid.map(snapshot.foregroundPIDs.contains) ?? true
         }
         guard let tool = AgentTool.resolve(named: payload.toolName) else { return true }
         return owner.owns(tool: tool, pid: pid)
@@ -521,10 +530,14 @@ enum PanePresentationNormalizer {
             .joined(separator: " · ")
             .nilIfEmpty
         let recognizedTool: AgentTool?
-        if let foreground = raw.foregroundAgentSnapshot {
-            recognizedTool = foreground.agent?.tool
+        if let owner = raw.foregroundAgentSnapshot?.agent {
+            recognizedTool = owner.tool
         } else {
-            recognizedTool = raw.agentStatus?.tool ?? raw.agentMetadata?.tool ?? AgentToolRecognizer.recognize(metadata: raw.metadata)
+            // With the shell itself in the foreground no agent is running, so
+            // a title left behind by an exited agent must not name the pane.
+            let shellOwnsForeground = raw.paneRootPID.map { raw.foregroundAgentSnapshot?.foregroundPIDs.contains($0) == true } ?? false
+            recognizedTool = raw.agentStatus?.tool ?? raw.agentMetadata?.tool
+                ?? (shellOwnsForeground ? nil : AgentToolRecognizer.recognize(metadata: raw.metadata))
         }
         let sshConnectionLabel = inferredSSHConnectionLabel(
             metadata: raw.metadata,
